@@ -49,6 +49,8 @@ cleanup() {
 
 trap cleanup EXIT
 
+"$PYTHON" scripts/stop_existing_evalhub.py --host "$HOST" --port "$PORT"
+
 if ollama_running; then
   echo "Ollama is already running at ${OLLAMA_BASE_URL}"
 else
@@ -68,6 +70,5 @@ else
   fi
 fi
 
-"$PYTHON" scripts/stop_existing_evalhub.py --host "$HOST" --port "$PORT"
 echo "Starting EvalHub at http://${HOST}:${PORT}"
 "$PYTHON" run_evalhub.py serve --host "$HOST" --port "$PORT"

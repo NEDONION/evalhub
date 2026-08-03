@@ -114,10 +114,15 @@ class LauncherIntegrationTests(unittest.TestCase):
             fake_bin.mkdir()
             call_log = temporary / "python-calls.log"
 
-            for command in ("npm", "curl"):
-                executable = fake_bin / command
-                executable.write_text("#!/bin/sh\nexit 0\n")
-                executable.chmod(0o755)
+            fake_npm = fake_bin / "npm"
+            fake_npm.write_text("#!/bin/sh\nexit 0\n")
+            fake_npm.chmod(0o755)
+
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                '#!/bin/sh\nprintf "curl %s\\n" "$*" >> "$EVALHUB_CALL_LOG"\nexit 0\n'
+            )
+            fake_curl.chmod(0o755)
 
             fake_python = fake_bin / "python"
             fake_python.write_text(
@@ -148,6 +153,7 @@ class LauncherIntegrationTests(unittest.TestCase):
                 call_log.read_text().splitlines(),
                 [
                     'scripts/stop_existing_evalhub.py --host 127.0.0.1 --port 8000',
+                    'curl -fsS http://127.0.0.1:11434/api/tags',
                     'run_evalhub.py serve --host 127.0.0.1 --port 8000',
                 ],
             )
