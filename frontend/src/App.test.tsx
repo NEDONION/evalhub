@@ -4,19 +4,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import {
+  cancelModelPull,
   getDatasets,
   getHealth,
+  getModelPull,
   getOllamaStatus,
   prepareDataset,
   runEvaluation,
+  startModelPull,
 } from "./lib/api";
 
 vi.mock("./lib/api", () => ({
+  cancelModelPull: vi.fn(),
   getDatasets: vi.fn(),
   getHealth: vi.fn(),
+  getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
   prepareDataset: vi.fn(),
   runEvaluation: vi.fn(),
+  startModelPull: vi.fn(),
 }));
 
 const datasetFixture = {
@@ -95,6 +101,9 @@ beforeEach(() => {
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
   vi.mocked(getOllamaStatus).mockResolvedValue(ollamaFixture);
+  vi.mocked(getModelPull).mockResolvedValue({ ok: true, task: null });
+  vi.mocked(startModelPull).mockResolvedValue({ ok: true, task: null });
+  vi.mocked(cancelModelPull).mockResolvedValue({ ok: true, task: null });
   vi.mocked(prepareDataset).mockResolvedValue({
     ok: true,
     dataset: "gsm8k",
@@ -183,7 +192,7 @@ describe("EvalHub console", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "缓存 MMLU 测试集" }));
-    expect(prepareDataset).toHaveBeenCalledWith("mmlu");
+    expect(prepareDataset).toHaveBeenCalledWith("mmlu", false);
   });
 
   it("starts with a directed evaluation empty state", async () => {
