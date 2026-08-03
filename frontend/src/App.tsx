@@ -15,7 +15,9 @@ const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 export default function App() {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
+  const [dismissedDownloadModel, setDismissedDownloadModel] = useState<string | null>(null);
   const dashboard = useEvalHub(model, baseUrl);
+  const selectedModelOption = dashboard.ollama?.model_options.find((option) => option.name === model) || null;
 
   const ollamaState = useMemo(() => {
     if (dashboard.ollamaError) return "offline" as const;
@@ -52,7 +54,26 @@ export default function App() {
             preparedCount={dashboard.datasets.filter((dataset) => dataset.prepared).length}
             latestScore={dashboard.result ? formatScore(dashboard.result.average_score) : "—"}
           />
-          <OllamaPanel status={dashboard.ollama} loading={dashboard.refreshing} error={dashboard.ollamaError} />
+          <OllamaPanel
+            status={dashboard.ollama}
+            loading={dashboard.refreshing}
+            error={dashboard.ollamaError}
+            modelOption={selectedModelOption}
+            pullTask={dashboard.modelPullTask}
+            pullError={dashboard.modelPullError}
+            downloadDismissed={dismissedDownloadModel === model}
+            onDownload={(targetModel) => void dashboard.startModelPull(targetModel)}
+            onCancel={(targetModel) => void dashboard.cancelModelPull(targetModel)}
+            onDecline={() => {
+              const installedModel = dashboard.ollama?.model_options.find((option) => option.installed);
+              if (installedModel) {
+                setDismissedDownloadModel(null);
+                setModel(installedModel.name);
+              } else {
+                setDismissedDownloadModel(model);
+              }
+            }}
+          />
           <EvaluationForm
             datasets={dashboard.datasets}
             modelOptions={dashboard.ollama?.model_options || []}
@@ -60,7 +81,10 @@ export default function App() {
             baseUrl={baseUrl}
             running={dashboard.runningEvaluation}
             preparing={Boolean(dashboard.preparingDataset)}
-            onModelChange={setModel}
+            onModelChange={(nextModel) => {
+              setDismissedDownloadModel(null);
+              setModel(nextModel);
+            }}
             onBaseUrlCommit={setBaseUrl}
             onPrepare={(dataset) => void dashboard.prepare(dataset)}
             onSubmit={(request) => void dashboard.run(request)}

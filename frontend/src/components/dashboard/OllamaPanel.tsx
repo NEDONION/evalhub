@@ -1,13 +1,22 @@
-import { Bot, Box, Command, RadioTower } from "lucide-react";
+import { Bot, Box, Command, Download, RadioTower, X } from "lucide-react";
 
-import type { OllamaStatus } from "../../types";
+import { estimateDownloadRange, formatBytes, formatDuration, formatRate } from "../../lib/assets";
+import type { ModelOption, OllamaPullTask, OllamaStatus } from "../../types";
 import { Badge } from "../ui/Badge";
+import { Button } from "../ui/Button";
 import { Panel } from "../ui/Panel";
 
 interface OllamaPanelProps {
   status: OllamaStatus | null;
   loading: boolean;
   error: string | null;
+  modelOption: ModelOption | null;
+  pullTask: OllamaPullTask | null;
+  pullError: string | null;
+  downloadDismissed: boolean;
+  onDownload: (model: string) => void;
+  onCancel: (model: string) => void;
+  onDecline: (model: string) => void;
 }
 
 function statusPresentation(status: OllamaStatus | null, loading: boolean) {
@@ -18,8 +27,27 @@ function statusPresentation(status: OllamaStatus | null, loading: boolean) {
   return { label: "已就绪", tone: "success" as const };
 }
 
-export function OllamaPanel({ status, loading, error }: OllamaPanelProps) {
+const activePullStatuses = new Set(["pending", "pulling", "verifying"]);
+
+export function OllamaPanel({
+  status,
+  loading,
+  error,
+  modelOption,
+  pullTask,
+  pullError,
+  downloadDismissed,
+  onDownload,
+  onCancel,
+  onDecline,
+}: OllamaPanelProps) {
   const presentation = statusPresentation(status, loading);
+  const task = pullTask?.model === modelOption?.name ? pullTask : null;
+  const pullActive = Boolean(task && activePullStatuses.has(task.status));
+  const progress = task?.total_bytes
+    ? Math.min(100, Math.round(((task.completed_bytes || 0) / task.total_bytes) * 100))
+    : 0;
+  const downloadRange = estimateDownloadRange(modelOption?.size_bytes);
   const facts = [
     { icon: Command, label: "命令", value: status?.command || "未检测到" },
     { icon: RadioTower, label: "服务地址", value: status?.base_url || "http://127.0.0.1:11434" },
@@ -56,11 +84,89 @@ export function OllamaPanel({ status, loading, error }: OllamaPanelProps) {
         ))}
       </dl>
 
+      {modelOption && !modelOption.installed && !downloadDismissed ? (
+        <section className="border-t border-amber-200 bg-amber-50/65 px-5 py-4 sm:px-6" aria-label="模型下载">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-amber-950">{modelOption.name} 尚未下载</p>
+              <p className="mt-1 text-xs leading-5 text-amber-800">
+                <span className="font-mono font-semibold">
+                  {modelOption.size_kind === "estimated" ? "约 " : ""}{formatBytes(modelOption.size_bytes)}
+                </span>
+                {downloadRange ? (
+                  <> · 按 20–100 Mbps 预计 {formatDuration(downloadRange.minimumSeconds)}–{formatDuration(downloadRange.maximumSeconds)}</>
+                ) : null}
+              </p>
+            </div>
+
+            {!pullActive ? (
+              <div className="flex shrink-0 flex-wrap gap-2">
+                <Button size="sm" aria-label={`下载 ${modelOption.name}`} onClick={() => onDownload(modelOption.name)}>
+                  <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                  下载模型
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  aria-label={`暂不下载 ${modelOption.name}`}
+                  onClick={() => onDecline(modelOption.name)}
+                >
+                  暂不下载
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          {pullActive && task ? (
+            <div className="mt-4 rounded-md border border-amber-200 bg-white/80 p-3">
+              <div className="mb-2 flex items-center justify-between gap-3 text-xs">
+                <span className="font-medium text-amber-950">{task.status === "verifying" ? "正在校验模型" : "正在下载模型"}</span>
+                <span className="font-mono font-semibold text-amber-900">{progress}%</span>
+              </div>
+              <div
+                role="progressbar"
+                aria-label={`${modelOption.name} 下载进度`}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={progress}
+                className="h-2 overflow-hidden rounded-full bg-amber-100"
+              >
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] motion-reduce:transition-none"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
+              <div className="mt-3 flex flex-col gap-2 text-xs text-amber-900 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-wrap gap-x-4 gap-y-1 font-mono">
+                  <span>{formatBytes(task.completed_bytes)} / {formatBytes(task.total_bytes)}</span>
+                  <span>{formatRate(task.speed_bytes_per_second)}</span>
+                  <span>预计剩余 {formatDuration(task.eta_seconds)}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="self-start text-amber-900 hover:bg-amber-100 sm:self-auto"
+                  aria-label={`取消 ${modelOption.name} 下载`}
+                  onClick={() => onCancel(modelOption.name)}
+                >
+                  <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  取消
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {task && !pullActive && task.status !== "success" ? (
+            <p className="mt-3 text-xs text-amber-900" role="status">{task.message}</p>
+          ) : null}
+        </section>
+      ) : null}
+
       <div
-        className={error ? "border-t border-red-100 bg-red-50 px-5 py-3 text-sm text-red-700 sm:px-6" : "border-t border-blue-100 bg-blue-50/70 px-5 py-3 text-sm text-blue-800 sm:px-6"}
-        role={error ? "alert" : "status"}
+        className={error || pullError ? "border-t border-red-100 bg-red-50 px-5 py-3 text-sm text-red-700 sm:px-6" : "border-t border-blue-100 bg-blue-50/70 px-5 py-3 text-sm text-blue-800 sm:px-6"}
+        role={error || pullError ? "alert" : "status"}
       >
-        {error || status?.message || "正在检测 Ollama。"}
+        {error || pullError || status?.message || "正在检测 Ollama。"}
       </div>
     </Panel>
   );

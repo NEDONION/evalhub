@@ -68,8 +68,27 @@ const ollamaFixture = {
       size_bytes: 397_000_000,
       size_kind: "actual" as const,
     },
+    {
+      name: "qwen2.5:1.5b",
+      label: "Qwen2.5 1.5B",
+      description: "轻量中文能力更好",
+      installed: false,
+      size_bytes: 986_000_000,
+      size_kind: "estimated" as const,
+    },
   ],
   message: "Ollama 已就绪。",
+};
+
+const pullingTask = {
+  model: "qwen2.5:1.5b",
+  status: "pulling" as const,
+  message: "pulling layer",
+  completed_bytes: 500_000_000,
+  total_bytes: 1_000_000_000,
+  speed_bytes_per_second: 25_000_000,
+  eta_seconds: 20,
+  error: null,
 };
 
 const evaluationFixture = {
@@ -100,10 +119,22 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
-  vi.mocked(getOllamaStatus).mockResolvedValue(ollamaFixture);
+  vi.mocked(getOllamaStatus).mockImplementation(async (model, baseUrl) => {
+    const present = ollamaFixture.models.includes(model);
+    return {
+      ...ollamaFixture,
+      model,
+      base_url: baseUrl,
+      model_present: present,
+      message: present ? "Ollama 已就绪。" : `Ollama 正在运行，但未找到模型 ${model}。`,
+    };
+  });
   vi.mocked(getModelPull).mockResolvedValue({ ok: true, task: null });
-  vi.mocked(startModelPull).mockResolvedValue({ ok: true, task: null });
-  vi.mocked(cancelModelPull).mockResolvedValue({ ok: true, task: null });
+  vi.mocked(startModelPull).mockResolvedValue({ ok: true, task: pullingTask });
+  vi.mocked(cancelModelPull).mockResolvedValue({
+    ok: true,
+    task: { ...pullingTask, status: "canceled", message: "下载已取消" },
+  });
   vi.mocked(prepareDataset).mockResolvedValue({
     ok: true,
     dataset: "gsm8k",
@@ -156,6 +187,69 @@ describe("EvalHub console", () => {
 
     await user.click(screen.getByRole("radio", { name: "自定义" }));
     expect(screen.getByLabelText("自定义样本数量")).toBeInTheDocument();
+  });
+
+  it("offers an explicit download choice with size and transparent time estimate", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const modelSelect = await screen.findByLabelText("模型");
+    await user.selectOptions(modelSelect, "qwen2.5:1.5b");
+
+    expect(await screen.findByText("约 986 MB")).toBeInTheDocument();
+    expect(screen.getByText(/按 20–100 Mbps/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "下载 qwen2.5:1.5b" }));
+    expect(startModelPull).toHaveBeenCalledWith(
+      "qwen2.5:1.5b",
+      "http://127.0.0.1:11434",
+    );
+  });
+
+  it("declines a download without a network call and returns to an installed model", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const modelSelect = await screen.findByLabelText("模型");
+    await user.selectOptions(modelSelect, "qwen2.5:1.5b");
+    await user.click(
+      await screen.findByRole("button", { name: "暂不下载 qwen2.5:1.5b" }),
+    );
+
+    expect(startModelPull).not.toHaveBeenCalled();
+    expect(modelSelect).toHaveValue("qwen2.5:0.5b");
+  });
+
+  it("shows real pull telemetry and allows cancellation", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.selectOptions(await screen.findByLabelText("模型"), "qwen2.5:1.5b");
+    await user.click(
+      await screen.findByRole("button", { name: "下载 qwen2.5:1.5b" }),
+    );
+
+    expect(await screen.findByRole("progressbar", { name: "qwen2.5:1.5b 下载进度" })).toHaveAttribute(
+      "aria-valuenow",
+      "50",
+    );
+    expect(screen.getByText("500 MB / 1.0 GB")).toBeInTheDocument();
+    expect(screen.getByText("25 MB/s")).toBeInTheDocument();
+    expect(screen.getByText("预计剩余 20 秒")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "取消 qwen2.5:1.5b 下载" }));
+    expect(cancelModelPull).toHaveBeenCalledWith("qwen2.5:1.5b");
+  });
+
+  it("blocks Ollama evaluation for a missing model while keeping Oracle available", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.selectOptions(await screen.findByLabelText("模型"), "qwen2.5:1.5b");
+    expect(await screen.findByText("先下载模型或选择已安装模型")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "发起评测" })).toBeDisabled();
+    expect(runEvaluation).not.toHaveBeenCalled();
+
+    await user.selectOptions(screen.getByLabelText("模型适配器"), "oracle");
+    expect(screen.getByRole("button", { name: "发起评测" })).toBeEnabled();
   });
 
   it("blocks an invalid custom sample count before calling the API", async () => {

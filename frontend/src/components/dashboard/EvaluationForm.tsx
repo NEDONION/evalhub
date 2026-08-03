@@ -1,6 +1,7 @@
 import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type { AdapterType, Dataset, DatasetName, EvaluationRequest, ModelOption, SampleMode } from "../../types";
 import { Button } from "../ui/Button";
@@ -64,7 +65,9 @@ export function EvaluationForm({
   const availableModels =
     modelOptions.length > 0
       ? modelOptions
-      : [{ name: model, label: model, description: "当前模型", installed: false }];
+      : [{ name: model, label: model, description: "当前模型", installed: false, size_bytes: null, size_kind: "unknown" as const }];
+  const selectedModelOption = availableModels.find((option) => option.name === model);
+  const missingOllamaModel = adapter === "ollama" && !selectedModelOption?.installed;
 
   const values: EvaluationFormValues = {
     dataset,
@@ -79,6 +82,7 @@ export function EvaluationForm({
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextErrors = validateEvaluation(values);
+    if (missingOllamaModel) nextErrors.model = "先下载模型或选择已安装模型";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     onBaseUrlCommit(baseUrlDraft);
@@ -152,10 +156,11 @@ export function EvaluationForm({
               <select id="model" className={controlClass} value={model} onChange={(event) => onModelChange(event.target.value)}>
                 {availableModels.map((option) => (
                   <option key={option.name} value={option.name}>
-                    {option.label} · {option.installed ? "已安装" : "未下载"}
+                    {option.label} · {formatBytes(option.size_bytes)} · {option.installed ? "已安装" : "未下载"}
                   </option>
                 ))}
               </select>
+              {missingOllamaModel ? <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage> : null}
             </div>
           </div>
 
@@ -233,7 +238,7 @@ export function EvaluationForm({
                 <DatabaseZap className="h-4 w-4" aria-hidden="true" />
                 {preparing ? "正在缓存" : "缓存当前数据集"}
               </Button>
-              <Button type="submit" disabled={running || preparing}>
+              <Button type="submit" disabled={running || preparing || missingOllamaModel}>
                 <Play className="h-4 w-4" aria-hidden="true" />
                 {running ? "正在评测" : "发起评测"}
               </Button>
