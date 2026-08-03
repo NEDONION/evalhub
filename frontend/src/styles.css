@@ -47,6 +47,50 @@ body {
   color: var(--ink);
 }
 
+::selection {
+  background: color-mix(in srgb, var(--primary) 18%, white);
+}
+
+.readiness-rail {
+  position: relative;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.035);
+}
+
+.readiness-rail::before {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 2px;
+  background: var(--primary);
+  content: "";
+}
+
+.readiness-rail > * + * {
+  border-top: 1px solid var(--border);
+}
+
+@media (min-width: 640px) {
+  .readiness-rail > * + * {
+    border-top: 0;
+  }
+
+  .readiness-rail > *:nth-child(even) {
+    border-left: 1px solid var(--border);
+  }
+
+  .readiness-rail > *:nth-child(n + 3) {
+    border-top: 1px solid var(--border);
+  }
+}
+
+@media (min-width: 1024px) {
+  .readiness-rail > *:nth-child(n + 2) {
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+}
+
 button,
 input,
 select {
