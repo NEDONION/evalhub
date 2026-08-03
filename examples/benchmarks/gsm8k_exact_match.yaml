@@ -1,0 +1,10 @@
+benchmark:
+  name: gsm8k-mini
+dataset:
+  name: gsm8k-mini
+  version: v1
+evaluator:
+  type: exact_match
+config:
+  temperature: 0
+  max_tokens: 256

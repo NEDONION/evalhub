@@ -1,0 +1,240 @@
+# EvalHub PRD v1.0
+
+## 1. 产品定位
+
+EvalHub 是企业级大模型评测平台，统一管理 Model、Dataset、Benchmark、Evaluator 和 Evaluation Pipeline，实现从模型版本验证到评测报告、排行榜和发布门禁的完整闭环。
+
+它参考 EvalScope 的 Benchmark 执行思想，但定位不是单机跑分工具，而是企业研发流程中的 Evaluation Platform + Evaluation Infrastructure。
+
+## 2. 背景问题
+
+大模型研发过程中会持续产生 Base Model、SFT Model、RLHF Model、Agent Model 和不同 checkpoint。传统评测方式通常依赖研究员手动下载模型、运行分散脚本、整理 Excel、人工判断是否上线，导致结果不可追踪、不可复现、不可横向比较。
+
+核心问题：
+
+- Benchmark 分散：MMLU、GSM8K、HumanEval、Custom Dataset 都有不同脚本。
+- Dataset 无版本管理：无法知道数据由谁修改、何时修改、为什么修改。
+- Model 版本不可追踪：难以回答新模型是否真正优于基线。
+- Result 不可复用：结果散落在日志、Excel、WandB、Notion。
+- 发布缺少门禁：模型上线决策缺少自动化、可审计的质量标准。
+
+## 3. 产品目标
+
+建设一套统一评测基础设施：
+
+```text
+Model Registry
+  -> Dataset Registry
+  -> Benchmark Registry
+  -> Evaluation Engine
+  -> Evaluator Plugin
+  -> Result Store
+  -> Report / Leaderboard
+  -> Release Gate
+```
+
+## 4. 用户角色
+
+- 算法工程师：注册模型、配置 Benchmark、发起评测、查看结果。
+- 数据工程师：管理 Dataset、版本、Schema 和质量检查。
+- 模型负责人：横向比较模型、评估能力变化、做发布决策。
+- 平台工程师：维护评测执行环境、队列、Worker、权限和成本。
+
+## 5. 核心功能
+
+### 5.1 Model Registry
+
+统一管理模型资产，包括 Base Model、Fine-tuned Model、Checkpoint、API Model。
+
+核心字段：
+
+- `id`
+- `name`
+- `version`
+- `type`
+- `endpoint`
+- `checkpoint_path`
+- `metadata`
+- `created_at`
+
+### 5.2 Dataset Registry
+
+管理 Benchmark Dataset、Custom Dataset、Human Evaluation Dataset。
+
+核心字段：
+
+- `id`
+- `name`
+- `version`
+- `storage_uri`
+- `schema`
+- `owner`
+- `sample_count`
+- `created_at`
+
+### 5.3 Benchmark Registry
+
+Benchmark 不是一段固定代码，而是 Dataset + Evaluator + Config 的组合。
+
+示例：
+
+```yaml
+benchmark:
+  name: gsm8k
+dataset:
+  name: gsm8k
+  version: v1
+evaluator:
+  type: exact_match
+config:
+  temperature: 0
+```
+
+### 5.4 Model Adapter
+
+通过统一接口屏蔽不同模型调用方式：
+
+```python
+class ModelAdapter:
+    def generate(self, prompt: str) -> str:
+        ...
+```
+
+首批适配方向：
+
+- OpenAI-compatible API
+- vLLM
+- Hugging Face
+- Custom Endpoint
+- Local Mock / Echo Adapter
+
+### 5.5 Evaluation Engine
+
+用户提交 Model + Benchmark + Runtime Config 后生成 Evaluation Job。
+
+状态流转：
+
+```text
+PENDING -> RUNNING -> SUCCESS
+PENDING -> RUNNING -> FAILED
+PENDING -> CANCELED
+```
+
+执行链路：
+
+```text
+API -> Scheduler -> Queue -> Worker -> Inference -> Evaluator -> Result Store
+```
+
+### 5.6 Evaluator Plugin
+
+评测逻辑插件化，不写死在 Benchmark 中。
+
+首批插件：
+
+- Exact Match
+- Accuracy
+- Rouge
+- BLEU
+- LLM-as-a-Judge
+- Safety
+- Agent Task Success
+
+### 5.7 LLM-as-a-Judge
+
+支持用 GPT、Gemini、Qwen 或本地 Judge Model 对 Question、Answer、Reference 打分，输出结构化 score 和 reason。
+
+### 5.8 Result Store
+
+不仅保存聚合分数，也保存样本级结果，支撑 bad case 分析和复现。
+
+核心字段：
+
+- `job_id`
+- `sample_id`
+- `input`
+- `output`
+- `reference`
+- `metric`
+- `score`
+- `judge_reason`
+- `created_at`
+
+### 5.9 Report
+
+报告分为 Summary 和 Detail：
+
+- Summary：模型、Benchmark、样本数、总分、主要指标。
+- Detail：失败样例、输入、期望、预测、原因。
+- Artifact：JSON、HTML、CSV、图表。
+
+### 5.10 Leaderboard
+
+支持按模型、版本、Benchmark、时间维度进行横向比较：
+
+```text
+Model        MMLU    GSM8K    Safety
+Model-A      82.0    76.0     95.5
+Model-B      85.0    80.0     94.0
+```
+
+### 5.11 Release Gate
+
+企业发布门禁能力。示例规则：
+
+```yaml
+gate:
+  mmlu:
+    threshold: 80
+  safety:
+    threshold: 95
+  regression:
+    max_drop: 1.0
+```
+
+## 6. Agent Evaluation 扩展
+
+Agent Eval 输入 Agent Trace，评估：
+
+- Task Success
+- Tool Accuracy
+- Trajectory Quality
+- Final Answer Quality
+- Safety / Compliance
+
+Trace 示例：
+
+```json
+[
+  {"type": "thought", "content": "..."},
+  {"type": "tool_call", "name": "search", "arguments": {}},
+  {"type": "observation", "content": "..."},
+  {"type": "final_answer", "content": "..."}
+]
+```
+
+## 7. MVP 范围
+
+Phase 1 聚焦闭环最小化：
+
+- Model Registry
+- Dataset Registry
+- Benchmark Registry
+- 同步 Eval Runner
+- 样本级 Result Storage
+- JSON Report
+
+暂不做：
+
+- 权限系统
+- 前端控制台
+- 多租户
+- 大规模队列
+- 复杂成本治理
+
+## 8. 成功指标
+
+- 一个模型 + 一个 Benchmark 可以稳定跑出样本级结果和聚合报告。
+- Benchmark、Dataset、Model 都具备版本字段和可追踪 ID。
+- 新增 Evaluator 不需要修改 Runner 主流程。
+- 后续接入异步 Worker 和数据库时不需要推翻核心领域模型。

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evalhub"
+version = "0.1.0"
+description = "Enterprise LLM evaluation platform foundation."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "EvalHub Team" }]
+dependencies = []
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.5",
+]
+infra = [
+  "celery>=5.4",
+  "pydantic-settings>=2.4",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]>=3.2",
+]
+
+[project.scripts]
+evalhub = "evalhub.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

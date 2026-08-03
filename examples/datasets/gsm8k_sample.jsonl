@@ -1,0 +1,2 @@
+{"id":"sample_1","input":"What is 2 + 2?","reference":"4"}
+{"id":"sample_2","input":"A box has 3 red balls and 2 blue balls. How many balls are there?","reference":"5"}
