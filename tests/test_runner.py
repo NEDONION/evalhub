@@ -34,5 +34,6 @@ def test_runner_generates_sample_results_and_report() -> None:
     assert len(results) == 2
     assert report.total_samples == 2
     assert report.passed_samples == 1
+    # 均分和失败标识共同验证报告没有只统计数量而丢失样本级错误定位。
     assert report.average_score == 0.5
     assert report.failed_sample_ids == ["s2"]

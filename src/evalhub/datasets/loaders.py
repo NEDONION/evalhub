@@ -91,6 +91,7 @@ def prepare_dataset(name: str, *, root: Path | str = ".") -> Path:
     root_path = Path(root)
     if name == "gsm8k":
         return _prepare_gsm8k(spec, root_path)
+    # MMLU 使用归档下载与安全解压流程，不能复用单文件准备逻辑。
     if name == "mmlu":
         return _prepare_mmlu(spec, root_path)
     raise KeyError(f"unsupported dataset: {name}")
@@ -248,6 +249,7 @@ def _load_mmlu(root: Path, subjects: list[str]) -> Iterable[EvaluationSample]:
         if not path.exists():
             raise FileNotFoundError(f"MMLU subject file not found: {path}")
         with path.open("r", encoding="utf-8") as file:
+            # 官方文件为无表头 CSV，直接按固定六列结构逐行解析。
             reader = csv.reader(file)
             for index, row in enumerate(reader, start=1):
                 # 非完整行无法提供四个选项和答案，按坏数据跳过而不生成错误样本。
@@ -289,6 +291,7 @@ def _limited(samples: Iterable[EvaluationSample], limit: int | None) -> list[Eva
     output: list[EvaluationSample] = []
     for sample in samples:
         output.append(sample)
+        # 达到限制后立即停止上游生成器，避免继续执行文件解析与对象创建。
         if limit is not None and len(output) >= limit:
             break
     return output

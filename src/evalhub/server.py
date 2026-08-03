@@ -63,6 +63,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/health":
             self._json({"status": "ok", "service": "evalhub"})
             return
+        # 数据集端点会动态计算本地准备状态，与静态健康响应保持职责分离。
         if parsed.path == "/api/datasets":
             self._json(self._dataset_status())
             return
@@ -205,6 +206,7 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     server = ThreadingHTTPServer((host, port), EvalHubRequestHandler)
     print(f"EvalHub local console: http://{host}:{port}")
     print("Press Ctrl+C to stop.")
+    # 主循环持续处理请求，终端中断被视为本地开发服务的正常停止信号。
     try:
         server.serve_forever()
     except KeyboardInterrupt:

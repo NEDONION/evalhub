@@ -197,6 +197,7 @@ def run_real_benchmark(
         adapter = OllamaAdapter(model=model, base_url=base_url)
     elif adapter_type == "oracle":
         adapter = StaticMappingAdapter({sample.input: sample.reference for sample in samples})
+    # 未知类型不能静默回退，否则用户可能把管线自测结果误认为真实模型评测。
     else:
         raise ValueError("adapter must be one of: ollama, oracle")
 
@@ -302,6 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--adapter", choices=["ollama", "oracle"], default="ollama")
     run_parser.add_argument("--model", default="qwen2.5:0.5b")
     run_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
+    # 数量与学科选项控制数据加载范围，不改变数据集和模型身份参数。
     run_parser.add_argument("--limit", type=int, default=None)
     run_parser.add_argument("--subject", default="abstract_algebra")
 
@@ -330,6 +332,7 @@ def main() -> int:
         return run_example()
     if args.command == "list-datasets":
         return list_datasets()
+    # 数据准备是独立命令，必须在进入带推理副作用的评测分派之前处理。
     if args.command == "prepare-dataset":
         return prepare_dataset_command(args.dataset)
     # 带复杂参数的评测和服务命令分别传递完整 Namespace 或明确监听配置。
