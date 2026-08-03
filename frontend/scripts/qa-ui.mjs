@@ -60,12 +60,12 @@ try {
 
   await page.getByText("自定义", { exact: true }).click();
   await page.getByLabel("自定义样本数量").fill("0");
-  await page.getByRole("button", { name: "发起评测" }).click();
+  await page.getByRole("button", { name: "发起评测", exact: true }).click();
   await page.getByText("样本数量必须是大于 0 的整数", { exact: true }).waitFor();
 
   await page.getByLabel("模型适配器").selectOption("oracle");
   await page.getByText("快速试跑", { exact: true }).click();
-  await page.getByRole("button", { name: "发起评测" }).click();
+  await page.getByRole("button", { name: "发起评测", exact: true }).click();
   const resultPanel = page.getByRole("region", { name: "评测结果" });
   await resultPanel.getByTitle("已完成").waitFor({ timeout: 30_000 });
   await resultPanel.getByText("5 / 5", { exact: true }).waitFor();
