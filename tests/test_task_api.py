@@ -18,6 +18,7 @@ from evalhub.tasks import (
     TaskNotFoundError,
     TaskRequest,
 )
+from evalhub.tasks.performance import ModelPerformanceReport, build_model_performance
 from evalhub.tasks.presentation import task_detail
 
 
@@ -112,6 +113,7 @@ class FakeTaskService:
         self.task = task
         self.node = node_fixture()
         self.submitted_request: TaskRequest | None = None
+        self.performance_scope: str | None = None
 
     def submit(self, request: TaskRequest) -> EvaluationTask:
         """记录转换后的请求并返回排队任务。"""
@@ -121,6 +123,12 @@ class FakeTaskService:
     def list(self) -> list[EvaluationTask]:
         """返回包含唯一任务的轻量列表。"""
         return [self.task]
+
+    def model_performance(self, scope: str | None = None) -> ModelPerformanceReport:
+        """记录成绩范围并使用真实聚合逻辑返回可序列化报告。"""
+        self.performance_scope = scope
+        tasks = [self.task] if self.task.average_score is not None else []
+        return build_model_performance(tasks, scope)
 
     def get(self, task_id: str) -> EvaluationTask:
         """读取匹配任务，未知 ID 转换为仓储级缺失异常。"""
@@ -338,6 +346,41 @@ def test_list_evaluations_excludes_full_result() -> None:
     assert task["agent_framework"] is None
 
 
+def test_get_model_performance_serializes_default_and_requested_scope() -> None:
+    """成绩端点应传递范围并返回不含完整任务正文的排行榜。"""
+    service = FakeTaskService(task_fixture(status="success", with_result=True))
+
+    status, response = call_handler(
+        method="GET",
+        path="/api/model-performance?scope=benchmark%3Agsm8k",
+        service=service,
+    )
+
+    assert status == 200
+    assert service.performance_scope == "benchmark:gsm8k"
+    assert response["selected_scope"]["key"] == "benchmark:gsm8k"
+    assert response["models"][0]["model"] == "local-test"
+    assert response["models"][0]["best_score"] == 0.8
+    assert "result" not in response["models"][0]
+
+
+def test_get_model_performance_rejects_unknown_scope() -> None:
+    """未知成绩范围应返回结构化 400，而不是回退到不可比的默认榜单。"""
+    service = FakeTaskService(task_fixture(status="success", with_result=True))
+
+    status, response = call_handler(
+        method="GET",
+        path="/api/model-performance?scope=benchmark%3Amissing",
+        service=service,
+    )
+
+    assert status == 400
+    assert response == {
+        "ok": False,
+        "error": "unknown model performance scope: benchmark:missing",
+    }
+
+
 def test_list_evaluations_includes_suite_id() -> None:
     """套件任务列表项应携带稳定标识，供前端区分套件和单项 Benchmark。"""
     task = task_fixture()
@@ -497,6 +540,7 @@ def test_create_suite_evaluation_persists_suite_id() -> None:
     assert status == 202
     assert service.submitted_request is not None
     assert service.submitted_request.suite_id == "llm-industry-core-v1"
+    assert service.submitted_request.subject == "all"
 
 
 def test_get_unknown_evaluation_returns_structured_not_found() -> None:

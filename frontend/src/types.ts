@@ -240,6 +240,42 @@ export interface EvaluationTaskDetail extends EvaluationTaskSummary {
   nodes?: EvaluationNodeSummary[];
 }
 
+export interface ModelPerformanceScope {
+  key: string;
+  kind: "benchmark" | "suite";
+  id: string;
+  label: string;
+  run_count: number;
+}
+
+export interface ModelPerformancePoint {
+  scope_key: string;
+  task_id: string;
+  model: string;
+  score: number;
+  completed_at: string;
+  is_record: boolean;
+  improvement: number | null;
+}
+
+export interface ModelPerformanceModel {
+  model: string;
+  best_score: number;
+  latest_score: number;
+  run_count: number;
+  best_task_id: string;
+  best_at: string;
+  latest_at: string;
+  history: ModelPerformancePoint[];
+}
+
+export interface ModelPerformanceResponse {
+  scopes: ModelPerformanceScope[];
+  selected_scope: ModelPerformanceScope | null;
+  models: ModelPerformanceModel[];
+  record: ModelPerformancePoint | null;
+}
+
 export type EvaluationNodeStatus =
   | "pending"
   | "running"

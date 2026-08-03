@@ -24,7 +24,8 @@ const RADIUS = 104;
 /** 展示后端生成的固定六维模型能力画像及各维 Benchmark 覆盖率。 */
 export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element {
   const points = capabilityRadarPoints(profile, CENTER, RADIUS);
-  const pointString = points.map(([x, y]) => `${x},${y}`).join(" ");
+  const assessedPoints = points.filter((point): point is [number, number] => point !== null);
+  const pointString = assessedPoints.map(([x, y]) => `${x},${y}`).join(" ");
   const dimensions: RadarDimension[] = CAPABILITY_ORDER.map((key) => ({
     key,
     label: profile.capabilities[key]?.label ?? key,
@@ -34,6 +35,7 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
     benchmark_results: profile.capabilities[key]?.benchmark_results ?? [],
   }));
   const assessedCount = dimensions.filter((item) => item.score !== null && item.score !== undefined).length;
+  const hasCompleteProfile = assessedCount === CAPABILITY_ORDER.length;
 
   return (
     <section aria-labelledby="capability-radar-title" className="border-b border-border">
@@ -47,8 +49,8 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
             LLM 六维能力画像
           </h4>
         </div>
-        <Badge tone={profile.status === "complete" ? "success" : "warning"}>
-          {profile.status === "complete" ? "完整画像" : `${assessedCount} / 6 已评测`}
+        <Badge tone={hasCompleteProfile ? "success" : "warning"}>
+          {hasCompleteProfile ? "完整画像" : `${assessedCount} / 6 已评测`}
         </Badge>
       </div>
 
@@ -73,16 +75,32 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
               const [x, y] = axisPoint(index);
               return <line key={key} x1={CENTER} y1={CENTER} x2={x} y2={y} stroke="#e2e8f0" />;
             })}
-            <polygon
-              points={pointString}
-              fill="rgba(37, 99, 235, 0.16)"
-              stroke="#2563eb"
-              strokeWidth="2"
-              strokeLinejoin="round"
-            />
-            {points.map(([x, y], index) => (
-              <circle key={CAPABILITY_ORDER[index]} cx={x} cy={y} r="3" fill="#1d4ed8" />
-            ))}
+            {assessedPoints.length === CAPABILITY_ORDER.length ? (
+              <polygon
+                points={pointString}
+                fill="rgba(37, 99, 235, 0.16)"
+                stroke="#2563eb"
+                strokeWidth="2"
+                strokeLinejoin="round"
+              />
+            ) : null}
+            {points.map((point, index) =>
+              point ? (
+                <g key={CAPABILITY_ORDER[index]}>
+                  {assessedPoints.length < CAPABILITY_ORDER.length ? (
+                    <line
+                      x1={CENTER}
+                      y1={CENTER}
+                      x2={point[0]}
+                      y2={point[1]}
+                      stroke="#2563eb"
+                      strokeWidth="2"
+                    />
+                  ) : null}
+                  <circle cx={point[0]} cy={point[1]} r="3" fill="#1d4ed8" />
+                </g>
+              ) : null,
+            )}
             {dimensions.map((item, index) => {
               const [x, y] = labelPoint(index);
               return (

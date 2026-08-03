@@ -336,9 +336,10 @@ class SQLiteTaskRepository:
         if completed < 0 or total < 0 or completed > total:
             raise ValueError("progress must satisfy 0 <= completed <= total")
         now = utc_now().isoformat()
-        checkpoint = {"completed_samples": completed, "total_samples": total}
         with self._connection() as connection:
-            self._require_node_status(connection, node_id, {"running"}, "update progress")
+            node = self._require_node_status(connection, node_id, {"running"}, "update progress")
+            checkpoint = json.loads(str(node["checkpoint_json"])) if node["checkpoint_json"] else {}
+            checkpoint.update({"completed_samples": completed, "total_samples": total})
             connection.execute(
                 """
                 UPDATE evaluation_nodes
@@ -636,8 +637,17 @@ class SQLiteTaskRepository:
         *,
         completed: int,
         total: int,
+        content_sha256: str | None = None,
     ) -> EvaluationSampleCheckpoint:
-        """原子提交样本快照、节点检查点和审计事件。"""
+        """原子提交样本快照、节点检查点和审计事件。
+
+        Args:
+            node_id: 当前运行的 Benchmark 节点标识。
+            sample: 已完成推理与评分的样本快照。
+            completed: 当前节点已完成样本数。
+            total: 当前节点本次执行的样本总数。
+            content_sha256: 样本所依据的数据资产摘要，用于后续恢复校验。
+        """
         if sample.node_id != node_id:
             raise ValueError("sample node_id does not match target node")
         if completed < 0 or total < 0 or completed > total:
@@ -646,9 +656,12 @@ class SQLiteTaskRepository:
             raise ValueError("sample_index must be non-negative")
 
         now = utc_now().isoformat()
-        checkpoint = {"completed_samples": completed, "total_samples": total}
         with self._connection() as connection:
             node = self._require_node_status(connection, node_id, {"running"}, "record sample")
+            checkpoint = json.loads(str(node["checkpoint_json"])) if node["checkpoint_json"] else {}
+            checkpoint.update({"completed_samples": completed, "total_samples": total})
+            if content_sha256 is not None:
+                checkpoint["content_sha256"] = content_sha256
             connection.execute(
                 """
                 INSERT INTO evaluation_sample_results (
@@ -715,6 +728,73 @@ class SQLiteTaskRepository:
                 (node_id,),
             ).fetchall()
         return {str(row["sample_key"]) for row in rows}
+
+    def completed_sample_keys(self, node_id: str) -> set[str]:
+        """返回已经完成推理和评分、恢复时不得重复执行的样本键。"""
+        with self._connection() as connection:
+            self._require_node(connection, node_id)
+            rows = connection.execute(
+                """
+                SELECT sample_key FROM evaluation_sample_results
+                WHERE node_id = ? AND result_json IS NOT NULL
+                """,
+                (node_id,),
+            ).fetchall()
+        return {str(row["sample_key"]) for row in rows}
+
+    def clear_node_samples(self, node_id: str, message: str) -> None:
+        """在数据 revision 失效时清空节点样本，禁止跨资产复用检查点。"""
+        now = utc_now().isoformat()
+        with self._connection() as connection:
+            node = self._require_node(connection, node_id)
+            connection.execute(
+                "DELETE FROM evaluation_sample_results WHERE node_id = ?",
+                (node_id,),
+            )
+            connection.execute(
+                """
+                UPDATE evaluation_nodes
+                SET completed_samples = 0, total_samples = 0,
+                    checkpoint_json = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, node_id),
+            )
+            progress = connection.execute(
+                """
+                SELECT COALESCE(SUM(completed_samples), 0) AS completed,
+                       COALESCE(SUM(total_samples), 0) AS total
+                FROM evaluation_nodes
+                WHERE task_id = ? AND kind = 'benchmark'
+                """,
+                (str(node["task_id"]),),
+            ).fetchone()
+            connection.execute(
+                """
+                UPDATE evaluation_tasks
+                SET completed_samples = ?, total_samples = ?, updated_at = ?
+                WHERE id = ? AND status IN ('pending', 'running')
+                """,
+                (
+                    int(progress["completed"]),
+                    int(progress["total"]),
+                    now,
+                    str(node["task_id"]),
+                ),
+            )
+            self._insert_node_event(
+                connection,
+                task_id=str(node["task_id"]),
+                node_id=node_id,
+                event_type="sample_checkpoints_invalidated",
+                from_status=str(node["status"]),
+                to_status=str(node["status"]),
+                attempt=int(node["attempt_count"]),
+                actor="worker",
+                message=message,
+                payload=None,
+                created_at=now,
+            )
 
     def list_samples(
         self,
@@ -794,6 +874,21 @@ class SQLiteTaskRepository:
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
+    def list_scored(self) -> list[EvaluationTask]:
+        """按完成时间倒序返回具备成绩摘要且不含完整结果正文的任务。
+
+        Returns:
+            可供历史成绩聚合的轻量任务快照；任务类型由聚合层继续收窄。
+        """
+        # 只读取摘要列并在 SQL 层排除无分任务，避免排行榜加载大型结果 JSON。
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT {_SUMMARY_COLUMNS} FROM evaluation_tasks "  # noqa: S608
+                "WHERE average_score IS NOT NULL "
+                "ORDER BY finished_at DESC, rowid DESC"
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     def list_pending(self) -> list[EvaluationTask]:
         """按创建先后返回等待重新入队的任务。"""
         # FIFO 恢复必须使用升序，避免服务重启后后创建的任务抢先执行。
@@ -805,11 +900,16 @@ class SQLiteTaskRepository:
         return [self._row_to_task(row) for row in rows]
 
     def list_resumable(self) -> list[EvaluationTask]:
-        """按创建顺序返回排队中或可从节点检查点恢复的运行任务。"""
+        """返回活动任务及旧版本遗留的顶层失败、节点待恢复工作流。"""
         with self._connection() as connection:
             rows = connection.execute(
                 f"SELECT {_SUMMARY_COLUMNS} FROM evaluation_tasks "  # noqa: S608
-                "WHERE status IN ('pending', 'running') ORDER BY created_at ASC, rowid ASC"
+                "WHERE status IN ('pending', 'running') "
+                "OR (status = 'failed' AND EXISTS ("
+                "SELECT 1 FROM evaluation_nodes "
+                "WHERE evaluation_nodes.task_id = evaluation_tasks.id "
+                "AND evaluation_nodes.status IN ('pending', 'running')"
+                ")) ORDER BY created_at ASC, rowid ASC"
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
@@ -828,6 +928,18 @@ class SQLiteTaskRepository:
                 """,
                 (now, task_id),
             )
+        return self.get(task_id)
+
+    def requeue_for_resume(self, task_id: str) -> EvaluationTask:
+        """把停服中断的模型任务恢复为待执行，同时保留节点和样本检查点。"""
+        now = utc_now().isoformat()
+        self._update_status(
+            task_id,
+            expected={"running"},
+            target="pending",
+            assignments="finished_at = NULL, error_message = NULL, updated_at = ?",
+            values=(now,),
+        )
         return self.get(task_id)
 
     def mark_running(self, task_id: str) -> EvaluationTask:

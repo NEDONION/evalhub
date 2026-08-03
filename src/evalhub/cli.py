@@ -36,9 +36,7 @@ def run_example() -> int:
     ]
 
     # 注册模型和数据集记录，使示例与真实执行共享同一套领域关联关系。
-    model = registry.models.add(
-        ModelRecord(name="static-demo", version="v1", type=ModelType.API)
-    )
+    model = registry.models.add(ModelRecord(name="static-demo", version="v1", type=ModelType.API))
     dataset = registry.datasets.add(
         DatasetRecord(
             name="gsm8k-mini",
@@ -153,7 +151,7 @@ def run_real_benchmark(
         subject: MMLU 学科名称，其他数据集会忽略该值。
         job_id: 调度层预先创建的任务标识；为空时沿用领域实体默认生成逻辑。
         on_progress: 接收已完成样本数与总样本数的可选进度回调。
-        skip_sample_ids: 恢复执行时已经成功持久化的样本标识。
+        skip_sample_ids: 恢复执行时已经完成推理和评分的样本标识。
         on_sample_result: 新样本完成评分后接收完整结果的可选回调。
 
     Returns:

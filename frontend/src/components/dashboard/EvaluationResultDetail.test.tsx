@@ -47,7 +47,24 @@ it("renders a model capability hexagon for a partial suite without inventing mis
 
   expect(screen.getByText("LLM 六维能力画像")).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "六维模型能力雷达图" })).toBeInTheDocument();
+  const radar = screen.getByRole("img", { name: "六维模型能力雷达图" });
+  expect(radar.querySelectorAll("polygon")).toHaveLength(4);
+  expect(radar.querySelectorAll("circle")).toHaveLength(2);
   expect(screen.getByText("2 / 6 已评测")).toBeInTheDocument();
   expect(screen.getByText("部分完成")).toBeInTheDocument();
   expect(screen.getAllByText("—")).toHaveLength(4);
+});
+
+it("derives profile completeness from six assessed axes for legacy results", () => {
+  render(
+    <EvaluationResultDetail
+      result={{
+        ...result,
+        capability_profile: { ...profile, status: "complete" },
+      }}
+    />,
+  );
+
+  expect(screen.getByText("2 / 6 已评测")).toBeInTheDocument();
+  expect(screen.queryByText("完整画像")).toBeNull();
 });

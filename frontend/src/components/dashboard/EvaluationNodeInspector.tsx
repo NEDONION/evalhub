@@ -73,6 +73,13 @@ export function EvaluationNodeInspector({
   }, [nodes, preferredNodeId]);
 
   useEffect(() => {
+    setDetail(null);
+    setSamples([]);
+    setNextCursor(null);
+    setError(null);
+  }, [taskId, selectedNodeId]);
+
+  useEffect(() => {
     if (!selectedNodeId) return;
     let active = true;
     setLoading(true);
@@ -184,7 +191,7 @@ export function EvaluationNodeInspector({
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               {error}
             </div>
-          ) : detail ? (
+          ) : detail && detail.id === selectedNodeId ? (
             <NodeDetail
               detail={detail}
               samples={samples}

@@ -5,6 +5,7 @@ import { EvaluationForm } from "./components/dashboard/EvaluationForm";
 import { EvaluationTaskPanel } from "./components/dashboard/EvaluationTaskPanel";
 import { Header } from "./components/dashboard/Header";
 import { MetricStrip } from "./components/dashboard/MetricStrip";
+import { ModelPerformancePanel } from "./components/dashboard/ModelPerformancePanel";
 import { OllamaPanel } from "./components/dashboard/OllamaPanel";
 import { OverviewPanel } from "./components/dashboard/OverviewPanel";
 import { SidebarNav, type WorkspaceView } from "./components/dashboard/SidebarNav";
@@ -34,6 +35,11 @@ const pageCopy: Record<WorkspaceView, { eyebrow: string; title: string; descript
     eyebrow: "Evaluation jobs",
     title: "评测任务",
     description: "先追踪执行状态与资源占用，选择任务后再查看完整评测结果。",
+  },
+  performance: {
+    eyebrow: "Model performance",
+    title: "模型成绩",
+    description: "在相同 Benchmark 或 Suite 范围内比较历史最佳、最近表现与成绩趋势。",
   },
 };
 
@@ -166,6 +172,16 @@ export default function App() {
                 onCancel={(taskId) => void dashboard.cancelTask(taskId)}
                 retryingNodeId={dashboard.retryingNodeId}
                 onRetryNode={dashboard.retryNode}
+              />
+            </div>
+
+            <div hidden={currentView !== "performance"}>
+              <ModelPerformancePanel
+                report={dashboard.modelPerformance}
+                loading={dashboard.modelPerformanceLoading}
+                error={dashboard.modelPerformanceError}
+                onScopeChange={(scope) => void dashboard.selectPerformanceScope(scope)}
+                onStartEvaluation={() => setCurrentView("evaluation")}
               />
             </div>
           </div>

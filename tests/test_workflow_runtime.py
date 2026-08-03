@@ -1,5 +1,6 @@
 """验证系统生成工作流、节点执行、自动重试和部分能力画像。"""
 
+import hashlib
 from pathlib import Path
 from threading import Event
 
@@ -11,7 +12,7 @@ from evalhub.tasks.runtime import PersistentWorkflowExecutor, WorkflowIncomplete
 from evalhub.tasks.workflow import build_workflow
 
 
-def request(*, suite_id: str | None = None) -> TaskRequest:
+def request(*, suite_id: str | None = None, subject: str = "abstract_algebra") -> TaskRequest:
     """构造单项或 Suite 的离线 Oracle 请求。"""
     return TaskRequest(
         dataset="gsm8k",
@@ -19,7 +20,7 @@ def request(*, suite_id: str | None = None) -> TaskRequest:
         model="oracle",
         base_url="http://127.0.0.1:11434",
         sample_mode="all",
-        subject="abstract_algebra",
+        subject=subject,
         limit=None,
         suite_id=suite_id,
     )
@@ -101,6 +102,117 @@ class FakeBenchmarkExecutor:
         return {"job_id": task_id, "total_samples": 1}
 
 
+class CheckpointThenRetryExecutor(FakeBenchmarkExecutor):
+    """先提交一个零分结果再模拟瞬时中断，验证检查点不会被重跑覆盖。"""
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """首轮提交结果后失败，第二轮必须直接复用该结果。"""
+        dataset = task_request.dataset
+        self.attempts[dataset] = self.attempts.get(dataset, 0) + 1
+        skipped = set(kwargs["skip_sample_ids"])
+        self.seen_skips.append(skipped)
+        if not skipped:
+            callback = kwargs["on_sample_result"]
+            assert callable(callback)
+            callback(
+                {
+                    "sample_id": f"{dataset}-sample-1",
+                    "input": "1 + 1",
+                    "prediction": "3",
+                    "reference": "2",
+                    "metric": "exact_match",
+                    "score": 0.0,
+                    "reason": "答案不匹配",
+                },
+                1,
+                1,
+            )
+            raise TaskExecutionError("connection reset by peer")
+        return {"job_id": task_id, "total_samples": 1}
+
+
+class MutatingAssetExecutor(FakeBenchmarkExecutor):
+    """执行后修改资产，用于证明 Runtime 会拒绝不一致的数据 revision。"""
+
+    def __init__(self, asset: Path) -> None:
+        """保存需要在评测窗口内改写的文件。"""
+        super().__init__()
+        self.asset = asset
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """先完成样本事件，再原子窗口内改写资产内容。"""
+        result = super().execute(task_id, task_request, **kwargs)
+        self.asset.write_text("changed", encoding="utf-8")
+        return result
+
+
+class MutatingRetryExecutor(FakeBenchmarkExecutor):
+    """首轮检查点后改变资产并重试，用于验证旧样本不会进入 skip 集。"""
+
+    def __init__(self, asset: Path) -> None:
+        """保存资产路径和执行次数。"""
+        super().__init__()
+        self.asset = asset
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """第一次写入检查点后中断，第二次应在清空检查点后重新评分。"""
+        dataset = task_request.dataset
+        self.attempts[dataset] = self.attempts.get(dataset, 0) + 1
+        skipped = set(kwargs["skip_sample_ids"])
+        self.seen_skips.append(skipped)
+        callback = kwargs["on_sample_result"]
+        assert callable(callback)
+        if self.attempts[dataset] == 1:
+            callback(
+                {
+                    "sample_id": f"{dataset}-sample-1",
+                    "input": "1 + 1",
+                    "prediction": "3",
+                    "reference": "2",
+                    "metric": "exact_match",
+                    "score": 0.0,
+                    "reason": "答案不匹配",
+                },
+                1,
+                1,
+            )
+            self.asset.write_text("changed", encoding="utf-8")
+            raise TaskExecutionError("connection reset by peer")
+        callback(
+            {
+                "sample_id": f"{dataset}-sample-1",
+                "input": "1 + 1",
+                "prediction": "2",
+                "reference": "2",
+                "metric": "exact_match",
+                "score": 1.0,
+                "reason": None,
+            },
+            1,
+            1,
+        )
+        return {"job_id": task_id, "total_samples": 1}
+
+
+class MutatingDoubleRetryExecutor(MutatingRetryExecutor):
+    """资产变化后的新 revision 再中断一次，用于验证检查点能跨后续重试复用。"""
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """前两次写入后中断；第三次应跳过第二次在新 revision 上完成的样本。"""
+        result = super().execute(task_id, task_request, **kwargs)
+        if self.attempts[task_request.dataset] == 2:
+            raise TaskExecutionError("connection reset by peer")
+        return result
+
+
 def test_single_benchmark_builds_fixed_four_node_graph() -> None:
     """兼容请求应映射为准备、单项、聚合和终结四个节点。"""
     graph = build_workflow(request())
@@ -126,16 +238,26 @@ def test_suite_builds_one_benchmark_node_per_registry_member() -> None:
     assert graph[-1].node_key == "workflow_finalize"
 
 
+def test_suite_freezes_mmlu_to_all_subjects() -> None:
+    """版本化行业 Suite 不能继承单项表单中残留的 MMLU 学科。"""
+    graph = build_workflow(request(suite_id="llm-industry-core-v1", subject="abstract_algebra"))
+    mmlu = next(node for node in graph if node.node_key == "benchmark:mmlu")
+
+    assert mmlu.input["subject"] == "all"
+
+
 def test_runtime_persists_samples_and_completes_single_benchmark(tmp_path: Path) -> None:
     """单项 Oracle 流程应成功持久化样本、画像和最终结果。"""
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
     task_request = request()
     task = repository.create_with_nodes(task_request, build_workflow(task_request))
     fake = FakeBenchmarkExecutor()
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text('{"question":"1+1","answer":"2"}\n', encoding="utf-8")
     runtime = PersistentWorkflowExecutor(
         repository,
         benchmark_executor=fake,
-        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+        asset_preparer=lambda benchmark_id: asset,
     )
 
     result = runtime.execute(
@@ -147,11 +269,16 @@ def test_runtime_persists_samples_and_completes_single_benchmark(tmp_path: Path)
     )
     nodes = repository.list_nodes(task.id)
     benchmark = next(node for node in nodes if node.kind == "benchmark")
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
     aggregate = next(node for node in nodes if node.kind == "capability_aggregate")
 
     assert {node.status for node in nodes} == {"success"}
     assert repository.successful_sample_keys(benchmark.id) == {"gsm8k-sample-1"}
+    expected_digest = hashlib.sha256(asset.read_bytes()).hexdigest()
+    assert prepare.output["assets"]["gsm8k"]["content_sha256"] == expected_digest
+    assert benchmark.output["dataset_revision"] == f"sha256:{expected_digest}"
     assert aggregate.output is not None
+    assert aggregate.output["status"] == "partial"
     assert aggregate.output["capabilities"]["mathematics"]["score"] == 100.0
     assert aggregate.output["capabilities"]["knowledge"]["score"] is None
     assert result["total_samples"] == 1
@@ -187,8 +314,8 @@ def test_runtime_retries_transient_benchmark_error_three_times(tmp_path: Path) -
     ) == 2
 
 
-def test_runtime_marks_scored_failure_as_debuggable_failed_sample(tmp_path: Path) -> None:
-    """得分未通过的样本应进入失败分页，且断点恢复时允许重新执行。
+def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: Path) -> None:
+    """得分未通过的样本应进入失败分页，但断点恢复时不能重新推理。
 
     Args:
         tmp_path: pytest 提供的隔离目录，用于创建临时 SQLite 仓储。
@@ -216,8 +343,120 @@ def test_runtime_marks_scored_failure_as_debuggable_failed_sample(tmp_path: Path
     failed_page = repository.list_samples(benchmark.id, status="failed")
 
     assert repository.successful_sample_keys(benchmark.id) == set()
+    assert repository.completed_sample_keys(benchmark.id) == {"gsm8k-sample-1"}
     assert [sample.sample_key for sample in failed_page.items] == ["gsm8k-sample-1"]
     assert failed_page.items[0].result["reason"] == "答案不匹配"
+
+
+def test_runtime_retry_reuses_completed_zero_score_checkpoint(tmp_path: Path) -> None:
+    """瞬时错误后的节点重试必须复用已经评分的零分样本。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    fake = CheckpointThenRetryExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert fake.seen_skips == [set(), {"gsm8k-sample-1"}]
+    assert result["average_score"] == 0.0
+
+
+def test_runtime_blocks_when_dataset_changes_during_benchmark(tmp_path: Path) -> None:
+    """评测窗口内资产摘要变化时不能产出声称可复现的 Benchmark 结果。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text("original", encoding="utf-8")
+    repository.mark_running(task.id)
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=MutatingAssetExecutor(asset),
+        asset_preparer=lambda benchmark_id: asset,
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: repository.update_progress(
+                task.id, completed=completed, total=total
+            ),
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    benchmark = next(node for node in repository.list_nodes(task.id) if node.kind == "benchmark")
+    assert benchmark.status == "blocked"
+    assert benchmark.error_type == "dataset_revision_changed"
+    assert repository.completed_sample_keys(benchmark.id) == set()
+    assert repository.get(task.id).completed_samples == 0
+    assert repository.get(task.id).total_samples == 0
+
+
+def test_runtime_invalidates_checkpoints_when_asset_changes_between_retries(
+    tmp_path: Path,
+) -> None:
+    """准备后发生资产变化时，旧 revision 的样本不能被恢复逻辑跳过。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text("original", encoding="utf-8")
+    fake = MutatingRetryExecutor(asset)
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: asset,
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert fake.seen_skips == [set(), set()]
+    assert result["average_score"] == 1.0
+
+
+def test_runtime_reuses_new_revision_checkpoints_on_later_retry(tmp_path: Path) -> None:
+    """资产切换到新 revision 后形成的检查点必须在下一次瞬时重试中复用。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text("original", encoding="utf-8")
+    fake = MutatingDoubleRetryExecutor(asset)
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: asset,
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert fake.seen_skips == [set(), set(), {"gsm8k-sample-1"}]
+    assert result["average_score"] == 1.0
 
 
 def test_core_suite_blocks_unavailable_executors_but_builds_partial_profile(

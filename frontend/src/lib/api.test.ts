@@ -6,6 +6,7 @@ import {
   getEvaluationNode,
   getEvaluationNodeSamples,
   getHealth,
+  getModelPerformance,
   getOllamaStatus,
   getSuites,
   retryEvaluationNode,
@@ -44,6 +45,24 @@ describe("EvalHub API", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/ollama/status?model=qwen+2.5%3A0.5b&base_url=http%3A%2F%2F127.0.0.1%3A11434",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+    );
+  });
+
+  it("encodes the selected model performance scope", async () => {
+    const response = {
+      scopes: [],
+      selected_scope: null,
+      models: [],
+      record: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getModelPerformance("benchmark:gsm8k")).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/model-performance?scope=benchmark%3Agsm8k",
       expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
     );
   });

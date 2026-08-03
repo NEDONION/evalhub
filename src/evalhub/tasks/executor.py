@@ -44,7 +44,7 @@ def _evaluation_process(
         task_id: 调度层预先持久化的任务标识。
         request_payload: 可重建 ``TaskRequest`` 的纯字典。
         event_queue: 向父进程发送事件的跨进程队列。
-        skip_sample_ids: 模型评测恢复时已经完成、无需重复运行的样本标识。
+        skip_sample_ids: 模型评测恢复时已经完成推理和评分、无需重复运行的样本标识。
     """
     request = TaskRequest(**request_payload)
 

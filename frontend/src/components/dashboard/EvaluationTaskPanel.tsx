@@ -10,8 +10,14 @@ import {
   X,
 } from "lucide-react";
 import type { JSX } from "react";
+import { useState } from "react";
 
-import type { EvaluationTaskDetail, EvaluationTaskStatus, EvaluationTaskSummary } from "../../types";
+import type {
+  EvaluationTaskDetail,
+  EvaluationTaskStatus,
+  EvaluationTaskSummary,
+  EvaluationType,
+} from "../../types";
 import { Badge, type BadgeProps } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Panel } from "../ui/Panel";
@@ -45,6 +51,8 @@ const statusTones: Record<EvaluationTaskStatus, BadgeProps["tone"]> = {
   canceled: "warning",
 };
 
+type TaskTypeFilter = "all" | EvaluationType;
+
 /**
  * 展示持久化评测任务列表及当前任务详情，并将选择和取消操作交还页面状态层。
  *
@@ -61,9 +69,27 @@ export function EvaluationTaskPanel({
   retryingNodeId,
   onRetryNode,
 }: EvaluationTaskPanelProps): JSX.Element {
+  const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>("all");
   const activeCount = tasks.filter((task) => task.status === "pending" || task.status === "running").length;
+  const modelCount = tasks.filter((task) => taskType(task) === "model").length;
+  const agentCount = tasks.filter((task) => taskType(task) === "agent").length;
+  const filteredTasks = tasks.filter((task) => typeFilter === "all" || taskType(task) === typeFilter);
   const selectedIndex = tasks.findIndex((task) => task.id === selectedTaskId);
   const selectedTasksAhead = countActiveTasksAhead(tasks, selectedIndex);
+  const visibleSelectedTask =
+    selectedTask && (typeFilter === "all" || taskType(selectedTask) === typeFilter) ? selectedTask : null;
+
+  const filters: Array<{ value: TaskTypeFilter; label: string; count: number }> = [
+    { value: "all", label: "全部", count: tasks.length },
+    { value: "model", label: "模型评测", count: modelCount },
+    { value: "agent", label: "Agent 评测", count: agentCount },
+  ];
+
+  function selectFilter(nextFilter: TaskTypeFilter): void {
+    setTypeFilter(nextFilter);
+    const firstTask = tasks.find((task) => nextFilter === "all" || taskType(task) === nextFilter);
+    if (firstTask && firstTask.id !== selectedTaskId) onSelect(firstTask.id);
+  }
 
   return (
     <Panel aria-labelledby="task-panel-title" className="overflow-hidden">
@@ -93,6 +119,34 @@ export function EvaluationTaskPanel({
         </div>
       ) : null}
 
+      {tasks.length > 0 ? (
+        <div className="border-b border-border bg-slate-50/45 px-5 py-3 sm:px-6">
+          <div
+            role="group"
+            aria-label="评测任务类型"
+            className="grid grid-cols-3 rounded-md border border-border bg-white p-1"
+          >
+            {filters.map((filter) => (
+              <button
+                key={filter.value}
+                type="button"
+                aria-label={`${filter.label} ${filter.count}`}
+                aria-pressed={typeFilter === filter.value}
+                onClick={() => selectFilter(filter.value)}
+                className={`rounded px-2 py-2 text-xs font-semibold transition-colors ${
+                  typeFilter === filter.value
+                    ? "bg-blue-50 text-primary shadow-[inset_0_0_0_1px_rgba(37,99,235,0.12)]"
+                    : "text-muted hover:bg-slate-50 hover:text-ink"
+                }`}
+              >
+                <span>{filter.label}</span>
+                <span className="ml-1.5 font-mono text-[10px] opacity-70">{filter.count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {tasks.length === 0 ? (
         <div className="grid min-h-48 place-items-center px-5 py-10 text-center sm:px-6">
           <div>
@@ -104,23 +158,33 @@ export function EvaluationTaskPanel({
             <p className="mt-1 text-sm text-muted">提交评测后，可在这里追踪进度和资源占用。</p>
           </div>
         </div>
+      ) : filteredTasks.length === 0 ? (
+        <div className="grid min-h-40 place-items-center px-5 py-10 text-center sm:px-6">
+          <div>
+            <strong className="block text-sm font-semibold text-ink">该类型暂无评测任务</strong>
+            <p className="mt-1 text-sm text-muted">切换其他类型，或发起一条新的评测。</p>
+          </div>
+        </div>
       ) : (
         <>
           <div className="divide-y divide-border border-b border-border" aria-label="评测任务列表">
-            {tasks.map((task, index) => (
+            {filteredTasks.map((task) => (
               <TaskRow
                 key={task.id}
                 task={task}
-                tasksAhead={countActiveTasksAhead(tasks, index)}
+                tasksAhead={countActiveTasksAhead(
+                  tasks,
+                  tasks.findIndex((item) => item.id === task.id),
+                )}
                 selected={task.id === selectedTaskId}
                 onSelect={onSelect}
               />
             ))}
           </div>
 
-          {selectedTask ? (
+          {visibleSelectedTask ? (
             <TaskDetail
-              task={selectedTask}
+              task={visibleSelectedTask}
               tasksAhead={selectedTasksAhead}
               retryingNodeId={retryingNodeId}
               onCancel={onCancel}
@@ -153,6 +217,7 @@ interface TaskRowProps {
  */
 function TaskRow({ task, tasksAhead, selected, onSelect }: TaskRowProps): JSX.Element {
   const isActive = task.status === "pending" || task.status === "running";
+  const evaluationType = taskType(task);
   return (
     <button
       type="button"
@@ -166,9 +231,14 @@ function TaskRow({ task, tasksAhead, selected, onSelect }: TaskRowProps): JSX.El
           {statusLabels[task.status]}
         </Badge>
         <div className="min-w-0">
-          <strong className="block truncate text-sm font-semibold text-ink">
-            {task.suite_id ? "LLM 行业能力套件" : task.dataset.toUpperCase()}
-          </strong>
+          <div className="flex min-w-0 items-center gap-2">
+            <strong className="block truncate text-sm font-semibold text-ink">
+              {task.suite_id ? "LLM 行业能力套件" : task.dataset.toUpperCase()}
+            </strong>
+            <Badge tone={evaluationType === "agent" ? "warning" : "info"}>
+              {evaluationType === "agent" ? "Agent" : "模型"}
+            </Badge>
+          </div>
           <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400">
             {task.model}
             {task.status === "pending" ? ` · ${tasksAhead > 0 ? `前方 ${tasksAhead} 个` : "即将开始"}` : ""}
@@ -184,6 +254,11 @@ function TaskRow({ task, tasksAhead, selected, onSelect }: TaskRowProps): JSX.El
       </div>
     </button>
   );
+}
+
+/** 将旧任务缺省类型兼容为模型评测，确保筛选不会隐藏历史数据。 */
+function taskType(task: EvaluationTaskSummary | EvaluationTaskDetail): EvaluationType {
+  return task.evaluation_type ?? "model";
 }
 
 interface TaskDetailProps {

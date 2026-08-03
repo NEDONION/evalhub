@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import fcntl
 from collections.abc import Callable
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
-from typing import Protocol
+from typing import BinaryIO, Protocol
 
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
@@ -19,6 +20,7 @@ from evalhub.tasks.models import (
     ResourceUsage,
     TaskRequest,
 )
+from evalhub.tasks.performance import ModelPerformanceReport, build_model_performance
 from evalhub.tasks.repository import SQLiteTaskRepository, TaskNotFoundError, TaskStateError
 from evalhub.tasks.runtime import PersistentWorkflowExecutor
 from evalhub.tasks.workflow import build_workflow
@@ -65,6 +67,7 @@ class EvaluationTaskService:
         self._active_lock = Lock()
         self._active_task_id: str | None = None
         self._active_cancel_event: Event | None = None
+        self._worker_lock_file: BinaryIO | None = None
 
     def start(self) -> None:
         """恢复数据库任务并启动唯一后台 Worker。
@@ -73,16 +76,26 @@ class EvaluationTaskService:
         """
         if self._worker is not None and self._worker.is_alive():
             return
-        # 模型任务按节点检查点恢复；没有节点的旧任务仍保持原有明确失败语义。
-        self._repository.recover_running_nodes()
-        for task in self._repository.list_resumable():
-            if task.status == "running" and not self._repository.list_nodes(task.id):
-                self._repository.mark_failed(task.id, "服务重启导致评测中断")
-                continue
-            self._queue.put(task.id)
-        self._stop_event.clear()
-        self._worker = Thread(target=self._worker_loop, name="evalhub-task-worker", daemon=True)
-        self._worker.start()
+        if self._worker is not None:
+            # 停服后内存队列可能残留哨兵或旧任务；SQLite 才是重启时的唯一事实来源。
+            self._queue = Queue()
+        self._acquire_worker_lock()
+        try:
+            # 模型任务按节点检查点恢复；没有节点的旧任务仍保持原有明确失败语义。
+            self._repository.recover_running_nodes()
+            for task in self._repository.list_resumable():
+                if task.status == "running" and not self._repository.list_nodes(task.id):
+                    self._repository.mark_failed(task.id, "服务重启导致评测中断")
+                    continue
+                if task.status == "failed":
+                    self._repository.reopen_for_retry(task.id)
+                self._queue.put(task.id)
+            self._stop_event.clear()
+            self._worker = Thread(target=self._worker_loop, name="evalhub-task-worker", daemon=True)
+            self._worker.start()
+        except Exception:
+            self._release_worker_lock()
+            raise
 
     def stop(self) -> None:
         """停止后台 Worker，并通知当前执行器回收活动子进程。"""
@@ -94,6 +107,48 @@ class EvaluationTaskService:
         self._queue.put(None)
         if self._worker is not None:
             self._worker.join(timeout=5.0)
+            if self._worker.is_alive():
+                return
+        self._release_worker_lock()
+
+    def _acquire_worker_lock(self) -> None:
+        """为当前 SQLite 库获取跨进程独占 Worker 锁。
+
+        锁由文件描述符生命周期持有，进程异常退出时操作系统会自动释放，不需要维护
+        可能残留的 PID 文件。
+
+        Raises:
+            RuntimeError: 同一任务库已经由另一个服务实例持有 Worker 锁。
+            OSError: 锁文件无法创建或操作系统拒绝执行文件锁操作。
+        """
+        if self._worker_lock_file is not None:
+            return
+        # 锁文件紧邻数据库，确保不同端口或启动目录最终竞争同一个任务库所有权。
+        lock_path = self._repository.database_path.with_suffix(
+            f"{self._repository.database_path.suffix}.worker.lock"
+        )
+        lock_file = lock_path.open("a+b")
+        try:
+            # 非阻塞获取让重复启动立即失败，不能等待旧服务退出后偷偷接管活动任务。
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            lock_file.close()
+            raise RuntimeError(
+                f"EvalHub worker is already running for database: {self._repository.database_path}"
+            ) from exc
+        self._worker_lock_file = lock_file
+
+    def _release_worker_lock(self) -> None:
+        """在 Worker 确认退出后释放当前服务持有的数据库锁。
+
+        尚未获取锁或已经释放时直接返回，使启动失败和重复关闭共享同一清理路径。
+        """
+        if self._worker_lock_file is None:
+            return
+        # 先解锁再关闭文件，避免后续同进程服务依赖隐式 close 语义获取所有权。
+        fcntl.flock(self._worker_lock_file.fileno(), fcntl.LOCK_UN)
+        self._worker_lock_file.close()
+        self._worker_lock_file = None
 
     def submit(self, request: TaskRequest) -> EvaluationTask:
         """先持久化一个排队任务，再把其标识放入 FIFO 队列。"""
@@ -109,6 +164,21 @@ class EvaluationTaskService:
     def list(self) -> list[EvaluationTask]:
         """返回按创建时间倒序排列的轻量任务快照。"""
         return self._repository.list()
+
+    def model_performance(self, scope: str | None = None) -> ModelPerformanceReport:
+        """按同一 Benchmark 或 Suite 聚合模型历史最好成绩和趋势。
+
+        Args:
+            scope: 可选的 `benchmark:<id>` 或 `suite:<id>` 稳定范围键。
+
+        Returns:
+            已排除 Agent 和无分任务的模型成绩聚合报告。
+
+        Raises:
+            ValueError: 显式请求的范围不存在有效模型成绩。
+        """
+        tasks = self._repository.list_scored()
+        return build_model_performance(tasks, scope)
 
     def get(self, task_id: str) -> EvaluationTask:
         """按稳定标识返回包含完整结果的任务详情。"""
@@ -255,8 +325,11 @@ class EvaluationTaskService:
         if task.status != "running":
             return
         if self._stop_event.is_set():
-            # 服务关闭是基础设施中断，保留失败原因便于重启后排查。
-            self._repository.mark_failed(task_id, "服务停止导致评测中断")
+            # 模型节点和样本已有检查点，停服后应重新排队；无节点旧任务保留失败语义。
+            if self._repository.list_nodes(task_id):
+                self._repository.requeue_for_resume(task_id)
+            else:
+                self._repository.mark_failed(task_id, "服务停止导致评测中断")
         elif not cancel_event.is_set():
             # 执行器自行报告取消但服务从未发信号，按异常中断而非用户操作记录。
             self._repository.mark_failed(task_id, "评测执行意外中断")

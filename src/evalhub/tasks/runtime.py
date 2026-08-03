@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Callable
 from dataclasses import replace
+from pathlib import Path
 from threading import Event
 
 from evalhub.benchmarks import ExecutorKind, aggregate_capability_profile, get_benchmark_spec
@@ -171,7 +173,15 @@ class PersistentWorkflowExecutor:
                 continue
             try:
                 path = self._asset_preparer(spec.id)
-                assets[spec.id] = {"status": "ready", "path": str(path)}
+                content_sha256 = _content_sha256(path)
+                assets[spec.id] = {
+                    "status": "ready",
+                    "path": str(path),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": (
+                        f"sha256:{content_sha256}" if content_sha256 else spec.dataset_revision
+                    ),
+                }
             except Exception as exc:
                 assets[spec.id] = {
                     "status": "failed",
@@ -204,8 +214,22 @@ class PersistentWorkflowExecutor:
                 str(asset.get("message", f"{spec.display_name} 当前不可运行")),
             )
 
-        skipped = self._repository.successful_sample_keys(node.id)
-        benchmark_request = replace(request, dataset=benchmark_id, suite_id=None)
+        execution_digest_before = _content_sha256(asset.get("path"))
+        prepared_digest = asset.get("content_sha256")
+        checkpoint_digest = (node.checkpoint or {}).get("content_sha256")
+        baseline_digest = checkpoint_digest or prepared_digest
+        if baseline_digest and baseline_digest != execution_digest_before:
+            self._repository.clear_node_samples(
+                node.id,
+                "数据资产自准备节点完成后已变化，旧样本检查点已失效",
+            )
+        skipped = self._repository.completed_sample_keys(node.id)
+        benchmark_request = replace(
+            request,
+            dataset=benchmark_id,
+            suite_id=None,
+            subject=str(node.input.get("subject", request.subject)),
+        )
 
         def report_progress(completed: int, total: int) -> None:
             """先更新节点真实分母，再汇总为顶层任务样本进度。"""
@@ -220,7 +244,7 @@ class PersistentWorkflowExecutor:
                 completed: 当前节点已完成的样本数。
                 total: 当前节点需要执行的样本总数。
             """
-            # 只有满分样本可在断点恢复时跳过，未通过样本必须保留为可重试失败记录。
+            # 已完成评分的样本都可在断点恢复时跳过；未通过样本仍保留失败状态供调试。
             sample_status = "success" if float(sample.get("score", 0.0)) >= 1.0 else "failed"
             # 样本结果与节点进度在仓储内一次提交，避免恢复时读到不一致检查点。
             self._repository.record_sample(
@@ -236,6 +260,7 @@ class PersistentWorkflowExecutor:
                 ),
                 completed=completed,
                 total=total,
+                content_sha256=execution_digest_before,
             )
             self._report_task_progress(node.task_id, on_progress)
 
@@ -248,6 +273,11 @@ class PersistentWorkflowExecutor:
             skip_sample_ids=skipped,
             on_sample_result=report_sample,
         )
+        execution_digest_after = _content_sha256(asset.get("path"))
+        if execution_digest_before != execution_digest_after:
+            message = "数据资产在 Benchmark 执行期间发生变化，请重试该节点"
+            self._repository.clear_node_samples(node.id, message)
+            raise RuntimeBlockedError("dataset_revision_changed", message)
         samples = self._all_samples(node.id)
         scores = [float((sample.result or {}).get("score", 0.0)) for sample in samples]
         metric = (
@@ -259,6 +289,12 @@ class PersistentWorkflowExecutor:
             "status": "success",
             "model": request.model,
             "metric": metric,
+            "dataset_source": spec.dataset_source,
+            "dataset_revision": (
+                f"sha256:{execution_digest_after}"
+                if execution_digest_after
+                else asset.get("dataset_revision", spec.dataset_revision)
+            ),
             "raw_score": round(sum(scores) / len(scores), 6) if scores else 0.0,
             "score_sum": round(sum(scores), 6),
             "total_samples": len(samples),
@@ -393,3 +429,20 @@ class PersistentWorkflowExecutor:
             if page.next_cursor is None:
                 return samples
             cursor = page.next_cursor
+
+
+def _content_sha256(value: object) -> str | None:
+    """计算真实本地数据文件或目录的确定性 SHA-256。"""
+    path = Path(str(value))
+    if not path.exists():
+        return None
+    digest = hashlib.sha256()
+    files = [path] if path.is_file() else sorted(item for item in path.rglob("*") if item.is_file())
+    for item in files:
+        if path.is_dir():
+            digest.update(item.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+        with item.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()

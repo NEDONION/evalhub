@@ -55,6 +55,17 @@ describe("evaluation form rules", () => {
     });
   });
 
+  it("does not leak a single MMLU subject into an industry suite request", () => {
+    const request = buildEvaluationRequest({
+      ...baseValues,
+      dataset: "mmlu",
+      subject: "abstract_algebra",
+      suiteId: "llm-industry-core-v1",
+    });
+
+    expect(request).not.toHaveProperty("subject");
+  });
+
   it("leaves the quick sample limit to the backend", () => {
     expect(buildEvaluationRequest({ ...baseValues, sampleMode: "quick" })).toMatchObject({
       sample_mode: "quick",

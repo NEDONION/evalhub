@@ -9,6 +9,7 @@ import {
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
+  getModelPerformance,
   getModelPull,
   getOllamaStatus,
   getSuites,
@@ -24,6 +25,7 @@ import type {
   EvaluationRequest,
   EvaluationTaskDetail,
   EvaluationTaskSummary,
+  ModelPerformanceResponse,
   OllamaPullTask,
   OllamaStatus,
 } from "../types";
@@ -37,6 +39,7 @@ interface UseEvalHubResult {
   suites: BenchmarkSuite[];
   ollama: OllamaStatus | null;
   tasks: EvaluationTaskSummary[];
+  modelPerformance: ModelPerformanceResponse | null;
   selectedTaskId: string | null;
   selectedTask: EvaluationTaskDetail | null;
   modelPullTask: OllamaPullTask | null;
@@ -50,6 +53,8 @@ interface UseEvalHubResult {
   ollamaError: string | null;
   modelPullError: string | null;
   taskError: string | null;
+  modelPerformanceError: string | null;
+  modelPerformanceLoading: boolean;
   refresh: () => Promise<void>;
   startModelPull: (targetModel: string) => Promise<OllamaPullTask | null>;
   cancelModelPull: (targetModel: string) => Promise<OllamaPullTask | null>;
@@ -58,6 +63,7 @@ interface UseEvalHubResult {
   selectTask: (taskId: string) => void;
   cancelTask: (taskId: string) => Promise<EvaluationTaskDetail | null>;
   retryNode: (taskId: string, nodeId: string) => Promise<EvaluationTaskDetail | null>;
+  selectPerformanceScope: (scope: string) => Promise<void>;
 }
 
 /**
@@ -86,6 +92,20 @@ function replaceTask(
 }
 
 /**
+ * 为已经形成分数的模型任务生成稳定签名，用于判断排行榜是否确实需要重载。
+ *
+ * @param tasks 当前服务端任务摘要。
+ * @returns 与任务顺序无关、仅受模型成绩变化影响的签名。
+ */
+function modelScoreSignature(tasks: EvaluationTaskSummary[]): string {
+  return tasks
+    .filter((task) => task.evaluation_type !== "agent" && task.result_summary !== null)
+    .map((task) => `${task.id}:${task.result_summary!.average_score}`)
+    .sort()
+    .join("|");
+}
+
+/**
  * 管理控制台健康状态、资产操作和持久化评测任务。
  * Hook 会恢复模型下载，串行轮询活动评测，并用请求版本防止慢响应覆盖用户的新选择。
  *
@@ -100,6 +120,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [suites, setSuites] = useState<BenchmarkSuite[]>([]);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [tasks, setTasks] = useState<EvaluationTaskSummary[]>([]);
+  const [modelPerformance, setModelPerformance] = useState<ModelPerformanceResponse | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<EvaluationTaskDetail | null>(null);
   const [modelPullTask, setModelPullTask] = useState<OllamaPullTask | null>(null);
@@ -112,10 +133,17 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [ollamaError, setOllamaError] = useState<string | null>(null);
   const [modelPullError, setModelPullError] = useState<string | null>(null);
   const [taskError, setTaskError] = useState<string | null>(null);
+  const [modelPerformanceError, setModelPerformanceError] = useState<string | null>(null);
+  const [modelPerformanceLoading, setModelPerformanceLoading] = useState(false);
+  const [performanceRetryToken, setPerformanceRetryToken] = useState(0);
   const mountedRef = useRef(true);
+  const latestTasksRef = useRef<EvaluationTaskSummary[]>([]);
   const selectedTaskIdRef = useRef<string | null>(selectedTaskId);
   const taskListRequestVersionRef = useRef(0);
   const detailRequestVersionRef = useRef(0);
+  const requestedPerformanceScopeRef = useRef<string | null>(null);
+  const modelScoreSignatureRef = useRef("");
+  const performanceRequestVersionRef = useRef(0);
   selectedTaskIdRef.current = selectedTaskId;
 
   useEffect(() => {
@@ -124,15 +152,44 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
       mountedRef.current = false;
       detailRequestVersionRef.current += 1;
       taskListRequestVersionRef.current += 1;
+      performanceRequestVersionRef.current += 1;
     };
   }, []);
 
   const applyTaskList = useCallback((nextTasks: EvaluationTaskSummary[]) => {
+    latestTasksRef.current = nextTasks;
     setTasks(nextTasks);
     setSelectedTaskId((current) => {
       if (current && nextTasks.some((task) => task.id === current)) return current;
       return nextTasks[0]?.id || null;
     });
+  }, []);
+
+  const loadModelPerformance = useCallback(async (scope?: string): Promise<boolean> => {
+    requestedPerformanceScopeRef.current = scope || null;
+    const taskSignature = modelScoreSignature(latestTasksRef.current);
+    const requestVersion = performanceRequestVersionRef.current + 1;
+    performanceRequestVersionRef.current = requestVersion;
+    setModelPerformanceLoading(true);
+    try {
+      const report = await getModelPerformance(scope);
+      if (!mountedRef.current || performanceRequestVersionRef.current !== requestVersion) return false;
+      if (modelScoreSignature(latestTasksRef.current) !== taskSignature) return false;
+      requestedPerformanceScopeRef.current = report.selected_scope?.key || scope || null;
+      setModelPerformance(report);
+      setModelPerformanceError(null);
+      modelScoreSignatureRef.current = taskSignature;
+      return true;
+    } catch (error) {
+      if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
+        setModelPerformanceError(errorMessage(error));
+      }
+      return false;
+    } finally {
+      if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
+        setModelPerformanceLoading(false);
+      }
+    }
   }, []);
 
   const refresh = useCallback(async () => {
@@ -149,7 +206,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     ]);
     if (!mountedRef.current) return;
 
-    // 六类状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
+    // 六类基础状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
     const [
       healthResult,
       datasetsResult,
@@ -188,9 +245,11 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
       } else {
         setTaskError(errorMessage(tasksResult.reason));
       }
+      // 成绩读取严格排在任务快照之后，避免终态任务与旧榜单同时成为稳定页面状态。
+      await loadModelPerformance(requestedPerformanceScopeRef.current || undefined);
     }
     setRefreshing(false);
-  }, [applyTaskList, baseUrl, model]);
+  }, [applyTaskList, baseUrl, loadModelPerformance, model]);
 
   useEffect(() => {
     void refresh();
@@ -279,6 +338,24 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     () => tasks.some((task) => task.status === "pending" || task.status === "running"),
     [tasks],
   );
+
+  useEffect(() => {
+    const scoreSignature = modelScoreSignature(tasks);
+    if (refreshing || scoreSignature === modelScoreSignatureRef.current) return undefined;
+    let active = true;
+    let retryId: number | undefined;
+
+    // 成绩加载失败时保留未提交签名，并独立于任务轮询安排有限间隔重试。
+    void loadModelPerformance(requestedPerformanceScopeRef.current || undefined).then((success) => {
+      if (!success && active && mountedRef.current) {
+        retryId = window.setTimeout(() => setPerformanceRetryToken((value) => value + 1), 1500);
+      }
+    });
+    return () => {
+      active = false;
+      if (retryId !== undefined) window.clearTimeout(retryId);
+    };
+  }, [loadModelPerformance, performanceRetryToken, refreshing, tasks]);
 
   useEffect(() => {
     if (!hasActiveTask) return undefined;
@@ -424,6 +501,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     suites,
     ollama,
     tasks,
+    modelPerformance,
     selectedTaskId,
     selectedTask,
     modelPullTask,
@@ -437,6 +515,8 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     ollamaError,
     modelPullError,
     taskError,
+    modelPerformanceError,
+    modelPerformanceLoading,
     refresh,
     startModelPull,
     cancelModelPull,
@@ -445,5 +525,8 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     selectTask: setSelectedTaskId,
     cancelTask,
     retryNode,
+    selectPerformanceScope: async (scope) => {
+      await loadModelPerformance(scope);
+    },
   };
 }

@@ -11,6 +11,93 @@ from evalhub.tasks.models import (
     EvaluationSamplePage,
     EvaluationTask,
 )
+from evalhub.tasks.performance import (
+    ModelPerformance,
+    ModelPerformanceReport,
+    PerformancePoint,
+    PerformanceScope,
+)
+
+
+def model_performance_report(report: ModelPerformanceReport) -> dict[str, object]:
+    """把模型成绩聚合报告转换为前端可直接消费的 JSON 结构。
+
+    Args:
+        report: 已完成范围隔离、排名和纪录判断的不可变报告。
+
+    Returns:
+        包含范围、排行榜、历史点和最近纪录的 JSON 兼容字典。
+    """
+    # 范围和模型保持聚合层的确定性顺序，HTTP 层只负责逐类序列化。
+    scopes = [_performance_scope(item) for item in report.scopes]
+    selected_scope = _performance_scope(report.selected_scope) if report.selected_scope else None
+    models = [_performance_model(item) for item in report.models]
+    record = _performance_point(report.record) if report.record else None
+    return {
+        "scopes": scopes,
+        "selected_scope": selected_scope,
+        "models": models,
+        "record": record,
+    }
+
+
+def _performance_scope(scope: PerformanceScope) -> dict[str, object]:
+    """序列化一个可比较评测范围及其有效运行数量。
+
+    Args:
+        scope: 聚合层生成的 Benchmark 或 Suite 范围摘要。
+
+    Returns:
+        字段名稳定且可直接编码为 JSON 的范围字典。
+    """
+    return {
+        "key": scope.key,
+        "kind": scope.kind,
+        "id": scope.identifier,
+        "label": scope.label,
+        "run_count": scope.run_count,
+    }
+
+
+def _performance_model(model: ModelPerformance) -> dict[str, object]:
+    """序列化一个模型的排行摘要与完整轻量历史点。
+
+    Args:
+        model: 同一比较范围内已经计算最佳分和最新分的模型摘要。
+
+    Returns:
+        包含排行字段、ISO 时间和有序历史点的 JSON 兼容字典。
+    """
+    return {
+        "model": model.model,
+        "best_score": model.best_score,
+        "latest_score": model.latest_score,
+        "run_count": model.run_count,
+        "best_task_id": model.best_task_id,
+        "best_at": model.best_at.isoformat(),
+        "latest_at": model.latest_at.isoformat(),
+        "history": [_performance_point(point) for point in model.history],
+    }
+
+
+def _performance_point(point: PerformancePoint) -> dict[str, object]:
+    """序列化一个模型历史成绩点及其当时纪录信息。
+
+    Args:
+        point: 包含模型、得分、完成时间和提分幅度的历史点。
+
+    Returns:
+        采用 ISO 时间并保留纪录语义的 JSON 兼容字典。
+    """
+    return {
+        "scope_key": point.scope_key,
+        "task_id": point.task_id,
+        "model": point.model,
+        "score": point.score,
+        "completed_at": point.completed_at.isoformat(),
+        "is_record": point.is_record,
+        "improvement": point.improvement,
+    }
 
 
 def task_summary(task: EvaluationTask, *, now: datetime | None = None) -> dict[str, object]:

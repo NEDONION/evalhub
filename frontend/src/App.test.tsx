@@ -12,13 +12,18 @@ import {
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
+  getModelPerformance,
   getModelPull,
   getOllamaStatus,
   getSuites,
   prepareDataset,
   startModelPull,
 } from "./lib/api";
-import type { EvaluationTaskDetail, EvaluationTaskSummary } from "./types";
+import type {
+  EvaluationTaskDetail,
+  EvaluationTaskSummary,
+  ModelPerformanceResponse,
+} from "./types";
 
 vi.mock("./lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
@@ -29,6 +34,7 @@ vi.mock("./lib/api", () => ({
   getEvaluationTask: vi.fn(),
   getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
+  getModelPerformance: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
   getSuites: vi.fn(),
@@ -100,6 +106,13 @@ const pullingTask = {
   speed_bytes_per_second: 25_000_000,
   eta_seconds: 20,
   error: null,
+};
+
+const emptyPerformance: ModelPerformanceResponse = {
+  scopes: [],
+  selected_scope: null,
+  models: [],
+  record: null,
 };
 
 const evaluationFixture = {
@@ -267,7 +280,7 @@ const agentTaskDetail: EvaluationTaskDetail = {
  * @param name 用户可见的目录名称。
  * @returns 当前渲染应用中的对应目录按钮。
  */
-function navigationButton(name: "概览" | "发起评测" | "资产管理" | "评测结果") {
+function navigationButton(name: "概览" | "发起评测" | "资产管理" | "评测结果" | "模型成绩") {
   return within(screen.getByRole("navigation", { name: "工作区目录" })).getByRole("button", {
     name: `打开${name}页面`,
   });
@@ -276,6 +289,7 @@ function navigationButton(name: "概览" | "发起评测" | "资产管理" | "�
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
+  vi.mocked(getModelPerformance).mockResolvedValue(emptyPerformance);
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
   vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
   vi.mocked(getSuites).mockResolvedValue({ suites: [] });
@@ -309,7 +323,7 @@ beforeEach(() => {
 });
 
 describe("EvalHub console", () => {
-  it("opens on a focused overview with four real workspace destinations", async () => {
+  it("opens on a focused overview with five real workspace destinations", async () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "工作台概览" })).toBeInTheDocument();
@@ -319,6 +333,7 @@ describe("EvalHub console", () => {
     expect(within(navigation).getByRole("button", { name: "打开发起评测页面" })).toBeInTheDocument();
     expect(within(navigation).getByRole("button", { name: "打开资产管理页面" })).toBeInTheDocument();
     expect(within(navigation).getByRole("button", { name: "打开评测结果页面" })).toBeInTheDocument();
+    expect(within(navigation).getByRole("button", { name: "打开模型成绩页面" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "评测就绪轨道" })).toBeVisible();
     expect(screen.getByRole("region", { name: "本地推理环境", hidden: true })).not.toBeVisible();
   });
@@ -339,6 +354,10 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("评测结果"));
     expect(screen.getByRole("heading", { level: 1, name: "评测任务" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "评测任务" })).toBeVisible();
+
+    await user.click(navigationButton("模型成绩"));
+    expect(screen.getByRole("heading", { level: 1, name: "模型成绩" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "模型历史成绩" })).toBeVisible();
   });
 
   it("keeps evaluation form choices while moving between views", async () => {

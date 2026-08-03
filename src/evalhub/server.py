@@ -24,6 +24,7 @@ from evalhub.tasks import (
     TaskRequest,
 )
 from evalhub.tasks.presentation import (
+    model_performance_report,
     node_detail,
     node_summary,
     sample_page,
@@ -80,7 +81,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(static_directory), **kwargs)
 
     def do_GET(self) -> None:
-        """路由健康、数据集、Ollama 状态、下载快照和 React 静态资源请求。
+        """路由健康、资产、模型成绩、评测任务和 React 静态资源请求。
 
         Side Effects:
             向当前 HTTP 连接写入 JSON 或静态文件响应；下载查询只读取管理器内存状态。
@@ -115,6 +116,17 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "error": "model is required"}, status=400)
                 return
             self._json({"ok": True, "task": OLLAMA_PULL_MANAGER.get(model)})
+            return
+        if parsed.path == "/api/model-performance":
+            query = parse_qs(parsed.query)
+            scope = _first(query, "scope", "").strip() or None
+            try:
+                report = self._require_task_service().model_performance(scope)
+            except ValueError as exc:
+                # 未知范围属于可恢复筛选错误，不能回退后混合不同评测口径。
+                self._json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._json(model_performance_report(report))
             return
         if parsed.path == "/api/evaluations":
             # 高频轮询只发送轻量摘要，完整结果由用户选择任务后再按需读取。
@@ -654,7 +666,9 @@ def _task_request(payload: object) -> TaskRequest:
         model=model,
         base_url=str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
         sample_mode=sample_mode,
-        subject=str(payload.get("subject", "abstract_algebra")),
+        subject=(
+            "all" if suite_id is not None else str(payload.get("subject", "abstract_algebra"))
+        ),
         limit=limit,
         evaluation_type=evaluation_type,
         agent_framework=agent_framework,

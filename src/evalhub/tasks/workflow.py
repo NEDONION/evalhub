@@ -52,7 +52,11 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
                     "model": request.model,
                     "adapter": request.adapter,
                     "sample_mode": request.sample_mode,
-                    "subject": request.subject,
+                    "subject": (
+                        "all"
+                        if request.suite_id is not None and benchmark_id == "mmlu"
+                        else request.subject
+                    ),
                     "limit": request.limit,
                 },
             )

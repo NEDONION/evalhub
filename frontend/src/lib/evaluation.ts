@@ -44,7 +44,7 @@ export function buildEvaluationRequest(values: EvaluationFormValues): Evaluation
     request.suite_id = values.suiteId;
   }
 
-  if (values.dataset === "mmlu") {
+  if (!values.suiteId && values.dataset === "mmlu") {
     request.subject = values.subject;
   }
 

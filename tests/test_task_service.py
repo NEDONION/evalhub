@@ -16,6 +16,7 @@ from evalhub.tasks import (
     TaskExecutionCanceled,
     TaskRequest,
 )
+from evalhub.tasks.runtime import PersistentWorkflowExecutor
 from evalhub.tasks.workflow import build_workflow
 
 
@@ -138,6 +139,30 @@ class BlockingExecutor:
         if cancel_event.is_set():
             raise TaskExecutionCanceled("evaluation canceled")
         return result_for(task_id, request.dataset)
+
+
+class CancelableBenchmarkExecutor:
+    """等待停服取消后退出的模型 Benchmark 执行器。"""
+
+    def __init__(self) -> None:
+        """初始化开始信号。"""
+        self.started = Event()
+
+    def execute(
+        self,
+        task_id: str,
+        request: TaskRequest,
+        *,
+        on_progress: Callable[[int, int], None],
+        on_resources: Callable[[ResourceUsage], None],
+        cancel_event: Event,
+        skip_sample_ids: set[str] | frozenset[str] = frozenset(),
+        on_sample_result: Callable[..., None] | None = None,
+    ) -> dict[str, object]:
+        """阻塞到服务发出取消信号，再模拟子进程取消。"""
+        self.started.set()
+        cancel_event.wait(timeout=2.0)
+        raise TaskExecutionCanceled("service stopping")
 
 
 class DelayedFirstPutQueue(Queue[str | None]):
@@ -283,6 +308,87 @@ def test_service_recovers_interrupted_workflow_instead_of_failing_task(
     assert repository.list_node_events(interrupted.id)[-1].event_type == "node_recovered"
 
 
+def test_service_reopens_legacy_failed_task_with_pending_workflow(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """旧版本留下的顶层失败/节点待执行组合应在启动时自动恢复。"""
+    request = make_request("gsm8k")
+    task = repository.create_with_nodes(request, build_workflow(request))
+    repository.mark_running(task.id)
+    node = repository.start_node(repository.list_nodes(task.id)[0].id)
+    repository.reschedule_node(node.id, "interrupted", "service stopped")
+    repository.mark_failed(task.id, "服务停止导致评测中断")
+    service = EvaluationTaskService(repository, executor=RecordingExecutor())
+
+    service.start()
+    try:
+        wait_for_status(repository, task.id, "success")
+    finally:
+        service.stop()
+
+    assert repository.get_node(node.id).status == "pending"
+
+
+def test_service_stop_requeues_checkpointed_model_workflow(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """正常停服应让模型任务等待恢复，而不是形成无法重试的失败任务。"""
+    benchmark_executor = CancelableBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=benchmark_executor,
+        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+    )
+    service = EvaluationTaskService(repository, executor=runtime)
+    service.start()
+    task = service.submit(make_request("gsm8k"))
+    assert benchmark_executor.started.wait(1.0)
+
+    service.stop()
+
+    assert repository.get(task.id).status == "pending"
+    assert repository.list_resumable()[0].id == task.id
+
+
+def test_same_service_instance_restarts_from_persisted_queue(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """同一服务对象重启时必须丢弃旧哨兵并从 SQLite 重建队列。"""
+    executor = BlockingExecutor()
+    service = EvaluationTaskService(repository, executor=executor)
+    service.start()
+    task = service.submit(make_request("gsm8k"))
+    assert executor.started.wait(1.0)
+
+    service.stop()
+    executor.release.set()
+    service.start()
+    try:
+        wait_for_status(repository, task.id, "success")
+    finally:
+        service.stop()
+
+    assert executor.task_ids == [task.id, task.id]
+
+
+def test_service_allows_only_one_worker_per_database(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """同一个 SQLite 库不能被两个服务实例同时恢复和消费任务。"""
+    first = EvaluationTaskService(repository, executor=RecordingExecutor())
+    second = EvaluationTaskService(repository, executor=RecordingExecutor())
+
+    first.start()
+    try:
+        with pytest.raises(RuntimeError, match="worker is already running"):
+            second.start()
+    finally:
+        first.stop()
+
+    second.start()
+    second.stop()
+
+
 def test_retry_node_reopens_failed_task_and_enqueues_it(
     repository: SQLiteTaskRepository,
 ) -> None:
@@ -348,11 +454,11 @@ def test_service_cancels_running_task(repository: SQLiteTaskRepository) -> None:
 def test_service_marks_active_task_failed_when_service_stops(
     repository: SQLiteTaskRepository,
 ) -> None:
-    """服务关闭造成的中断应记录为失败诊断，不能冒充用户主动取消。"""
+    """没有节点检查点的旧任务停服后应保留明确失败诊断。"""
     executor = BlockingExecutor()
     service = EvaluationTaskService(repository, executor=executor)
+    task = repository.create(make_request("gsm8k"))
     service.start()
-    task = service.submit(make_request("gsm8k"))
     assert executor.started.wait(1.0)
 
     service.stop()

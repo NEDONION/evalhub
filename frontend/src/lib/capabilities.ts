@@ -9,15 +9,16 @@ export const CAPABILITY_ORDER = [
   "safety_trust",
 ] as const;
 
-/** 把固定六维能力分数转换为 SVG 雷达图坐标，未评测维度停留在中心。 */
+/** 把固定六维能力分数转换为 SVG 雷达图坐标，未评测维度保持为空。 */
 export function capabilityRadarPoints(
   profile: ModelCapabilityProfile,
   center: number,
   radius: number,
-): Array<[number, number]> {
+): Array<[number, number] | null> {
   return CAPABILITY_ORDER.map((key, index) => {
     const rawScore = profile.capabilities[key]?.score;
-    const score = rawScore === null || rawScore === undefined ? 0 : Math.min(100, Math.max(0, rawScore));
+    if (rawScore === null || rawScore === undefined) return null;
+    const score = Math.min(100, Math.max(0, rawScore));
     const angle = (-90 + index * 60) * (Math.PI / 180);
     const distance = radius * (score / 100);
     return [

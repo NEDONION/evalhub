@@ -10,6 +10,7 @@ import type {
   EvaluationTaskDetail,
   EvaluationTaskSummary,
   HealthResponse,
+  ModelPerformanceResponse,
   OllamaPullResponse,
   OllamaStatus,
   PrepareDatasetResponse,
@@ -226,6 +227,19 @@ export async function createEvaluation(request: EvaluationRequest): Promise<Eval
 export async function getEvaluationTasks(): Promise<EvaluationTaskSummary[]> {
   const response = await fetchJson<EvaluationTasksResponse>("/api/evaluations");
   return response.tasks;
+}
+
+/**
+ * 读取同一 Benchmark 或 Suite 范围内的模型历史排行与成绩轨迹。
+ *
+ * @param scope 可选的 `benchmark:<id>` 或 `suite:<id>`；省略时由服务端选择默认范围。
+ * @returns 可用比较范围、当前排行榜和最新破纪录节点。
+ */
+export function getModelPerformance(scope?: string): Promise<ModelPerformanceResponse> {
+  const query = new URLSearchParams();
+  if (scope) query.set("scope", scope);
+  const suffix = query.size > 0 ? `?${query.toString()}` : "";
+  return fetchJson<ModelPerformanceResponse>(`/api/model-performance${suffix}`);
 }
 
 /**

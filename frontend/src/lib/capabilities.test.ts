@@ -24,11 +24,11 @@ const profile: ModelCapabilityProfile = {
   ),
 };
 
-it("builds a stable six-axis polygon and keeps unassessed dimensions at the center", () => {
+it("builds stable radar points without converting unassessed dimensions to zero", () => {
   expect(CAPABILITY_ORDER).toHaveLength(6);
   expect(capabilityRadarPoints(profile, 100, 80)).toEqual([
     [100, 20],
-    [100, 100],
+    null,
     [134.64, 120],
     [100, 140],
     [65.36, 120],

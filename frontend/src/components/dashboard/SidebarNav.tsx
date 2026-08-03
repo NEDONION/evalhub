@@ -1,5 +1,6 @@
 import {
   ChartNoAxesColumnIncreasing,
+  ChartNoAxesCombined,
   LayoutDashboard,
   PackageOpen,
   PlayCircle,
@@ -8,7 +9,7 @@ import type { LucideIcon } from "lucide-react";
 
 import { cn } from "../../lib/utils";
 
-export type WorkspaceView = "overview" | "evaluation" | "assets" | "results";
+export type WorkspaceView = "overview" | "evaluation" | "assets" | "results" | "performance";
 
 interface SidebarNavProps {
   currentView: WorkspaceView;
@@ -31,6 +32,7 @@ const navigationItems: NavigationItem[] = [
   { view: "evaluation", label: "发起评测", description: "配置 Benchmark 任务", icon: PlayCircle },
   { view: "assets", label: "资产管理", description: "模型与数据集", icon: PackageOpen },
   { view: "results", label: "评测结果", description: "得分与失败样本", icon: ChartNoAxesColumnIncreasing },
+  { view: "performance", label: "模型成绩", description: "排行与历史趋势", icon: ChartNoAxesCombined },
 ];
 
 /**

@@ -154,7 +154,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
     ),
 )
 
-DATASET_REVISION = "upstream-v1+content-sha256"
+DATASET_REVISION = "resolved-at-runtime:sha256"
 PROTOCOL_VERSION = "1.0.0"
 
 _HOMEPAGES = {

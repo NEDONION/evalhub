@@ -1,4 +1,10 @@
-import { ArrowRight, ChartNoAxesColumnIncreasing, PackageOpen, PlayCircle } from "lucide-react";
+import {
+  ArrowRight,
+  ChartNoAxesColumnIncreasing,
+  ChartNoAxesCombined,
+  PackageOpen,
+  PlayCircle,
+} from "lucide-react";
 
 import type { WorkspaceView } from "./SidebarNav";
 import { Panel } from "../ui/Panel";
@@ -29,10 +35,17 @@ const actions = [
     description: "查看得分、通过率和失败样本。",
     action: "查看评测结果",
   },
+  {
+    view: "performance" as const,
+    icon: ChartNoAxesCombined,
+    title: "比较模型成绩",
+    description: "按相同 Benchmark 查看排行、趋势和新纪录。",
+    action: "打开模型成绩",
+  },
 ];
 
 /**
- * 展示从评测配置、资产准备到结果检查的三个主要入口。
+ * 展示从评测配置、资产准备到结果检查和模型比较的主要入口。
  *
  * @param onNavigate 点击工作流入口时切换到目标工作区的回调；组件自身不保存导航状态，
  * 从而让 `App` 继续作为目录与异步任务状态的唯一所有者。
@@ -45,9 +58,9 @@ export function OverviewPanel({ onNavigate }: OverviewPanelProps) {
         <h2 id="workflow-title" className="text-base font-semibold tracking-tight text-ink">当前工作流</h2>
         <p className="mt-1 text-sm text-muted">从准备资产开始，运行评测后集中检查结果。</p>
       </div>
-      <div className="grid lg:grid-cols-3">
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4">
         {actions.map(({ view, icon: Icon, title, description, action }, index) => (
-          <article key={view} className="relative border-b border-border p-5 last:border-b-0 lg:border-r lg:border-b-0 lg:last:border-r-0 sm:p-6">
+          <article key={view} className="relative border-b border-border p-5 sm:border-r sm:p-6 sm:even:border-r-0 xl:border-b-0 xl:even:border-r xl:last:border-r-0">
             <div className="flex items-start justify-between gap-4">
               <span className="grid h-9 w-9 place-items-center rounded-md border border-blue-200 bg-blue-50 text-primary">
                 <Icon className="h-4 w-4" aria-hidden="true" />

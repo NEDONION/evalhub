@@ -85,12 +85,12 @@ def aggregate_capability_profile(
         status: sum(1 for item in benchmark_outputs if item.get("status") == status)
         for status in ("success", "failed", "blocked")
     }
-    successful = counts["success"]
+    assessed_dimensions = sum(1 for item in capabilities.values() if item["score"] is not None)
     overall_status = (
         "complete"
-        if successful == len(suite.benchmark_ids)
+        if assessed_dimensions == len(Capability)
         else "partial"
-        if successful > 0
+        if assessed_dimensions > 0
         else "unassessed"
     )
     model = next((item.get("model") for item in benchmark_outputs if item.get("model")), None)
