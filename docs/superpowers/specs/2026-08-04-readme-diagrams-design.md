@@ -1,0 +1,98 @@
+# README Diagram Design
+
+## Goal
+
+为第一次接触 EvalHub 的开发者补充一套可直接在 GitHub README 中阅读和维护的图解，让读者先建立整体心智模型，再理解本地启动与单次评测链路，最后了解项目如何演进到企业级架构。
+
+## Audience
+
+主要读者是希望快速理解、安装和运行 EvalHub 的开发者。图解优先回答“系统由什么组成”“一次操作经过哪里”“当前已经实现什么”，避免把 README 写成完整架构手册。
+
+## Format
+
+- 使用 GitHub 原生 Mermaid 代码块，不增加 PNG、SVG 或外部图床依赖。
+- 图内以中文为主，保留 Ollama、CLI、API、Runner、Evaluator、Registry 等必要技术名词。
+- 使用统一的颜色和图例区分“当前已实现”与“规划中”。
+- 节点文案保持短句；更详细的约束由图后说明承载。
+- Mermaid 语法采用 GitHub 支持的基础 `flowchart`、`sequenceDiagram`，避免实验性语法。
+
+## README Structure
+
+### 1. 30 秒理解 EvalHub
+
+放在项目介绍和当前能力之后、快速开始之前。
+
+- **系统全景图**：从用户入口出发，串联模型、数据集、Benchmark、评测引擎、样本结果和聚合报告。
+- **当前本地 MVP 架构图**：映射浏览器、Python HTTP Server、CLI、领域核心、Ollama、公开数据集与本地缓存，并标注主要源码目录。
+
+### 2. 本地一键启动
+
+放在“一键启动”命令后。
+
+- **一键启动时序图**：展示 `start_local.sh` 检测 Ollama、按需启动 `ollama serve`、启动 EvalHub Server、浏览器请求状态 API 的完整顺序。
+
+### 3. 真实 Benchmark 评测
+
+放在 Benchmark 命令示例前。
+
+- **单次评测流程图**：展示选择数据集与模型、准备并加载样本、创建内存记录、逐样本推理、Evaluator 打分、报告聚合和 JSON/UI 输出。
+- 明确 `all`、`quick`、`custom` 三种样本范围最终都归一为 `limit`。
+- 错误分支只保留对新用户最有帮助的三类：数据集准备失败、Ollama 不可用、推理或评分失败。
+
+### 4. 企业级演进
+
+放在目录结构之后、下一步建议之前。
+
+- **演进路线图**：分为当前本地 MVP、服务化阶段、生产级平台三个阶段。
+- 当前阶段只列实际存在的能力；FastAPI、PostgreSQL、Celery、RabbitMQ、MinIO、React Console、Release Gate 等明确标记为规划中。
+
+## Diagram Details
+
+### System Overview
+
+采用从左到右的 flowchart：开发者通过 Web Console 或 CLI 发起评测，Evaluation Engine 组合 Dataset、Model Adapter 与 Evaluator，产出样本结果和聚合报告。该图表达产品心智模型，不绑定具体部署方式。
+
+### Current MVP Architecture
+
+采用分组 flowchart：
+
+- 交互层：静态前端与 CLI。
+- 本地服务层：`ThreadingHTTPServer`、API 路由与静态文件服务。
+- 核心层：Dataset Loader、InMemory Registry、Evaluation Runner、Evaluator Registry、Model Adapter。
+- 外部与本地资源：公开数据集源、本地 `data/` 缓存、Ollama API。
+
+边上标注 HTTP、函数调用、下载/读取、推理请求等关键协议或方向。
+
+### Startup Sequence
+
+参与者为 Developer、`start_local.sh`、Ollama API、Ollama Process、EvalHub Server、Browser。用 `alt` 分支表达 Ollama 已运行、已安装但未运行、未安装三种状态；未安装时 EvalHub 仍可启动，由 UI 提示环境未就绪。
+
+### Evaluation Flow
+
+采用自上而下 flowchart，以“请求评测”为起点，以报告呈现为终点。样本循环在图中合并为一个子流程，避免为每条样本重复画节点。失败统一进入错误响应或失败任务状态。
+
+### Evolution Roadmap
+
+采用三阶段 flowchart：
+
+1. Local MVP：静态 Web、CLI、同步 Runner、内存 Registry、本地数据、Ollama。
+2. Service Platform：React Console、FastAPI、PostgreSQL、异步 Job API。
+3. Enterprise Scale：Scheduler、RabbitMQ、Celery Workers、MinIO、Leaderboard、Release Gate、Trace 与审计。
+
+箭头只表示能力演进，不暗示未实现组件已经可用。
+
+## Error Handling and Accuracy
+
+- 所有“当前”节点必须能映射到仓库中的现有文件或运行行为。
+- 未来组件统一标记为“规划”，避免 README 与实际实现不一致。
+- Ollama 未安装、服务未运行或模型缺失时，图解与当前状态 API 的行为一致。
+- 同步 Runner 发生异常时，Evaluation Job 标记为 failed，错误返回 CLI 或 Web API。
+
+## Validation
+
+- 检查 README 中恰好包含 5 个 Mermaid 代码块。
+- 检查 Mermaid 块围栏成对、图类型为 GitHub 支持的 `flowchart` 或 `sequenceDiagram`。
+- 逐图核对节点与当前源码、`docs/ARCHITECTURE.md` 和运行命令一致。
+- 运行 Markdown 链接检查或等价的本地静态检查，确认原有相对链接仍存在。
+- 运行 `git diff --check`，避免 Markdown 空白错误。
+- 确认只修改 README 和本任务的设计/计划文档，不覆盖工作区现有其他改动。
