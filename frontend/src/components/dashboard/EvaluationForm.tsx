@@ -30,6 +30,20 @@ const sampleModes: Array<{ value: SampleMode; label: string; meta: string }> = [
   { value: "custom", label: "自定义", meta: "指定数量" },
 ];
 
+/**
+ * 渲染一次真实 Benchmark 的配置表单，并在提交前校验样本数量和 Ollama 模型可用性。
+ *
+ * @param datasets 可选择的数据集及其本地准备状态。
+ * @param modelOptions Ollama 已安装与推荐模型选项。
+ * @param model 当前由父组件持有的模型标签。
+ * @param baseUrl 当前 Ollama 服务地址。
+ * @param running 是否正在执行评测，用于禁止重复提交。
+ * @param preparing 是否正在准备数据集，用于避免资产变化期间提交。
+ * @param onModelChange 模型选择变化回调。
+ * @param onBaseUrlCommit 地址失焦或提交时的持久化回调。
+ * @param onManageAssets 模型缺失时前往资产管理目录的回调。
+ * @param onSubmit 校验通过后提交标准化评测请求的回调。
+ */
 export function EvaluationForm({
   datasets,
   modelOptions,

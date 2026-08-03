@@ -31,6 +31,12 @@ const actions = [
   },
 ];
 
+/**
+ * 展示从评测配置、资产准备到结果检查的三个主要入口。
+ *
+ * @param onNavigate 点击工作流入口时切换到目标工作区的回调；组件自身不保存导航状态，
+ * 从而让 `App` 继续作为目录与异步任务状态的唯一所有者。
+ */
 export function OverviewPanel({ onNavigate }: OverviewPanelProps) {
   return (
     <Panel aria-labelledby="workflow-title" className="overflow-hidden">
@@ -64,4 +70,3 @@ export function OverviewPanel({ onNavigate }: OverviewPanelProps) {
     </Panel>
   );
 }
-

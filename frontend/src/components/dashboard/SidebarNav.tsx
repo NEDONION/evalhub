@@ -33,6 +33,16 @@ const navigationItems: NavigationItem[] = [
   { view: "results", label: "评测结果", description: "得分与失败样本", icon: ChartNoAxesColumnIncreasing },
 ];
 
+/**
+ * 渲染桌面侧边栏与移动端横向目录，并用活动标签提示正在运行的工作。
+ *
+ * @param currentView 当前可见的工作区，用于设置活动样式和 `aria-current`。
+ * @param onNavigate 用户选择目录时的视图切换回调。
+ * @param modelPullActive 是否存在进行中的 Ollama 模型下载。
+ * @param datasetPreparing 是否正在缓存或更新 Benchmark 数据集。
+ * @param evaluationRunning 是否正在执行评测。
+ * @param resultAvailable 当前会话是否已有可查看的评测结果。
+ */
 export function SidebarNav({
   currentView,
   onNavigate,

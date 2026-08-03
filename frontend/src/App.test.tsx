@@ -115,6 +115,12 @@ const evaluationFixture = {
   ],
 };
 
+/**
+ * 从工作区目录中按可访问名称取得导航按钮，避免与表单内同名业务操作混淆。
+ *
+ * @param name 用户可见的目录名称。
+ * @returns 当前渲染应用中的对应目录按钮。
+ */
 function navigationButton(name: "概览" | "发起评测" | "资产管理" | "评测结果") {
   return within(screen.getByRole("navigation", { name: "工作区目录" })).getByRole("button", {
     name: `打开${name}页面`,

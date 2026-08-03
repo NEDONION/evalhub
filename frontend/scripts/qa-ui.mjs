@@ -3,6 +3,13 @@ import { chromium } from "playwright";
 const baseUrl = process.env.EVALHUB_QA_URL || "http://127.0.0.1:8001";
 const chromePath = process.env.EVALHUB_CHROME_PATH;
 
+/**
+ * 为浏览器验收提供无额外依赖的断言边界，失败时保留具体页面诊断信息。
+ *
+ * @param {unknown} condition 需要满足的页面条件。
+ * @param {string} message 条件失败时抛出的中文诊断信息。
+ * @throws {Error} 当页面条件不成立时中断验收脚本。
+ */
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }

@@ -37,6 +37,11 @@ const pageCopy: Record<WorkspaceView, { eyebrow: string; title: string; descript
   },
 };
 
+/**
+ * 渲染 EvalHub 本地评测工作区，并持有跨目录共享的模型、服务地址与当前视图状态。
+ * 组件通过 `useEvalHub` 统一驱动状态刷新、模型下载、数据集准备和评测任务；目录切换只控制
+ * 面板可见性，因此不会中断进行中的异步任务，也不会清空已经填写的评测表单。
+ */
 export default function App() {
   const [model, setModel] = useState(DEFAULT_MODEL);
   const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);

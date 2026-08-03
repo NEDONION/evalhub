@@ -24,6 +24,16 @@ const metricLabels: Record<string, string> = {
   exact_match: "精确匹配",
 };
 
+/**
+ * 展示公开 Benchmark 的来源、本地缓存状态与样本规模，并区分首次缓存和强制更新。
+ *
+ * @param datasets 后端返回的数据集目录状态。
+ * @param preparingDataset 当前正在执行缓存操作的数据集名称，用于禁用并标记全部操作按钮。
+ * @param error 最近一次目录读取或准备失败信息。
+ * @param notice 最近一次成功缓存或更新的确认信息。
+ * @param onPrepare 用户触发资产操作时的回调；第二个参数在已缓存数据集上为 `true`，
+ * 表示必须重新下载、校验并原子替换现有缓存。
+ */
 export function DatasetTable({ datasets, preparingDataset, error, notice, onPrepare }: DatasetTableProps) {
   return (
     <Panel aria-labelledby="datasets-title" className="overflow-hidden">

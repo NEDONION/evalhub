@@ -136,7 +136,20 @@ def load_samples(
 
 
 def _prepare_gsm8k(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
-    """幂等下载 GSM8K JSONL 测试文件并返回本地路径。"""
+    """幂等下载 GSM8K JSONL 测试文件并返回本地路径。
+
+    Args:
+        spec: 包含官方来源与仓库相对缓存路径的数据集规格。
+        root: 数据缓存相对的项目根目录或测试临时目录。
+        force: 是否下载候选文件并在完整校验后替换已有缓存。
+
+    Returns:
+        可供样本加载器直接读取的 GSM8K JSONL 路径。
+
+    Raises:
+        ValueError: 强制更新下载的候选文件为空或记录格式无效。
+        OSError: 下载、临时文件或原子替换操作失败。
+    """
     # 先创建父目录；已存在的文件视为可复用缓存，不重复触发网络请求。
     local_path = root / spec.local_path
     local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,6 +159,7 @@ def _prepare_gsm8k(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
         urlretrieve(spec.source_url, local_path)
         return local_path
 
+    # 强制更新不直接覆盖可用缓存；候选文件只有通过逐行校验后才执行同目录原子替换。
     with NamedTemporaryFile(
         prefix=".evalhub-", suffix=".jsonl", dir=local_path.parent, delete=False
     ) as temporary:
@@ -162,8 +176,17 @@ def _prepare_gsm8k(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
 def _prepare_mmlu(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
     """幂等下载并安全解压 MMLU 官方归档。
 
+    Args:
+        spec: 包含官方归档来源与测试集相对目录的数据集规格。
+        root: 数据缓存相对的项目根目录或测试临时目录。
+        force: 是否下载候选归档并在校验后替换现有目录。
+
+    Returns:
+        包含 MMLU `*_test.csv` 文件的本地目录。
+
     Raises:
         RuntimeError: 归档成员试图写出目标数据目录。
+        ValueError: 强制更新的候选归档缺少有效测试 CSV。
     """
     # 任一测试 CSV 已存在即可判定归档完成，避免每次启动重复扫描和解压。
     local_dir = root / spec.local_path
@@ -185,13 +208,21 @@ def _prepare_mmlu(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
 
 
 def _validate_gsm8k_cache(path: Path) -> None:
-    """完整解析候选 GSM8K 文件，拒绝空文件和缺少官方答案的记录。"""
+    """完整解析候选 GSM8K 文件，拒绝空文件和缺少官方答案的记录。
+
+    Args:
+        path: 尚未替换正式缓存的候选 JSONL 文件。
+
+    Raises:
+        ValueError: 文件为空、JSON 无效、问题为空或官方最终答案不可提取。
+    """
     count = 0
     try:
         with path.open("r", encoding="utf-8") as file:
             for line in file:
                 if not line.strip():
                     continue
+                # 每条记录同时校验问题与官方答案，避免损坏缓存延迟到评测阶段才暴露。
                 row = json.loads(line)
                 question = row.get("question")
                 answer = row.get("answer")
@@ -208,7 +239,21 @@ def _validate_gsm8k_cache(path: Path) -> None:
 
 
 def _refresh_mmlu(spec: DatasetSpec, mmlu_root: Path, local_dir: Path) -> Path:
-    """验证候选 MMLU 归档并在同一文件系统中交换目录与归档。"""
+    """验证候选 MMLU 归档并在同一文件系统中交换目录与归档。
+
+    Args:
+        spec: 提供 MMLU 官方归档 URL 的数据集规格。
+        mmlu_root: 正式 `data` 目录和 `data.tar` 所在的缓存根目录。
+        local_dir: 成功替换后返回给调用方的测试集目录。
+
+    Returns:
+        已完成校验和交换的 MMLU 测试集目录。
+
+    Raises:
+        ValueError: 候选归档不包含非空测试 CSV。
+        RuntimeError: 归档成员路径逃逸候选解压目录。
+        OSError: 下载、解压或目录交换失败；已有缓存会尽力回滚。
+    """
     archive_path = mmlu_root / "data.tar"
     target_data = mmlu_root / "data"
     with TemporaryDirectory(prefix=".evalhub-", dir=mmlu_root) as temporary:
@@ -216,6 +261,7 @@ def _refresh_mmlu(spec: DatasetSpec, mmlu_root: Path, local_dir: Path) -> Path:
         candidate_archive = workspace / "data.tar"
         extract_root = workspace / "extracted"
         extract_root.mkdir()
+        # 候选归档和解压目录均位于正式缓存同一文件系统，保证最后的 replace 可原子完成。
         urlretrieve(spec.source_url, candidate_archive)
         with tarfile.open(candidate_archive) as archive:
             _safe_extract(archive, extract_root)
@@ -226,6 +272,7 @@ def _refresh_mmlu(spec: DatasetSpec, mmlu_root: Path, local_dir: Path) -> Path:
         if not csv_files or not all(path.stat().st_size > 0 for path in csv_files):
             raise ValueError("invalid MMLU cache: test CSV files are missing or empty")
 
+        # 旧目录和归档先移入临时工作区，任一步骤失败都能按相反顺序恢复原缓存。
         backup_data = workspace / "old-data"
         backup_archive = workspace / "old-data.tar"
         data_installed = False
@@ -235,11 +282,13 @@ def _refresh_mmlu(spec: DatasetSpec, mmlu_root: Path, local_dir: Path) -> Path:
                 target_data.replace(backup_data)
             if archive_path.exists():
                 archive_path.replace(backup_archive)
+            # 两个候选资产都安装成功后，临时目录退出会自动清理旧缓存备份。
             candidate_data.replace(target_data)
             data_installed = True
             candidate_archive.replace(archive_path)
             archive_installed = True
         except Exception:
+            # 文件系统边界可能从多个具体 OSError 子类失败，统一回滚后保留原异常因果。
             if data_installed and target_data.exists():
                 shutil.rmtree(target_data)
             if archive_installed:

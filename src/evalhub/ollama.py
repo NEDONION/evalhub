@@ -150,6 +150,7 @@ def _build_model_options(
 
     Args:
         installed_models: Ollama 服务按当前顺序返回的本地模型标签。
+        actual_sizes: 以模型标签为键的 Ollama 实际磁盘字节数；缺失时使用推荐预估值。
 
     Returns:
         已安装项优先、推荐项补齐且带安装状态的模型选项列表。
@@ -208,7 +209,20 @@ def _model_option(
     recommended: dict[str, object] | None,
     actual_size: int | None,
 ) -> dict[str, object]:
-    """创建带实际或预估容量来源的统一模型选项。"""
+    """创建带实际或预估容量来源的统一模型选项。
+
+    Args:
+        name: Ollama 模型标签。
+        label: 控制台显示的友好名称。
+        description: 推荐用途或本地安装说明。
+        installed: 模型是否已存在于当前 Ollama 服务。
+        recommended: 匹配的推荐元数据；自定义本地模型为 ``None``。
+        actual_size: Ollama 报告的实际磁盘字节数。
+
+    Returns:
+        包含安装状态、容量和容量来源的 JSON 兼容模型选项。
+    """
+    # 实际容量优先于静态推荐值，保证已安装模型展示用户机器上的真实占用。
     estimated_size = recommended.get("estimated_size_bytes") if recommended else None
     if actual_size is not None:
         size_bytes = actual_size
@@ -219,6 +233,7 @@ def _model_option(
     else:
         size_bytes = None
         size_kind = "unknown"
+    # 容量来源显式返回给前端，界面才能正确区分“约 986 MB”和已安装实际值。
     return {
         "name": name,
         "label": label,

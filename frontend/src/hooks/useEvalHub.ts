@@ -21,10 +21,25 @@ import type {
 
 type HealthState = "loading" | "online" | "offline";
 
+/**
+ * 把未知异常收窄为可在本地控制台安全展示的稳定中文信息。
+ *
+ * @param error 请求、解析或业务边界抛出的未知值。
+ * @returns `Error` 的消息或不泄露内部细节的兜底文案。
+ */
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "发生未知错误";
 }
 
+/**
+ * 管理 EvalHub 控制台的健康状态、数据集、Ollama 下载和评测结果。
+ * Hook 会在模型或地址变化时刷新服务状态，恢复服务端下载任务，并以 500ms 间隔轮询活动下载；
+ * 所有 Effect 都会在依赖变化或卸载时取消更新和清理计时器。
+ *
+ * @param model 当前希望探测或运行的 Ollama 模型标签。
+ * @param baseUrl 当前 Ollama HTTP 服务根地址。
+ * @returns 控制台渲染所需的状态，以及刷新、下载、取消、准备数据集和运行评测动作。
+ */
 export function useEvalHub(model: string, baseUrl: string) {
   const [health, setHealth] = useState<HealthState>("loading");
   const [datasets, setDatasets] = useState<Dataset[]>([]);

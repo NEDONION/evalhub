@@ -19,6 +19,13 @@ interface OllamaPanelProps {
   onDecline: (model: string) => void;
 }
 
+/**
+ * 把 Ollama 探测结果归一化为控制台徽标文案和视觉语气。
+ *
+ * @param status 后端返回的 Ollama 安装、服务和目标模型状态；尚未返回时为 `null`。
+ * @param loading 当前是否正在刷新状态。
+ * @returns 适用于 `Badge` 的中文标签与颜色语气。
+ */
 function statusPresentation(status: OllamaStatus | null, loading: boolean) {
   if (loading && !status) return { label: "检测中", tone: "neutral" as const };
   if (!status?.installed) return { label: "未安装", tone: "danger" as const };
@@ -29,6 +36,20 @@ function statusPresentation(status: OllamaStatus | null, loading: boolean) {
 
 const activePullStatuses = new Set(["pending", "pulling", "verifying"]);
 
+/**
+ * 展示 Ollama 运行时详情，并在目标模型缺失时提供明确的下载选择和实时传输遥测。
+ *
+ * @param status Ollama 安装、运行和本地模型状态。
+ * @param loading 是否正在重新探测运行时。
+ * @param error 运行时探测失败信息。
+ * @param modelOption 当前选择模型的安装状态和容量信息。
+ * @param pullTask 当前服务端模型下载任务快照。
+ * @param pullError 启动、查询或取消下载时的错误信息。
+ * @param downloadDismissed 用户是否已对当前模型选择“暂不下载”。
+ * @param onDownload 启动模型下载的回调。
+ * @param onCancel 取消活动下载的回调。
+ * @param onDecline 拒绝本次下载选择的回调。
+ */
 export function OllamaPanel({
   status,
   loading,

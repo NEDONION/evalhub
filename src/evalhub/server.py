@@ -60,7 +60,11 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         super().__init__(*args, directory=str(static_directory), **kwargs)
 
     def do_GET(self) -> None:
-        """路由健康、数据集、Ollama 状态和 React 静态资源请求。"""
+        """路由健康、数据集、Ollama 状态、下载快照和 React 静态资源请求。
+
+        Side Effects:
+            向当前 HTTP 连接写入 JSON 或静态文件响应；下载查询只读取管理器内存状态。
+        """
         # 先解析路径与查询参数，API 路由不受静态文件路径重写影响。
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
@@ -78,6 +82,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             self._json(get_ollama_status(model=model, base_url=base_url))
             return
         if parsed.path == "/api/ollama/pulls":
+            # 下载状态必须指定模型，避免在未来多任务列表扩展前误返回其他模型信息。
             query = parse_qs(parsed.query)
             model = _first(query, "model", "").strip()
             if not model:
@@ -91,7 +96,12 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         return super().do_GET()
 
     def do_POST(self) -> None:
-        """处理数据集准备和同步评测两个本地写操作 API。"""
+        """处理模型下载、数据集准备和同步评测三个本地写操作 API。
+
+        Side Effects:
+            可能启动 Ollama 后台下载线程、更新本地数据集缓存或同步执行真实评测。
+            所有入口异常都会在 HTTP 边界转换为结构化 JSON，不向浏览器发送 Python 堆栈。
+        """
         # 路径先于正文解析，未知端点无需读取可能很大的请求负载。
         parsed = urlparse(self.path)
         if parsed.path == "/api/ollama/pulls":
@@ -104,11 +114,13 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             if not isinstance(base_url, str) or not base_url.strip():
                 self._json({"ok": False, "error": "base_url must be a string"}, status=400)
                 return
+            # 输入格式错误属于客户端问题；后台线程或传输初始化错误属于本地服务问题。
             try:
                 task = OLLAMA_PULL_MANAGER.start(model.strip(), base_url.strip())
             except ValueError as exc:
                 self._json({"ok": False, "error": str(exc)}, status=400)
             except Exception as exc:
+                # HTTP 入口需要捕获下载管理器边界的未知实现异常，保证连接返回可诊断响应。
                 self._json({"ok": False, "error": str(exc)}, status=500)
             else:
                 self._json({"ok": True, "task": task}, status=202)
@@ -121,6 +133,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             if not isinstance(force, bool):
                 self._json({"ok": False, "error": "force must be a boolean"}, status=400)
                 return
+            # 准备动作在成功前不创建评测任务；失败时保留已有的已验证缓存。
             try:
                 # 下载和缓存由数据集层执行，响应只暴露状态、名称和最终本地路径。
                 was_prepared = _dataset_is_prepared(dataset)
@@ -169,7 +182,11 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         self._json({"ok": False, "error": "not found"}, status=404)
 
     def do_DELETE(self) -> None:
-        """取消仍在进行的本地模型下载任务。"""
+        """取消仍在进行的本地模型下载任务。
+
+        Side Effects:
+            设置下载线程取消事件并尽力关闭当前 Ollama 流式响应；未知任务返回 404。
+        """
         parsed = urlparse(self.path)
         if parsed.path != "/api/ollama/pulls":
             self._json({"ok": False, "error": "not found"}, status=404)
@@ -186,7 +203,12 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         self._json({"ok": True, "task": task})
 
     def _dataset_status(self) -> dict[str, object]:
-        """汇总数据集元数据、本地准备状态和可读取样本数。"""
+        """汇总数据集元数据、本地准备状态和可读取样本数。
+
+        Returns:
+            含稳定目录顺序、公开来源、本地路径、缓存状态和样本数量的响应对象。
+            损坏缓存仍保留 `prepared` 状态，但样本数返回 ``None`` 提示用户更新。
+        """
         # 按目录稳定顺序构建新列表，避免修改不可变的数据集规格对象。
         datasets = []
         for spec in dataset_catalog().values():
@@ -285,7 +307,17 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
 
 
 def _dataset_is_prepared(dataset: str) -> bool:
-    """按目录规格判断数据集是否已有可更新的本地缓存。"""
+    """按目录规格判断数据集是否已有可更新的本地缓存。
+
+    Args:
+        dataset: 数据集目录中已注册的稳定名称。
+
+    Returns:
+        本地路径为文件或包含任意资产时返回 ``True``。
+
+    Raises:
+        KeyError: 数据集名称未在公开目录注册。
+    """
     spec = dataset_catalog()[dataset]
     path = Path(spec.local_path)
     return path.exists() and (path.is_file() or any(path.glob("*")))
