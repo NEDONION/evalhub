@@ -5,6 +5,7 @@ import { DatasetTable } from "./components/dashboard/DatasetTable";
 import { EvaluationForm } from "./components/dashboard/EvaluationForm";
 import { MetricStrip } from "./components/dashboard/MetricStrip";
 import { OllamaPanel } from "./components/dashboard/OllamaPanel";
+import { ResultPanel } from "./components/dashboard/ResultPanel";
 import { useEvalHub } from "./hooks/useEvalHub";
 import { formatScore } from "./lib/evaluation";
 
@@ -69,6 +70,11 @@ export default function App() {
             preparingDataset={dashboard.preparingDataset}
             error={dashboard.datasetError}
             onPrepare={(dataset) => void dashboard.prepare(dataset)}
+          />
+          <ResultPanel
+            result={dashboard.result}
+            running={dashboard.runningEvaluation}
+            error={dashboard.evaluationError}
           />
         </div>
       </main>

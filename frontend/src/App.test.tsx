@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -62,6 +62,30 @@ const ollamaFixture = {
     },
   ],
   message: "Ollama 已就绪。",
+};
+
+const evaluationFixture = {
+  job_id: "job_1",
+  status: "success",
+  dataset: "gsm8k" as const,
+  benchmark: "GSM8K 测试集",
+  model: "qwen2.5:0.5b",
+  adapter: "oracle" as const,
+  metric: "numeric_exact_match",
+  total_samples: 5,
+  passed_samples: 4,
+  average_score: 0.8,
+  failed_sample_ids: ["sample_5"],
+  failed_examples: [
+    {
+      sample_id: "sample_5",
+      score: 0,
+      input: "1 + 1",
+      prediction: "3",
+      reference: "2",
+      reason: "数值不匹配",
+    },
+  ],
 };
 
 beforeEach(() => {
@@ -150,5 +174,49 @@ describe("EvalHub console", () => {
 
     await user.click(screen.getByRole("button", { name: "缓存 MMLU 测试集" }));
     expect(prepareDataset).toHaveBeenCalledWith("mmlu");
+  });
+
+  it("starts with a directed evaluation empty state", async () => {
+    render(<App />);
+
+    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
+    expect(within(resultPanel).getByText("尚未运行评测")).toBeInTheDocument();
+    expect(within(resultPanel).getByText("配置上方参数后发起第一次评测。")).toBeInTheDocument();
+  });
+
+  it("presents a successful evaluation before collapsed raw JSON", async () => {
+    const user = userEvent.setup();
+    vi.mocked(runEvaluation).mockResolvedValue(evaluationFixture);
+    render(<App />);
+
+    await screen.findByLabelText("数据集");
+    await user.click(screen.getByRole("button", { name: "发起评测" }));
+
+    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
+    expect(await within(resultPanel).findByText("0.8000")).toBeInTheDocument();
+    expect(within(resultPanel).getByText("4 / 5")).toBeInTheDocument();
+    expect(within(resultPanel).getByText("80%")).toBeInTheDocument();
+    const details = within(resultPanel).getByText("原始 JSON").closest("details");
+    expect(details).not.toHaveAttribute("open");
+  });
+
+  it("keeps dataset content available when only Ollama status fails", async () => {
+    vi.mocked(getOllamaStatus).mockRejectedValue(new Error("无法连接 Ollama"));
+    render(<App />);
+
+    expect(await screen.findByText("无法连接 Ollama")).toBeInTheDocument();
+    expect(await screen.findByRole("row", { name: /GSM8K 测试集/ })).toBeInTheDocument();
+  });
+
+  it("shows evaluation failures inside the result module", async () => {
+    const user = userEvent.setup();
+    vi.mocked(runEvaluation).mockRejectedValue(new Error("评测执行失败：模型不可用"));
+    render(<App />);
+
+    await screen.findByLabelText("数据集");
+    await user.click(screen.getByRole("button", { name: "发起评测" }));
+
+    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
+    expect(await within(resultPanel).findByRole("alert")).toHaveTextContent("评测执行失败：模型不可用");
   });
 });
