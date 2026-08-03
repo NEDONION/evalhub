@@ -25,6 +25,7 @@ flowchart LR
     CLI[CLI]
     Engine[Evaluation Engine]
     Dataset[(Dataset)]
+    Benchmark[Benchmark Config]
     Model[Model Adapter]
     Evaluator[Evaluator Plugin]
     Result[(样本级结果)]
@@ -36,6 +37,7 @@ flowchart LR
     Web --> Engine
     CLI --> Engine
     Dataset --> Engine
+    Benchmark --> Engine
     Engine --> Model
     Model --> Engine
     Engine --> Evaluator
@@ -48,36 +50,40 @@ flowchart LR
 ```mermaid
 flowchart TB
     subgraph Client[交互层]
-        Browser[浏览器\nfrontend/]
-        Command[CLI\nsrc/evalhub/cli.py]
+        Browser[浏览器<br/>frontend/]
+        Command[CLI<br/>src/evalhub/cli.py]
     end
 
     subgraph Local[本地 EvalHub 进程]
-        Server[HTTP Server\nsrc/evalhub/server.py]
-        Loader[Dataset Loader\nsrc/evalhub/datasets/]
-        Registry[InMemory Registry\nsrc/evalhub/registry/]
-        Runner[Evaluation Runner\nsrc/evalhub/engine/]
-        Eval[Evaluator Registry\nsrc/evalhub/evaluators/]
-        Adapter[Model Adapter\nsrc/evalhub/adapters/]
+        Server[HTTP Server<br/>src/evalhub/server.py]
+        subgraph Orchestration[Web / CLI 编排边界]
+            Workflow[run_real_benchmark()<br/>准备、加载、创建记录与依赖]
+        end
+        Loader[Dataset Loader<br/>src/evalhub/datasets/]
+        Registry[InMemory Registry<br/>src/evalhub/registry/]
+        Runner[Evaluation Runner<br/>src/evalhub/engine/]
+        Eval[Evaluator Registry<br/>src/evalhub/evaluators/]
+        Adapter[Model Adapter<br/>src/evalhub/adapters/]
     end
 
     Public[(GSM8K / MMLU)]
     Cache[(data/ 本地缓存)]
-    Ollama[Ollama API\n127.0.0.1:11434]
+    Ollama[Ollama API<br/>127.0.0.1:11434]
 
     Browser -->|HTTP / JSON| Server
-    Command --> Loader
-    Command --> Runner
-    Server --> Loader
-    Server --> Runner
+    Server --> Workflow
+    Command --> Workflow
+    Workflow -->|准备并加载| Loader
     Public -->|首次下载| Cache
     Cache -->|加载样本| Loader
-    Loader --> Registry
-    Registry --> Runner
+    Loader -->|返回 samples| Workflow
+    Workflow -->|创建 Model / Dataset / Benchmark / Job| Registry
+    Workflow -->|create evaluator| Eval
+    Eval -->|Evaluator 实例注入| Runner
+    Workflow -->|注入 adapter、job、benchmark、samples| Runner
     Runner --> Adapter
     Adapter -->|POST /api/generate| Ollama
     Ollama -->|模型输出| Adapter
-    Runner --> Eval
 ```
 
 当前 MVP 是单机、同步、零前端构建依赖的实现。Web 与 CLI 复用同一条 Python 评测核心链路。
@@ -124,9 +130,11 @@ flowchart TD
     Quick --> Prepare
     Custom --> Prepare
     Prepare[准备数据集] --> Prepared{数据可用?}
-    Prepared -->|否| DataError[返回下载或读取错误]
+    Prepared -->|否| DataError[返回准备或加载错误<br/>尚未创建 Job]
     Prepared -->|是| Load[加载并标准化 EvaluationSample]
-    Load --> Records[创建 Model / Dataset / Benchmark / Job 记录]
+    Load --> Loaded{样本可用?}
+    Loaded -->|否| DataError
+    Loaded -->|是| Records[创建 Model / Dataset / Benchmark / Job 记录]
     Records --> Running[Job 标记为 running]
     Running --> Loop[逐样本执行]
     Loop --> Infer[Model Adapter 调用 Ollama]
@@ -137,8 +145,8 @@ flowchart TD
     More -->|否| Aggregate[聚合 EvaluationReport]
     Aggregate --> Success[Job 标记为 success]
     Success --> Output[CLI JSON 或 Web 结果面板]
-    Infer -->|服务或推理异常| Failed[Job 标记为 failed]
-    Score -->|评分异常| Failed
+    Infer -->|runner.run() 内服务或推理异常| Failed[Job 标记为 failed]
+    Score -->|runner.run() 内评分异常| Failed
     Failed --> Error[返回错误信息]
 ```
 
@@ -228,9 +236,17 @@ sequenceDiagram
     Browser->>Server: GET /api/health
     Browser->>Server: GET /api/datasets
     Browser->>Server: GET /api/ollama/status
-    Server->>API: GET /api/tags
-    API-->>Server: 服务和模型状态
-    Server-->>Browser: 中文状态面板
+    alt 未检测到 ollama 命令
+        Server-->>Browser: installed=false（不调用 Ollama API）
+    else 已安装 Ollama
+        Server->>API: GET /api/tags
+        alt API 可访问
+            API-->>Server: 模型列表
+            Server-->>Browser: 已就绪或模型缺失状态
+        else API 不可访问
+            Server-->>Browser: installed=true、running=false
+        end
+    end
 ```
 
 打开：
@@ -247,7 +263,7 @@ http://127.0.0.1:8000
 
 如果检测到 Ollama 已安装但未运行，脚本会尝试自动启动 `ollama serve`，日志写入 `.runtime/ollama.log`。不需要 npm、React 构建或 FastAPI 依赖。
 
-Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪；数据集下载、Ollama 推理或 Evaluator 失败时 API 返回错误，Runner 将 Job 状态更新为 `failed`。
+Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪。数据集准备或加载失败时 API 返回错误，此时尚未创建 Job；进入 `runner.run()` 后的 Ollama 推理或 Evaluator 异常则会将 Job 状态更新为 `failed`。
 
 ## 目录结构
 
