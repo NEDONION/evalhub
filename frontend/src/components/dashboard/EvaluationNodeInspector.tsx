@@ -407,7 +407,8 @@ function agentEventEvidence(event: EvaluationNodeEvent): string | null {
     const files = changedFiles.filter((item): item is string => typeof item === "string");
     return files.length > 0 ? files.join("\n") : null;
   }
-  const verifierMessage = event.payload?.verifier_message;
+  const verifierMessage =
+    event.event_type === "verifier_finished" ? event.payload?.message : null;
   if (typeof verifierMessage === "string" && verifierMessage) return verifierMessage;
   return null;
 }

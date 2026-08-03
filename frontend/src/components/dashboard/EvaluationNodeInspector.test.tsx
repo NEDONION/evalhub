@@ -64,6 +64,17 @@ const refreshedDetail: EvaluationNodeDetail = {
       payload: { tool_name: "command_execution", exit_code: 0, output: "1 passed" },
       created_at: "2026-08-04T02:00:03+00:00",
     },
+    {
+      id: 3,
+      event_type: "verifier_finished",
+      from_status: null,
+      to_status: null,
+      attempt: 1,
+      actor: "benchmark",
+      message: "隐藏校验失败",
+      payload: { sample_id: "pricing_total", passed: false, message: "AssertionError: total" },
+      created_at: "2026-08-04T02:00:04+00:00",
+    },
   ],
 };
 
@@ -103,5 +114,6 @@ describe("EvaluationNodeInspector", () => {
     await waitFor(() => expect(getEvaluationNode).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("pytest -q")).toBeInTheDocument();
     expect(screen.getByText("1 passed")).toBeInTheDocument();
+    expect(screen.getByText("AssertionError: total")).toBeInTheDocument();
   });
 });
