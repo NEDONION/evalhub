@@ -1,4 +1,4 @@
-import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
+import { Play, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatBytes } from "../../lib/assets";
@@ -17,7 +17,7 @@ interface EvaluationFormProps {
   preparing: boolean;
   onModelChange: (model: string) => void;
   onBaseUrlCommit: (baseUrl: string) => void;
-  onPrepare: (dataset: DatasetName) => void;
+  onManageAssets: () => void;
   onSubmit: (request: EvaluationRequest) => void;
 }
 
@@ -39,7 +39,7 @@ export function EvaluationForm({
   preparing,
   onModelChange,
   onBaseUrlCommit,
-  onPrepare,
+  onManageAssets,
   onSubmit,
 }: EvaluationFormProps) {
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
@@ -160,7 +160,14 @@ export function EvaluationForm({
                   </option>
                 ))}
               </select>
-              {missingOllamaModel ? <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage> : null}
+              {missingOllamaModel ? (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
+                    前往资产管理
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -233,11 +240,7 @@ export function EvaluationForm({
                   ? "固定运行 5 条样本，适合验证链路是否正常。"
                   : `将运行前 ${limit || "—"} 条样本。`}
             </div>
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="secondary" onClick={() => onPrepare(dataset)} disabled={preparing || running}>
-                <DatabaseZap className="h-4 w-4" aria-hidden="true" />
-                {preparing ? "正在缓存" : "缓存当前数据集"}
-              </Button>
+            <div className="flex justify-end">
               <Button type="submit" disabled={running || preparing || missingOllamaModel}>
                 <Play className="h-4 w-4" aria-hidden="true" />
                 {running ? "正在评测" : "发起评测"}
