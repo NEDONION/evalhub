@@ -1,12 +1,15 @@
+"""探测本地 Ollama 安装与服务状态，并生成控制台可用的模型选项。"""
+
 import json
-from pathlib import Path
 import shutil
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
-
+# 默认连接与模型兼顾开箱即用和低资源机器的本地运行成本。
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "qwen2.5:0.5b"
+# 推荐列表提供未安装模型的展示信息，已安装模型仍会在最终选项中优先出现。
 RECOMMENDED_OLLAMA_MODELS = [
     {
         "name": "qwen2.5:0.5b",
@@ -42,10 +45,17 @@ RECOMMENDED_OLLAMA_MODELS = [
 
 
 def find_ollama_command() -> str | None:
+    """查找命令行或 macOS 应用包中的 Ollama 可执行文件。
+
+    Returns:
+        可执行文件路径；两种安装方式均未发现时返回 ``None``。
+    """
+    # 优先尊重当前进程 PATH，兼容 Homebrew、官方安装器和自定义命令位置。
     command = shutil.which("ollama")
     if command:
         return command
 
+    # macOS 图形应用可能未把命令加入 PATH，因此补充检查应用包内的官方路径。
     app_command = Path("/Applications/Ollama.app/Contents/Resources/ollama")
     if app_command.exists():
         return str(app_command)
@@ -57,6 +67,16 @@ def get_ollama_status(
     model: str = DEFAULT_OLLAMA_MODEL,
     base_url: str = DEFAULT_OLLAMA_BASE_URL,
 ) -> dict[str, object]:
+    """汇总 Ollama 安装、服务、模型和推荐选项状态。
+
+    Args:
+        model: 当前控制台希望使用的目标模型标签。
+        base_url: Ollama 服务根地址，路径末尾斜杠会在请求前移除。
+
+    Returns:
+        包含安装、运行、模型存在性、模型列表、选项和用户提示的字典。
+    """
+    # 命令不存在时无需发起网络请求，直接返回可指导安装的完整状态结构。
     command = find_ollama_command()
     if command is None:
         return {
@@ -71,10 +91,12 @@ def get_ollama_status(
             "message": "未检测到 ollama 命令。",
         }
 
+    # 服务探测使用短超时读取模型标签，避免控制台状态请求长时间阻塞。
     try:
         with urlopen(f"{base_url.rstrip('/')}/api/tags", timeout=3) as response:
             body = json.loads(response.read().decode("utf-8"))
     except (HTTPError, URLError, TimeoutError, OSError) as exc:
+        # 已安装但服务不可达与未安装是不同状态，保留命令路径和底层原因帮助排障。
         return {
             "installed": True,
             "running": False,
@@ -87,8 +109,10 @@ def get_ollama_status(
             "message": f"Ollama 命令已安装，但服务未运行或不可访问：{exc}",
         }
 
+    # 不同 Ollama 版本可能使用 ``name`` 或 ``model`` 字段，这里统一为字符串标签。
     models = [str(item.get("name") or item.get("model")) for item in body.get("models", [])]
     model_present = model in models
+    # 成功状态同时返回已安装模型和推荐补充项，供前端直接渲染同一个选择列表。
     return {
         "installed": True,
         "running": True,
@@ -105,10 +129,20 @@ def get_ollama_status(
 
 
 def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]:
+    """合并已安装模型和推荐模型为去重的展示选项。
+
+    Args:
+        installed_models: Ollama 服务按当前顺序返回的本地模型标签。
+
+    Returns:
+        已安装项优先、推荐项补齐且带安装状态的模型选项列表。
+    """
+    # 集合分别承担快速安装状态判断和去重，列表继续保留用户本地模型顺序。
     installed_set = set(installed_models)
     options: list[dict[str, object]] = []
     seen: set[str] = set()
 
+    # 先输出本机模型；命中推荐元数据时使用友好标签，否则保留原始模型名。
     for model in installed_models:
         recommended = _recommended_by_name(model)
         options.append(
@@ -123,6 +157,7 @@ def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]
         )
         seen.add(model)
 
+    # 再追加尚未出现的推荐模型，让用户可以直接看到可拉取的候选项。
     for model in RECOMMENDED_OLLAMA_MODELS:
         name = str(model["name"])
         if name in seen:
@@ -136,10 +171,17 @@ def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]
             }
         )
 
+    # 返回全新列表，调用方的展示排序不会反向修改模块级推荐配置。
     return options
 
 
 def _recommended_by_name(name: str) -> dict[str, str] | None:
+    """按模型标签查找推荐展示元数据。
+
+    Returns:
+        命中的推荐字典；模型不在推荐集合时返回 ``None``。
+    """
+    # 推荐集合规模很小，顺序扫描保持实现直观且不引入额外全局索引状态。
     for model in RECOMMENDED_OLLAMA_MODELS:
         if model["name"] == name:
             return model

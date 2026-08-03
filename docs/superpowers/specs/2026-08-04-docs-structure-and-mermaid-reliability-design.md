@@ -1,0 +1,137 @@
+# Documentation Structure and Mermaid Reliability Design
+
+## Goal
+
+把 `docs/` 从根目录平铺整理为按用途分组的文档中心，同时修复 README Mermaid 解析错误，并把过于简单的“企业级演进路线图”升级为更详细、可维护的“演进路线图”。
+
+## Scope
+
+- 为 `docs/` 增加清晰、不过度拆分的子目录。
+- 移动现有正式文档，保留文件内容与未提交改动。
+- 新增 `docs/README.md` 作为文档导航入口。
+- 更新 README、正式文档和 `docs/superpowers/` 中所有有效路径引用。
+- 修复 README 中全部 Mermaid 解析问题，而不只处理当前暴露的两处。
+- 将路线图标题改为“演进路线图”，用五条能力泳道描述四个阶段。
+- 使用 Mermaid CLI 对 README 中每一个 Mermaid 块进行真实解析验证。
+
+## Non-Goals
+
+- 不拆分现有单篇文档的正文。
+- 不新增空目录、占位文档或尚无内容的 ADR/运维手册。
+- 不改变 Python、前端或启动脚本行为。
+- 不重写历史设计与计划的业务内容，只更新因目录迁移而失效的路径和与 README 对应的 Mermaid 示例。
+
+## Documentation Layout
+
+```text
+docs/
+├── README.md
+├── getting-started/
+│   ├── LOCAL_RUN.md
+│   └── OLLAMA.md
+├── architecture/
+│   ├── ARCHITECTURE.md
+│   ├── API.md
+│   └── DATA_MODEL.md
+├── product/
+│   ├── PRD.md
+│   └── ROADMAP.md
+├── development/
+│   └── CODEX_WORKFLOW.md
+└── superpowers/
+    ├── plans/
+    └── specs/
+```
+
+### Directory Responsibilities
+
+- `getting-started/`：安装、本地启动、模型服务和故障排查。
+- `architecture/`：系统分层、接口契约和数据模型。
+- `product/`：产品范围、能力边界和阶段规划。
+- `development/`：开发协作与 Codex 文档沉淀流程。
+- `superpowers/`：设计决策与实施计划的历史记录，保持现有二级结构。
+
+`docs/README.md` 用表格列出每个分组、入口文档和阅读顺序。README 根文档继续承担项目首页职责，不复制各文档正文。
+
+## Path Migration
+
+使用以下固定映射：
+
+| Old path | New path |
+| --- | --- |
+| `docs/LOCAL_RUN.md` | `docs/getting-started/LOCAL_RUN.md` |
+| `docs/OLLAMA.md` | `docs/getting-started/OLLAMA.md` |
+| `docs/ARCHITECTURE.md` | `docs/architecture/ARCHITECTURE.md` |
+| `docs/API.md` | `docs/architecture/API.md` |
+| `docs/DATA_MODEL.md` | `docs/architecture/DATA_MODEL.md` |
+| `docs/PRD.md` | `docs/product/PRD.md` |
+| `docs/ROADMAP.md` | `docs/product/ROADMAP.md` |
+| `docs/CODEX_WORKFLOW.md` | `docs/development/CODEX_WORKFLOW.md` |
+
+迁移后更新以下引用来源：
+
+- 根 `README.md` 的 Markdown 链接与目录树。
+- 正式文档中的相互引用。
+- `docs/superpowers/plans/` 与 `docs/superpowers/specs/` 中指向正式文档的路径。
+
+文件移动采用 Git 可识别的 rename 语义。`LOCAL_RUN.md` 与 `OLLAMA.md` 当前工作区改动必须原样随文件移动，不得回退、覆盖或单独暂存用户内容。
+
+## Mermaid Root Cause and Safety Rule
+
+已用 Mermaid CLI 11.16.0 稳定复现两处错误：
+
+- `Workflow[run_real_benchmark()<br/>...]`
+- `Infer -->|runner.run() ...| Failed`
+
+根因是 flowchart 中未引用的节点或边标签包含 `()`，解析器把左括号识别成形状语法的一部分。
+
+统一规则：
+
+- 含 `()`、`/`、逗号、HTML 换行或其他特殊字符的节点文本使用 `Node["..."]`。
+- 含特殊字符的边文本使用 `-->|"..."|`。
+- 新增或修改图后，不能只统计代码块；必须把每个 Mermaid 块提取为 `.mmd` 并用官方 Mermaid CLI 渲染。
+- README 和 `docs/superpowers/plans/2026-08-04-readme-diagrams.md` 中对应图保持一致。
+
+## Evolution Roadmap
+
+标题改为“演进路线图”，不再使用“企业级”作为标题限定。
+
+图采用五条横向能力泳道，每条泳道包含四个阶段：
+
+| Capability lane | Stage 1: 当前本地 MVP | Stage 2: 平台服务化 | Stage 3: 分布式执行 | Stage 4: 质量治理 |
+| --- | --- | --- | --- | --- |
+| 体验入口 | 静态 Web + CLI | React Console | 多项目工作台 | 自助报告与门禁视图 |
+| 任务编排 | 同步 API/命令 | Job API + 状态机 | Scheduler + Queue + 重试/取消 | Policy 与 Release Gate 编排 |
+| 执行与插件 | Runner + Adapter + Evaluator | Worker 契约与插件注册 | 弹性 Worker Pool + 远端推理 | LLM Judge + Safety + Agent Eval |
+| 数据与制品 | 本地 Dataset + InMemory Registry | PostgreSQL Registry | MinIO Artifact + Dataset Cache | 版本、血缘与可复现快照 |
+| 可观测与治理 | JSON 报告 + 失败样例 | 指标、日志与任务历史 | Trace + Audit + 成本统计 | Leaderboard + SLA + 发布审计 |
+
+展示规则：
+
+- 当前能力使用蓝色实线节点。
+- 下一阶段使用绿色实线节点并明确标记“规划”。
+- 后续阶段使用灰色虚线节点并明确标记“规划”。
+- 每条泳道只表达同类能力的演进，避免把不同组件串成错误的运行调用链。
+
+## Validation
+
+### Mermaid RED/GREEN
+
+1. 修复前，Mermaid CLI 必须对当前架构图与 Benchmark 流程图返回解析错误，错误位置分别包含 `run_real_benchmark()` 与 `runner.run()`。
+2. 修复后，README 中全部 5 个 Mermaid 块必须逐一生成 SVG，退出码均为 0。
+3. README 与实施计划中对应的 5 个 Mermaid 块提取结果必须一致。
+
+### Documentation Integrity
+
+- `docs/` 根目录只保留 `README.md` 和子目录，不再平铺正式文档。
+- 8 个旧路径全部不存在，8 个新路径全部存在。
+- 扫描仓库 Markdown，不应再出现指向旧正式文档路径的有效引用。
+- 所有 Markdown 相对链接目标存在。
+- `git diff --check` 通过。
+
+### Regression
+
+- Python 测试全部通过。
+- `node --check frontend/app.js` 通过。
+- `bash -n scripts/start_local.sh` 通过。
+- 只修改 README、docs 文档与本任务的设计/计划；现有前端、Python 和脚本 changes 不得被暂存或覆盖。

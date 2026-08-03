@@ -73,13 +73,13 @@
 
 ### Evolution Roadmap
 
-采用三阶段 flowchart：
+标题使用“演进路线图”，采用五条横向能力泳道和四个阶段：
 
-1. Local MVP：静态 Web、CLI、同步 Runner、内存 Registry、本地数据、Ollama。
-2. Service Platform：React Console、FastAPI、PostgreSQL、异步 Job API。
-3. Enterprise Scale：Scheduler、RabbitMQ、Celery Workers、MinIO、Leaderboard、Release Gate、Trace 与审计。
+1. 泳道：体验入口、任务编排、执行与插件、数据与制品、可观测与治理。
+2. 阶段：当前本地 MVP、平台服务化、分布式执行、质量治理。
+3. 当前能力使用蓝色实线节点，下一阶段使用绿色实线节点，后续规划使用灰色虚线节点。
 
-箭头只表示能力演进，不暗示未实现组件已经可用。
+每条泳道只表达同类能力的演进，不把不同组件连接成运行调用链，也不暗示规划组件已经可用。
 
 ## Error Handling and Accuracy
 
@@ -92,7 +92,7 @@
 
 - 检查 README 中恰好包含 5 个 Mermaid 代码块。
 - 检查 Mermaid 块围栏成对、图类型为 GitHub 支持的 `flowchart` 或 `sequenceDiagram`。
-- 逐图核对节点与当前源码、`docs/ARCHITECTURE.md` 和运行命令一致。
+- 逐图核对节点与当前源码、`docs/architecture/ARCHITECTURE.md` 和运行命令一致。
 - 运行 Markdown 链接检查或等价的本地静态检查，确认原有相对链接仍存在。
 - 运行 `git diff --check`，避免 Markdown 空白错误。
 - 确认只修改 README 和本任务的设计/计划文档，不覆盖工作区现有其他改动。

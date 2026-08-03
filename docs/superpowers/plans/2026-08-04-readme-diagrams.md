@@ -40,6 +40,7 @@ flowchart LR
     CLI[CLI]
     Engine[Evaluation Engine]
     Dataset[(Dataset)]
+    Benchmark[Benchmark Config]
     Model[Model Adapter]
     Evaluator[Evaluator Plugin]
     Result[(样本级结果)]
@@ -51,6 +52,7 @@ flowchart LR
     Web --> Engine
     CLI --> Engine
     Dataset --> Engine
+    Benchmark --> Engine
     Engine --> Model
     Model --> Engine
     Engine --> Evaluator
@@ -64,37 +66,41 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Client[交互层]
-        Browser[浏览器\nfrontend/]
-        Command[CLI\nsrc/evalhub/cli.py]
+    subgraph Client["交互层"]
+        Browser["浏览器<br/>frontend/"]
+        Command["CLI<br/>src/evalhub/cli.py"]
     end
 
-    subgraph Local[本地 EvalHub 进程]
-        Server[HTTP Server\nsrc/evalhub/server.py]
-        Loader[Dataset Loader\nsrc/evalhub/datasets/]
-        Registry[InMemory Registry\nsrc/evalhub/registry/]
-        Runner[Evaluation Runner\nsrc/evalhub/engine/]
-        Eval[Evaluator Registry\nsrc/evalhub/evaluators/]
-        Adapter[Model Adapter\nsrc/evalhub/adapters/]
+    subgraph Local["本地 EvalHub 进程"]
+        Server["HTTP Server<br/>src/evalhub/server.py"]
+        subgraph Orchestration["Web / CLI 编排边界"]
+            Workflow["run_real_benchmark()<br/>准备、加载、创建记录与依赖"]
+        end
+        Loader["Dataset Loader<br/>src/evalhub/datasets/"]
+        Registry["InMemory Registry<br/>src/evalhub/registry/"]
+        Runner["Evaluation Runner<br/>src/evalhub/engine/"]
+        Eval["Evaluator Registry<br/>src/evalhub/evaluators/"]
+        Adapter["Model Adapter<br/>src/evalhub/adapters/"]
     end
 
-    Public[(GSM8K / MMLU)]
-    Cache[(data/ 本地缓存)]
-    Ollama[Ollama API\n127.0.0.1:11434]
+    Public[("GSM8K / MMLU")]
+    Cache[("data/ 本地缓存")]
+    Ollama["Ollama API<br/>127.0.0.1:11434"]
 
-    Browser -->|HTTP / JSON| Server
-    Command --> Loader
-    Command --> Runner
-    Server --> Loader
-    Server --> Runner
-    Public -->|首次下载| Cache
-    Cache -->|加载样本| Loader
-    Loader --> Registry
-    Registry --> Runner
+    Browser -->|"HTTP / JSON"| Server
+    Server --> Workflow
+    Command --> Workflow
+    Workflow -->|"准备并加载"| Loader
+    Public -->|"首次下载"| Cache
+    Cache -->|"加载样本"| Loader
+    Loader -->|"返回 samples"| Workflow
+    Workflow -->|"创建 Model / Dataset / Benchmark / Job"| Registry
+    Workflow -->|"create evaluator"| Eval
+    Eval -->|"返回 Evaluator"| Workflow
+    Workflow -->|"注入 adapter、evaluator、job、benchmark、samples"| Runner
     Runner --> Adapter
-    Adapter -->|POST /api/generate| Ollama
-    Ollama -->|模型输出| Adapter
-    Runner --> Eval
+    Adapter -->|"POST /api/generate"| Ollama
+    Ollama -->|"模型输出"| Adapter
 ```
 
 - [ ] **Step 3: Add a concise reading guide**
@@ -139,9 +145,11 @@ flowchart TD
     Quick --> Prepare
     Custom --> Prepare
     Prepare[准备数据集] --> Prepared{数据可用?}
-    Prepared -->|否| DataError[返回下载或读取错误]
+    Prepared -->|否| DataError["返回准备或加载错误<br/>尚未创建 Job"]
     Prepared -->|是| Load[加载并标准化 EvaluationSample]
-    Load --> Records[创建 Model / Dataset / Benchmark / Job 记录]
+    Load --> Loaded{样本可用?}
+    Loaded -->|否| DataError
+    Loaded -->|是| Records[创建 Model / Dataset / Benchmark / Job 记录]
     Records --> Running[Job 标记为 running]
     Running --> Loop[逐样本执行]
     Loop --> Infer[Model Adapter 调用 Ollama]
@@ -152,8 +160,8 @@ flowchart TD
     More -->|否| Aggregate[聚合 EvaluationReport]
     Aggregate --> Success[Job 标记为 success]
     Success --> Output[CLI JSON 或 Web 结果面板]
-    Infer -->|服务或推理异常| Failed[Job 标记为 failed]
-    Score -->|评分异常| Failed
+    Infer -->|"runner.run() 内服务或推理异常"| Failed["Job 标记为 failed"]
+    Score -->|"runner.run() 内评分异常"| Failed
     Failed --> Error[返回错误信息]
 ```
 
@@ -185,14 +193,22 @@ sequenceDiagram
     Browser->>Server: GET /api/health
     Browser->>Server: GET /api/datasets
     Browser->>Server: GET /api/ollama/status
-    Server->>API: GET /api/tags
-    API-->>Server: 服务和模型状态
-    Server-->>Browser: 中文状态面板
+    alt 未检测到 ollama 命令
+        Server-->>Browser: installed=false（不调用 Ollama API）
+    else 已安装 Ollama
+        Server->>API: GET /api/tags
+        alt API 可访问
+            API-->>Server: 模型列表
+            Server-->>Browser: 已就绪或模型缺失状态
+        else API 不可访问
+            Server-->>Browser: installed=true、running=false
+        end
+    end
 ```
 
 - [ ] **Step 3: Add failure behavior notes**
 
-说明 Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪；数据集下载、Ollama 推理或 Evaluator 失败时 API 返回错误，Runner 将 Job 状态更新为 `failed`。
+说明 Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪。数据集准备或加载失败时 API 返回错误，此时尚未创建 Job；进入 `runner.run()` 后的 Ollama 推理或 Evaluator 异常则会将 Job 状态更新为 `failed`。
 
 - [ ] **Step 4: Verify both flows**
 
@@ -208,56 +224,65 @@ Expected: 三条命令退出码均为 0，README 中有 4 个 Mermaid 块。
 
 ---
 
-### Task 3: Add the enterprise evolution roadmap and validate the README
+### Task 3: Add the evolution roadmap and validate the README
 
 **Files:**
 - Modify: `README.md` 中“目录结构”和“下一步建议”之间。
-- Keep: `docs/ARCHITECTURE.md` 作为更完整的架构说明链接。
+- Keep: `docs/architecture/ARCHITECTURE.md` 作为更完整的架构说明链接。
 
 **Interfaces:**
-- Consumes: 当前 README“下一步建议”与 `docs/ARCHITECTURE.md` 的目标生产架构。
-- Produces: 三阶段企业级演进路线图、图例和最终验证结果。
+- Consumes: 当前 README“下一步建议”与 `docs/architecture/ARCHITECTURE.md` 的目标生产架构。
+- Produces: 五泳道、四阶段演进路线图、图例和最终验证结果。
 
 - [ ] **Step 1: Insert the evolution roadmap**
 
 ```mermaid
-flowchart LR
-    subgraph P1[阶段 1 · 当前 Local MVP]
-        L1[静态 Web + CLI]
-        L2[同步 Evaluation Runner]
-        L3[InMemory Registry]
-        L4[本地 Dataset + Ollama]
-        L1 --> L2 --> L3 --> L4
+flowchart TB
+    subgraph Experience["体验入口"]
+        direction LR
+        UX1["① 当前本地 MVP<br/>静态 Web + CLI"] --> UX2["② 平台服务化（规划）<br/>React Console"] --> UX3["③ 分布式执行（规划）<br/>多项目工作台"] --> UX4["④ 质量治理（规划）<br/>自助报告与门禁视图"]
     end
 
-    subgraph P2[阶段 2 · 服务化（规划）]
-        S1[React Console]
-        S2[FastAPI]
-        S3[PostgreSQL]
-        S4[异步 Evaluation Job API]
-        S1 --> S2 --> S3 --> S4
+    subgraph Orchestration["任务编排"]
+        direction LR
+        OR1["① 当前本地 MVP<br/>同步 API / 命令"] --> OR2["② 平台服务化（规划）<br/>Job API + 状态机"] --> OR3["③ 分布式执行（规划）<br/>Scheduler + Queue + 重试 / 取消"] --> OR4["④ 质量治理（规划）<br/>Policy + Release Gate 编排"]
     end
 
-    subgraph P3[阶段 3 · 企业级平台（规划）]
-        E1[Scheduler + RabbitMQ]
-        E2[Celery Worker Pool]
-        E3[MinIO Artifact Store]
-        E4[Leaderboard + Release Gate]
-        E5[Trace + Audit]
-        E1 --> E2 --> E3 --> E4 --> E5
+    subgraph Execution["执行与插件"]
+        direction LR
+        EX1["① 当前本地 MVP<br/>Runner + Adapter + Evaluator"] --> EX2["② 平台服务化（规划）<br/>Worker 契约 + 插件注册"] --> EX3["③ 分布式执行（规划）<br/>弹性 Worker Pool + 远端推理"] --> EX4["④ 质量治理（规划）<br/>LLM Judge + Safety + Agent Eval"]
     end
 
-    P1 ==> P2 ==> P3
+    subgraph Data["数据与制品"]
+        direction LR
+        DA1["① 当前本地 MVP<br/>本地 Dataset + InMemory Registry"] --> DA2["② 平台服务化（规划）<br/>PostgreSQL Registry"] --> DA3["③ 分布式执行（规划）<br/>MinIO Artifact + Dataset Cache"] --> DA4["④ 质量治理（规划）<br/>版本、血缘与可复现快照"]
+    end
 
-    classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827;
-    classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray: 5 5;
-    class L1,L2,L3,L4 current;
-    class S1,S2,S3,S4,E1,E2,E3,E4,E5 planned;
+    subgraph Governance["可观测与治理"]
+        direction LR
+        GO1["① 当前本地 MVP<br/>JSON 报告 + 失败样例"] --> GO2["② 平台服务化（规划）<br/>指标、日志与任务历史"] --> GO3["③ 分布式执行（规划）<br/>Trace + Audit + 成本统计"] --> GO4["④ 质量治理（规划）<br/>Leaderboard + SLA + 发布审计"]
+    end
+
+    UX1 ~~~ OR1
+    UX4 ~~~ OR4
+    OR1 ~~~ EX1
+    OR4 ~~~ EX4
+    EX1 ~~~ DA1
+    EX4 ~~~ DA4
+    DA1 ~~~ GO1
+    DA4 ~~~ GO4
+
+    classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
+    classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
+    classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
+    class UX1,OR1,EX1,DA1,GO1 current;
+    class UX2,OR2,EX2,DA2,GO2 next;
+    class UX3,UX4,OR3,OR4,EX3,EX4,DA3,DA4,GO3,GO4 planned;
 ```
 
 - [ ] **Step 2: Add the legend and architecture link**
 
-在路线图前说明蓝色实线节点代表当前能力，灰色虚线节点代表规划能力；图后链接 `[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)`，引导需要更多细节的读者。
+在路线图前说明蓝色实线节点代表当前能力，绿色实线节点代表下一阶段，灰色虚线节点代表后续规划；图后链接目标使用 `docs/architecture/ARCHITECTURE.md`，引导需要更多细节的读者。
 
 - [ ] **Step 3: Verify Mermaid block count and Markdown integrity**
 
@@ -265,8 +290,8 @@ Run:
 
 ```bash
 test "$(rg -c '^```mermaid$' README.md)" -eq 5
-awk '/^```mermaid$/{open++} /^```$/{close++} END{exit (open == 5 && close >= 5) ? 0 : 1}' README.md
-for path in docs/OLLAMA.md docs/CODEX_WORKFLOW.md docs/ARCHITECTURE.md; do test -e "$path"; done
+awk '/^```mermaid$/{open_count++} /^```$/{close_count++} END{exit (open_count == 5 && close_count >= 5) ? 0 : 1}' README.md
+for file_path in docs/getting-started/OLLAMA.md docs/development/CODEX_WORKFLOW.md docs/architecture/ARCHITECTURE.md; do test -e "$file_path"; done
 git diff --check -- README.md
 ```
 

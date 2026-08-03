@@ -10,13 +10,13 @@
 
 | 内容 | 文件 |
 | --- | --- |
-| 产品定位、功能范围 | `docs/PRD.md` |
-| 架构、模块职责、扩展原则 | `docs/ARCHITECTURE.md` |
-| API 设计 | `docs/API.md` |
-| 数据模型 | `docs/DATA_MODEL.md` |
-| 本地运行、真实数据、模型服务 | `docs/LOCAL_RUN.md` |
-| Ollama 安装与故障排查 | `docs/OLLAMA.md` |
-| 阶段计划与 backlog | `docs/ROADMAP.md` |
+| 产品定位、功能范围 | `docs/product/PRD.md` |
+| 架构、模块职责、扩展原则 | `docs/architecture/ARCHITECTURE.md` |
+| API 设计 | `docs/architecture/API.md` |
+| 数据模型 | `docs/architecture/DATA_MODEL.md` |
+| 本地运行、真实数据、模型服务 | `docs/getting-started/LOCAL_RUN.md` |
+| Ollama 安装与故障排查 | `docs/getting-started/OLLAMA.md` |
+| 阶段计划与 backlog | `docs/product/ROADMAP.md` |
 
 ## 每轮对话结束 Checklist
 

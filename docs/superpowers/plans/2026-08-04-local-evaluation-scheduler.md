@@ -562,10 +562,10 @@ git commit -m "feat: add Chinese evaluation scheduling center"
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/LOCAL_RUN.md`
-- Modify: `docs/API.md`
-- Modify: `docs/DATA_MODEL.md`
-- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/getting-started/LOCAL_RUN.md`
+- Modify: `docs/architecture/API.md`
+- Modify: `docs/architecture/DATA_MODEL.md`
+- Modify: `docs/architecture/ARCHITECTURE.md`
 - Test: `tests/test_scheduler_restart.py`
 
 **Interfaces:**
@@ -614,6 +614,6 @@ Invoke `browser:control-in-app-browser` and capture 1440x900 and 390x844 screens
 - [ ] **Step 7: Commit documentation and restart coverage**
 
 ```bash
-git add README.md docs/LOCAL_RUN.md docs/API.md docs/DATA_MODEL.md docs/ARCHITECTURE.md tests/test_scheduler_restart.py
+git add README.md docs/getting-started/LOCAL_RUN.md docs/architecture/API.md docs/architecture/DATA_MODEL.md docs/architecture/ARCHITECTURE.md tests/test_scheduler_restart.py
 git commit -m "docs: document local evaluation scheduling"
 ```

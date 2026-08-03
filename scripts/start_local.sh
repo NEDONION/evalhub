@@ -10,6 +10,19 @@ OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_PID=""
 OLLAMA_LOG=".runtime/ollama.log"
 
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to build the React frontend. Install Node.js 20+ first."
+  exit 1
+fi
+
+if [ ! -d "frontend/node_modules" ]; then
+  echo "Frontend dependencies are not installed. Run: npm --prefix frontend install"
+  exit 1
+fi
+
+echo "Building React frontend..."
+npm --prefix frontend run build
+
 find_ollama() {
   if command -v ollama >/dev/null 2>&1; then
     command -v ollama
@@ -60,5 +73,6 @@ else
   fi
 fi
 
+"$PYTHON" scripts/stop_existing_evalhub.py --host "$HOST" --port "$PORT"
 echo "Starting EvalHub at http://${HOST}:${PORT}"
 "$PYTHON" run_evalhub.py serve --host "$HOST" --port "$PORT"

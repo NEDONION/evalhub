@@ -8,7 +8,7 @@
 2. 启动一个本地模型服务。
 3. 通过 CLI 或 Web 控制台发起评测。
 
-当前实现不依赖 `datasets`、`pandas`、`pyarrow`、`FastAPI` 或前端构建工具，核心试跑只需要 Python 标准库。
+后端核心试跑只需要 Python 标准库；Web 控制台使用 Vite、React 和 TypeScript，需要 Node.js 20+ 与 npm。
 
 ## 支持的数据集
 
@@ -41,7 +41,7 @@ ollama pull qwen2.5:0.5b
 完整安装、PATH 配置、API 验证和故障排查见：
 
 ```text
-docs/OLLAMA.md
+docs/getting-started/OLLAMA.md
 ```
 
 ## CLI 试跑
@@ -89,6 +89,7 @@ MMLU：
 
 ```bash
 cd /Users/nedonion/PycharmProjects/evalhub
+npm --prefix frontend install
 ./scripts/start_local.sh
 ```
 
@@ -98,6 +99,14 @@ cd /Users/nedonion/PycharmProjects/evalhub
 http://127.0.0.1:8000
 ```
 
+`start_local.sh` 会先执行生产构建，再由 Python 从 `frontend/dist` 提供页面。开发前端时，可以另开终端运行：
+
+```bash
+npm --prefix frontend run dev
+```
+
+开发地址为 `http://127.0.0.1:5173`，Vite 会把 `/api` 代理到 `http://127.0.0.1:8000`。
+
 页面支持：
 
 - 查看数据集是否已准备。
@@ -105,7 +114,7 @@ http://127.0.0.1:8000
 - 点击下载真实数据集。
 - 选择数据集、模型、样本范围。模型选择是下拉框，本地已安装模型优先展示，未下载的推荐模型会提示先执行 `ollama pull <model>`。
 - 发起本地评测。
-- 查看 JSON 结果和失败样例。
+- 查看聚合得分、通过率和失败样例，按需展开原始 JSON。
 
 样本范围默认是 `全部样本`。如果只是验证流程，可以切换到 `快速试跑 5 条`。
 
