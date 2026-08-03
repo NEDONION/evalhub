@@ -25,7 +25,7 @@ export function Header({ health, refreshing, onRefresh }: HeaderProps) {
               <span className="text-sm font-semibold tracking-tight text-ink">EvalHub</span>
               <span className="hidden text-xs text-muted sm:inline">本地评测控制台</span>
             </div>
-            <p className="truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 uppercase">
+            <p className="hidden truncate text-[11px] font-medium tracking-[0.08em] text-slate-400 uppercase sm:block">
               Local evaluation workspace
             </p>
           </div>

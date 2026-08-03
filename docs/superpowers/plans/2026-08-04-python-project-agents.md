@@ -27,8 +27,8 @@
 
 - Create: `AGENTS.md` — repository-wide instructions for coding agents.
 - Reference: `pyproject.toml` — authoritative Python version, pytest paths, Ruff line length, and lint rules.
-- Reference: `docs/ARCHITECTURE.md` — authoritative module responsibilities and extension points.
-- Reference: `docs/CODEX_WORKFLOW.md` — authoritative documentation synchronization workflow.
+- Reference: `docs/architecture/ARCHITECTURE.md` — authoritative module responsibilities and extension points.
+- Reference: `docs/development/CODEX_WORKFLOW.md` — authoritative documentation synchronization workflow.
 - Reference: `README.md` — authoritative local commands and current repository capabilities.
 
 ### Task 1: Add and verify repository-wide agent rules
@@ -38,7 +38,7 @@
 - Test: no new automated test file; validate the instruction artifact and run the repository's existing quality suite.
 
 **Interfaces:**
-- Consumes: repository layout and tool configuration from `pyproject.toml`, `README.md`, `docs/ARCHITECTURE.md`, and `docs/CODEX_WORKFLOW.md`.
+- Consumes: repository layout and tool configuration from `pyproject.toml`, `README.md`, `docs/architecture/ARCHITECTURE.md`, and `docs/development/CODEX_WORKFLOW.md`.
 - Produces: root-level natural-language instructions consumed by coding agents for all files in the repository.
 
 - [ ] **Step 1: Confirm the target does not already exist**
@@ -70,7 +70,7 @@ Create `AGENTS.md` with this content:
 - Python 最低版本为 3.11，包采用 `src` 布局，主包位于 `src/evalhub/`。
 - 构建和工具配置以 `pyproject.toml` 为准。
 - 单元测试位于 `tests/`，使用 pytest；静态检查使用 Ruff，行宽为 100。
-- 核心模块职责以 `docs/ARCHITECTURE.md` 为准，开发文档沉淀位置以 `docs/CODEX_WORKFLOW.md` 为准。
+- 核心模块职责以 `docs/architecture/ARCHITECTURE.md` 为准，开发文档沉淀位置以 `docs/development/CODEX_WORKFLOW.md` 为准。
 - `frontend/` 当前使用原生 HTML、CSS 和 JavaScript，不使用前端构建工具。
 
 ## 常用命令
@@ -166,7 +166,7 @@ Create `AGENTS.md` with this content:
 ## 前端、脚本与配置
 
 - 前端改动沿用现有原生 HTML、CSS 和 JavaScript；未经任务明确要求，不引入 React、Node、打包器或新依赖。
-- 前端调用的 API 字段必须与 Python 服务端保持一致；变更响应结构时同步更新调用方、测试和 `docs/API.md`。
+- 前端调用的 API 字段必须与 Python 服务端保持一致；变更响应结构时同步更新调用方、测试和 `docs/architecture/API.md`。
 - 修改 shell 脚本时启用严格失败语义，正确引用路径和变量，并兼顾当前 macOS/zsh 本地运行方式。
 - 新配置必须提供安全默认值和清晰错误信息；敏感值只能来自环境变量，示例写入 `.env.example` 时只使用虚拟值。
 - 不硬编码个人绝对路径。文档可保留现有项目路径示例，但实现和脚本应从仓库位置推导路径。
@@ -174,8 +174,8 @@ Create `AGENTS.md` with this content:
 ## 依赖、文档与兼容性
 
 - 不因便利添加第三方依赖。任务确实需要新依赖时，说明理由，将其放入正确的 `pyproject.toml` 依赖组，并同步安装文档。
-- 运行方式、依赖或本地服务变化时更新 `README.md`、`docs/LOCAL_RUN.md` 或 `docs/OLLAMA.md`。
-- API 变化更新 `docs/API.md`；架构或模块职责变化更新 `docs/ARCHITECTURE.md`；数据结构变化更新 `docs/DATA_MODEL.md`；产品范围和阶段计划变化更新 `docs/PRD.md` 或 `docs/ROADMAP.md`。
+- 运行方式、依赖或本地服务变化时更新 `README.md`、`docs/getting-started/LOCAL_RUN.md` 或 `docs/getting-started/OLLAMA.md`。
+- API 变化更新 `docs/architecture/API.md`；架构或模块职责变化更新 `docs/architecture/ARCHITECTURE.md`；数据结构变化更新 `docs/architecture/DATA_MODEL.md`；产品范围和阶段计划变化更新 `docs/product/PRD.md` 或 `docs/product/ROADMAP.md`。
 - 文档只记录已实现且已验证的行为，示例命令应能从仓库根目录执行。
 
 ## 安全与仓库卫生

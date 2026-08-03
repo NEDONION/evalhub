@@ -200,8 +200,9 @@ cd /Users/nedonion/PycharmProjects/evalhub
 
 `--adapter oracle` 只用于验证 EvalHub 管线是否正常，不代表真实模型评测。
 
-Ollama 安装和故障排查见：[docs/OLLAMA.md](docs/OLLAMA.md)。
-Codex 对话后的文档沉淀流程见：[docs/CODEX_WORKFLOW.md](docs/CODEX_WORKFLOW.md)。
+完整文档导航见：[docs/README.md](docs/README.md)。
+Ollama 安装和故障排查见：[docs/getting-started/OLLAMA.md](docs/getting-started/OLLAMA.md)。
+Codex 对话后的文档沉淀流程见：[docs/development/CODEX_WORKFLOW.md](docs/development/CODEX_WORKFLOW.md)。
 
 ## 本地前后端一键启动
 
@@ -270,14 +271,22 @@ Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪。数据
 ```text
 evalhub/
 ├── docs/
-│   ├── PRD.md
-│   ├── ARCHITECTURE.md
-│   ├── API.md
-│   ├── DATA_MODEL.md
-│   ├── LOCAL_RUN.md
-│   ├── OLLAMA.md
-│   ├── CODEX_WORKFLOW.md
-│   └── ROADMAP.md
+│   ├── README.md
+│   ├── getting-started/
+│   │   ├── LOCAL_RUN.md
+│   │   └── OLLAMA.md
+│   ├── architecture/
+│   │   ├── ARCHITECTURE.md
+│   │   ├── API.md
+│   │   └── DATA_MODEL.md
+│   ├── product/
+│   │   ├── PRD.md
+│   │   └── ROADMAP.md
+│   ├── development/
+│   │   └── CODEX_WORKFLOW.md
+│   └── superpowers/
+│       ├── plans/
+│       └── specs/
 ├── examples/
 │   ├── benchmarks/
 │   └── datasets/
@@ -325,6 +334,15 @@ flowchart TB
         GO1["① 当前本地 MVP<br/>JSON 报告 + 失败样例"] --> GO2["② 平台服务化（规划）<br/>指标、日志与任务历史"] --> GO3["③ 分布式执行（规划）<br/>Trace + Audit + 成本统计"] --> GO4["④ 质量治理（规划）<br/>Leaderboard + SLA + 发布审计"]
     end
 
+    UX1 ~~~ OR1
+    UX4 ~~~ OR4
+    OR1 ~~~ EX1
+    OR4 ~~~ EX4
+    EX1 ~~~ DA1
+    EX4 ~~~ DA4
+    DA1 ~~~ GO1
+    DA4 ~~~ GO4
+
     classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
     classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
     classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
@@ -333,7 +351,7 @@ flowchart TB
     class UX3,UX4,OR3,OR4,EX3,EX4,DA3,DA4,GO3,GO4 planned;
 ```
 
-有关目标生产架构的更多细节，请参阅 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+有关目标生产架构的更多细节，请参阅 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
 
 ## 下一步建议
 

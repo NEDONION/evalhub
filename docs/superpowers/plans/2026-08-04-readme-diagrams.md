@@ -228,10 +228,10 @@ Expected: 三条命令退出码均为 0，README 中有 4 个 Mermaid 块。
 
 **Files:**
 - Modify: `README.md` 中“目录结构”和“下一步建议”之间。
-- Keep: `docs/ARCHITECTURE.md` 作为更完整的架构说明链接。
+- Keep: `docs/architecture/ARCHITECTURE.md` 作为更完整的架构说明链接。
 
 **Interfaces:**
-- Consumes: 当前 README“下一步建议”与 `docs/ARCHITECTURE.md` 的目标生产架构。
+- Consumes: 当前 README“下一步建议”与 `docs/architecture/ARCHITECTURE.md` 的目标生产架构。
 - Produces: 五泳道、四阶段演进路线图、图例和最终验证结果。
 
 - [ ] **Step 1: Insert the evolution roadmap**
@@ -263,6 +263,15 @@ flowchart TB
         GO1["① 当前本地 MVP<br/>JSON 报告 + 失败样例"] --> GO2["② 平台服务化（规划）<br/>指标、日志与任务历史"] --> GO3["③ 分布式执行（规划）<br/>Trace + Audit + 成本统计"] --> GO4["④ 质量治理（规划）<br/>Leaderboard + SLA + 发布审计"]
     end
 
+    UX1 ~~~ OR1
+    UX4 ~~~ OR4
+    OR1 ~~~ EX1
+    OR4 ~~~ EX4
+    EX1 ~~~ DA1
+    EX4 ~~~ DA4
+    DA1 ~~~ GO1
+    DA4 ~~~ GO4
+
     classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
     classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
     classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
@@ -273,7 +282,7 @@ flowchart TB
 
 - [ ] **Step 2: Add the legend and architecture link**
 
-在路线图前说明蓝色实线节点代表当前能力，绿色实线节点代表下一阶段，灰色虚线节点代表后续规划；图后链接 `[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)`，引导需要更多细节的读者。
+在路线图前说明蓝色实线节点代表当前能力，绿色实线节点代表下一阶段，灰色虚线节点代表后续规划；图后链接目标使用 `docs/architecture/ARCHITECTURE.md`，引导需要更多细节的读者。
 
 - [ ] **Step 3: Verify Mermaid block count and Markdown integrity**
 
@@ -282,7 +291,7 @@ Run:
 ```bash
 test "$(rg -c '^```mermaid$' README.md)" -eq 5
 awk '/^```mermaid$/{open_count++} /^```$/{close_count++} END{exit (open_count == 5 && close_count >= 5) ? 0 : 1}' README.md
-for file_path in docs/OLLAMA.md docs/CODEX_WORKFLOW.md docs/ARCHITECTURE.md; do test -e "$file_path"; done
+for file_path in docs/getting-started/OLLAMA.md docs/development/CODEX_WORKFLOW.md docs/architecture/ARCHITECTURE.md; do test -e "$file_path"; done
 git diff --check -- README.md
 ```
 

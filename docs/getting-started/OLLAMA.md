@@ -129,8 +129,20 @@ http://127.0.0.1:8000
 页面中选择：
 
 - 模型适配器：`Ollama 本地模型`
-- 模型名称：`qwen2.5:0.5b`
+- 模型名称：从下拉框选择。页面会优先显示本地已安装模型，也会提供适合本地试跑的轻量推荐模型。
 - Ollama 地址：`http://127.0.0.1:11434`
+
+如果下拉框里的模型显示为未下载，需要先执行：
+
+```bash
+ollama pull <model>
+```
+
+例如：
+
+```bash
+ollama pull llama3.2:1b
+```
 
 `./scripts/start_local.sh` 会先检测 `http://127.0.0.1:11434/api/tags`。如果 Ollama 已安装但未启动，脚本会自动后台启动 `ollama serve`，日志写入：
 
