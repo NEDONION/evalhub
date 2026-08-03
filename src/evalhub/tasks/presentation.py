@@ -88,11 +88,29 @@ def task_detail(
     nodes: list[EvaluationNode] | None = None,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """构建包含请求配置与完整评测结果的任务详情响应。"""
+    """构建包含请求配置、完整结果和工作流节点的任务详情响应。
+
+    Args:
+        task: 从仓储读取的任务状态快照。
+        nodes: 当前任务的工作流节点；缺省时返回空节点列表。
+        now: 运行态耗时计算基准；测试可传入固定 UTC 时间。
+
+    Returns:
+        包含请求、结果和节点诊断信息的 JSON 兼容字典。
+    """
     detail = task_summary(task, now=now)
     # 请求和结果只在详情层披露，保持列表轮询响应稳定且轻量。
     detail["request"] = asdict(task.request)
-    detail["result"] = task.result
+    result = task.result
+    # 套件汇总完成但任务结果列尚未落盘时，直接复用最终节点的持久化输出。
+    if result is None:
+        finalizer = next(
+            (node for node in nodes or [] if node.kind == "workflow_finalize" and node.output),
+            None,
+        )
+        if finalizer is not None:
+            result = finalizer.output
+    detail["result"] = result
     detail["nodes"] = [node_summary(node, now=now) for node in nodes or []]
     return detail
 

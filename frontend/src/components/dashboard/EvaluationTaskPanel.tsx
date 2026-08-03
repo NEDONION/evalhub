@@ -16,6 +16,7 @@ import { Badge, type BadgeProps } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { Panel } from "../ui/Panel";
 import { EvaluationResultDetail } from "./EvaluationResultDetail";
+import { EvaluationNodeInspector } from "./EvaluationNodeInspector";
 
 interface EvaluationTaskPanelProps {
   tasks: EvaluationTaskSummary[];
@@ -24,6 +25,8 @@ interface EvaluationTaskPanelProps {
   error: string | null;
   onSelect: (taskId: string) => void;
   onCancel: (taskId: string) => void;
+  retryingNodeId: string | null;
+  onRetryNode: (taskId: string, nodeId: string) => Promise<unknown> | void;
 }
 
 const statusLabels: Record<EvaluationTaskStatus, string> = {
@@ -55,6 +58,8 @@ export function EvaluationTaskPanel({
   error,
   onSelect,
   onCancel,
+  retryingNodeId,
+  onRetryNode,
 }: EvaluationTaskPanelProps): JSX.Element {
   const activeCount = tasks.filter((task) => task.status === "pending" || task.status === "running").length;
   const selectedIndex = tasks.findIndex((task) => task.id === selectedTaskId);
@@ -114,7 +119,13 @@ export function EvaluationTaskPanel({
           </div>
 
           {selectedTask ? (
-            <TaskDetail task={selectedTask} tasksAhead={selectedTasksAhead} onCancel={onCancel} />
+            <TaskDetail
+              task={selectedTask}
+              tasksAhead={selectedTasksAhead}
+              retryingNodeId={retryingNodeId}
+              onCancel={onCancel}
+              onRetryNode={onRetryNode}
+            />
           ) : (
             <div className="flex min-h-28 items-center justify-center gap-2 px-5 py-8 text-sm text-muted">
               <CircleDashed className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
@@ -177,6 +188,8 @@ interface TaskDetailProps {
   task: EvaluationTaskDetail;
   tasksAhead: number;
   onCancel: (taskId: string) => void;
+  retryingNodeId: string | null;
+  onRetryNode: (taskId: string, nodeId: string) => Promise<unknown> | void;
 }
 
 /**
@@ -185,7 +198,13 @@ interface TaskDetailProps {
  * @param props 当前任务详情与取消操作回调。
  * @returns 随任务状态变化的详情区域；只有活动任务提供取消入口。
  */
-function TaskDetail({ task, tasksAhead, onCancel }: TaskDetailProps): JSX.Element {
+function TaskDetail({
+  task,
+  tasksAhead,
+  retryingNodeId,
+  onCancel,
+  onRetryNode,
+}: TaskDetailProps): JSX.Element {
   const canCancel = task.status === "pending" || task.status === "running";
   const waitingForResources = task.status === "pending";
   return (
@@ -236,13 +255,23 @@ function TaskDetail({ task, tasksAhead, onCancel }: TaskDetailProps): JSX.Elemen
           icon={Cpu}
           label="CPU"
           value={waitingForResources ? "—" : formatPercent(task.resources.cpu.current_percent)}
-          meta={waitingForResources ? "等待任务启动" : `峰值 ${formatPercent(task.resources.cpu.peak_percent)}`}
+          meta={
+            waitingForResources
+              ? "等待任务启动"
+              : task.adapter === "ollama"
+                ? `本机峰值 ${formatPercent(task.resources.cpu.peak_percent)} · 含 Ollama`
+                : `任务进程峰值 ${formatPercent(task.resources.cpu.peak_percent)}`
+          }
         />
         <TelemetryCard
           icon={MemoryStick}
           label="内存"
           value={waitingForResources ? "—" : formatBytes(task.resources.memory.current_bytes)}
-          meta={waitingForResources ? "等待任务启动" : `峰值 ${formatBytes(task.resources.memory.peak_bytes)}`}
+          meta={
+            waitingForResources
+              ? "等待任务启动"
+              : `任务进程峰值 ${formatBytes(task.resources.memory.peak_bytes)}`
+          }
         />
         <TelemetryCard
           icon={Activity}
@@ -258,7 +287,7 @@ function TaskDetail({ task, tasksAhead, onCancel }: TaskDetailProps): JSX.Elemen
             waitingForResources
               ? "等待任务启动"
               : task.resources.gpu.supported
-                ? `显存 ${formatBytes(task.resources.gpu.current_memory_bytes)}`
+                ? `系统级 · 设备内存 ${formatBytes(task.resources.gpu.current_memory_bytes)}`
                 : "当前平台未提供可靠指标"
           }
         />
@@ -274,7 +303,17 @@ function TaskDetail({ task, tasksAhead, onCancel }: TaskDetailProps): JSX.Elemen
         </div>
       ) : null}
 
-      {task.status === "success" && task.result ? <EvaluationResultDetail result={task.result} /> : null}
+      {task.request.evaluation_type !== "agent" && task.nodes && task.nodes.length > 0 ? (
+        <EvaluationNodeInspector
+          taskId={task.id}
+          taskStatus={task.status}
+          nodes={task.nodes}
+          retryingNodeId={retryingNodeId}
+          onRetry={onRetryNode}
+        />
+      ) : null}
+
+      {task.result ? <EvaluationResultDetail result={task.result} /> : null}
     </div>
   );
 }

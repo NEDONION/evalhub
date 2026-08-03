@@ -5,6 +5,8 @@ import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type {
   AdapterType,
+  BenchmarkDefinition,
+  BenchmarkSuite,
   Dataset,
   DatasetName,
   EvaluationRequest,
@@ -18,6 +20,8 @@ import { Panel } from "../ui/Panel";
 
 interface EvaluationFormProps {
   datasets: Dataset[];
+  benchmarks: BenchmarkDefinition[];
+  suites: BenchmarkSuite[];
   modelOptions: ModelOption[];
   model: string;
   baseUrl: string;
@@ -47,6 +51,8 @@ const sampleModes: Array<{ value: SampleMode; label: string; meta: string }> = [
  */
 export function EvaluationForm({
   datasets,
+  benchmarks,
+  suites,
   modelOptions,
   model,
   baseUrl,
@@ -59,6 +65,8 @@ export function EvaluationForm({
   onSubmit,
 }: EvaluationFormProps) {
   const [evaluationType, setEvaluationType] = useState<EvaluationType>("model");
+  const [targetMode, setTargetMode] = useState<"single" | "suite">("single");
+  const [suiteId, setSuiteId] = useState("llm-industry-core-v1");
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
   const [subject, setSubject] = useState("abstract_algebra");
   const [adapter, setAdapter] = useState<AdapterType>("ollama");
@@ -78,6 +86,25 @@ export function EvaluationForm({
       { name: "mmlu", display_name: "MMLU 测试集" },
     ] as Dataset[];
   }, [datasets]);
+
+  const benchmarkOptions = useMemo<BenchmarkDefinition[]>(() => {
+    if (benchmarks.length > 0) return benchmarks;
+    return datasetOptions.map((item) => ({
+      id: item.name,
+      version: "local",
+      display_name: item.display_name,
+      capability: "",
+      capability_label: "",
+      dataset_source: item.source_url || "local",
+      dataset_revision: "local",
+      homepage: item.homepage || "",
+      executor: "native",
+      metric: "",
+      locally_runnable: true,
+      readiness_reason: null,
+    }));
+  }, [benchmarks, datasetOptions]);
+  const selectedSuite = suites.find((item) => item.id === suiteId) || suites[0] || null;
 
   const availableModels =
     modelOptions.length > 0
@@ -104,7 +131,7 @@ export function EvaluationForm({
     baseUrl: baseUrlDraft,
     sampleMode,
     limit,
-    suiteId: null,
+    suiteId: targetMode === "suite" ? selectedSuite?.id || null : null,
   };
 
   /**
@@ -179,25 +206,76 @@ export function EvaluationForm({
         <div className="space-y-4 border-b border-border p-5 sm:p-6 lg:border-r lg:border-b-0">
           {evaluationType === "model" ? (
             <>
+              <fieldset>
+                <legend className="mb-1.5 text-xs font-medium text-muted">评测范围</legend>
+                <div className="grid grid-cols-2 rounded-md border border-border bg-slate-50 p-1">
+                  {(["single", "suite"] as const).map((value) => (
+                    <label key={value} className="cursor-pointer">
+                      <input
+                        type="radio"
+                        name="target-mode"
+                        value={value}
+                        checked={targetMode === value}
+                        onChange={() => setTargetMode(value)}
+                        className="peer sr-only"
+                      />
+                      <span className="block rounded px-3 py-2 text-center text-xs font-semibold text-muted peer-checked:bg-white peer-checked:text-primary peer-checked:shadow-sm">
+                        {value === "single" ? "单项 Benchmark" : "行业能力套件"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {targetMode === "suite" ? (
+                <div>
+                  <label htmlFor="suite" className="mb-1.5 block text-xs font-medium text-muted">
+                    评测套件
+                  </label>
+                  <select
+                    id="suite"
+                    className={controlClass}
+                    value={selectedSuite?.id || suiteId}
+                    onChange={(event) => setSuiteId(event.target.value)}
+                    disabled={suites.length === 0}
+                  >
+                    {suites.length === 0 ? <option>正在读取 Registry</option> : null}
+                    {suites.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.display_name}
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSuite ? (
+                    <p className="mt-2 text-xs leading-5 text-amber-700">
+                      当前已接通 {selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个本地执行器；
+                      其余节点会明确记录为阻塞，不会产生虚假分数。
+                    </p>
+                  ) : null}
+                </div>
+              ) : (
               <div>
                 <label htmlFor="dataset" className="mb-1.5 block text-xs font-medium text-muted">
-                  数据集
+                  Benchmark
                 </label>
                 <select
                   id="dataset"
+                  aria-label="Benchmark"
                   className={controlClass}
                   value={dataset}
                   onChange={(event) => setDataset(event.target.value as DatasetName)}
                 >
-                  {datasetOptions.map((item) => (
-                    <option key={item.name} value={item.name}>
-                      {item.display_name}
+                  {benchmarkOptions.map((item) => (
+                    <option key={item.id} value={item.id} disabled={!item.locally_runnable}>
+                      {item.display_name} · {item.capability_label || "本地"}
+                      {item.locally_runnable ? "" : "（执行器未配置）"}
                     </option>
                   ))}
                 </select>
               </div>
+              )}
 
-              {dataset === "mmlu" ? (
+              {targetMode === "single" && dataset === "mmlu" ? (
                 <div>
                   <label htmlFor="subject" className="mb-1.5 block text-xs font-medium text-muted">
                     MMLU 学科
@@ -360,9 +438,17 @@ export function EvaluationForm({
             </div>
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               {evaluationType === "model" ? (
-                <Button variant="secondary" onClick={() => onPrepare(dataset)} disabled={preparing || running}>
+                <Button
+                  variant="secondary"
+                  onClick={() => (targetMode === "suite" ? onManageAssets() : onPrepare(dataset))}
+                  disabled={preparing || running}
+                >
                   <DatabaseZap className="h-4 w-4" aria-hidden="true" />
-                  {preparing ? "正在缓存" : "缓存当前数据集"}
+                  {targetMode === "suite"
+                    ? "查看本地资产"
+                    : preparing
+                      ? "正在缓存"
+                      : "缓存当前数据集"}
                 </Button>
               ) : null}
               <Button type="submit" disabled={running || preparing || missingOllamaModel}>

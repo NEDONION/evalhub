@@ -74,7 +74,7 @@ export default function App() {
       <Header health={dashboard.health} refreshing={dashboard.refreshing} onRefresh={() => void dashboard.refresh()} />
 
       <main className="mx-auto max-w-[1440px] px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
-        <div className="grid min-w-0 gap-6 lg:grid-cols-[224px_minmax(0,1fr)] lg:gap-8">
+        <div className="grid min-w-0 gap-6 lg:grid-cols-[248px_minmax(0,1fr)] lg:gap-8">
           <SidebarNav
             currentView={currentView}
             onNavigate={setCurrentView}
@@ -105,6 +105,8 @@ export default function App() {
             <div hidden={currentView !== "evaluation"}>
               <EvaluationForm
                 datasets={dashboard.datasets}
+                benchmarks={dashboard.benchmarks}
+                suites={dashboard.suites}
                 modelOptions={dashboard.ollama?.model_options || []}
                 model={model}
                 baseUrl={baseUrl}
@@ -162,6 +164,8 @@ export default function App() {
                 error={dashboard.taskError}
                 onSelect={dashboard.selectTask}
                 onCancel={(taskId) => void dashboard.cancelTask(taskId)}
+                retryingNodeId={dashboard.retryingNodeId}
+                onRetryNode={dashboard.retryNode}
               />
             </div>
           </div>

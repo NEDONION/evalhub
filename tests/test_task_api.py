@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import MethodType
 from typing import cast
@@ -350,6 +351,28 @@ def test_get_evaluation_detail_includes_full_result() -> None:
     assert response["task"]["request"]["sample_mode"] == "quick"
     assert response["task"]["nodes"][0]["node_key"] == "benchmark:gsm8k"
     assert response["task"]["nodes"][0]["timing"]["elapsed_ms"] == 1250
+
+
+def test_get_evaluation_detail_uses_finalizer_output_when_result_is_missing() -> None:
+    """任务结果尚未单独落盘时，详情应回退到已完成的汇总节点输出。"""
+    service = FakeTaskService(task_fixture(status="success"))
+    # 构造汇总节点已持久化、任务结果列仍为空的短暂一致性窗口。
+    service.node = replace(
+        service.node,
+        kind="workflow_finalize",
+        status="success",
+        output={"status": "partial", "overall_score": 0.75},
+    )
+
+    # 通过真实路由验证 API 层最终响应，而不是绑定内部辅助函数的调用细节。
+    status, response = call_handler(
+        method="GET",
+        path="/api/evaluations/job_api",
+        service=service,
+    )
+
+    assert status == 200
+    assert response["task"]["result"] == {"status": "partial", "overall_score": 0.75}
 
 
 def test_get_node_detail_includes_checkpoint_and_audit_events() -> None:

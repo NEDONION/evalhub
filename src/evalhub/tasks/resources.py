@@ -1,4 +1,4 @@
-"""采集隔离评测进程及可选 NVIDIA 设备的真实资源读数。"""
+"""采集评测进程、本机 CPU 与 Apple/NVIDIA GPU 的真实资源读数。"""
 
 from __future__ import annotations
 
@@ -167,7 +167,7 @@ class AppleGpuProbe:
 
 
 class ProcessResourceSampler:
-    """聚合一个评测根进程与其递归子进程的 CPU 和 RSS。"""
+    """聚合评测进程树资源，并按推理边界选择本机 CPU 与平台 GPU。"""
 
     def __init__(
         self,
@@ -204,7 +204,8 @@ class ProcessResourceSampler:
             process_id: 隔离评测子进程的操作系统 PID。
 
         Returns:
-            进程树聚合 CPU、RSS 与可选 GPU 设备读数。
+            普通任务返回进程树 CPU/RSS；Ollama 模式可返回包含独立服务的本机 CPU，
+            GPU 始终是 Apple AGX 或最繁忙 NVIDIA 设备的系统级读数。
         """
         # psutil 的非阻塞 CPU 读数依赖同一对象的前后采样，任务切换时才清空缓存。
         if self._root_process_id != process_id:

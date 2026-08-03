@@ -113,7 +113,7 @@ Agent 请求示例：
 
 ## 6. Coding Mini Benchmark
 
-首版提供 6 条轻量、离线、确定性 Python 任务。每条任务包含：
+首版提供 3 条轻量、离线、确定性 Python 任务。每条任务包含：
 
 ```text
 CodingAgentSample
@@ -128,12 +128,9 @@ CodingAgentSample
 
 | 样本 | 主要行为 | 主要能力 |
 | --- | --- | --- |
-| `fix_boundary` | 修复边界条件 | 代码理解、实现正确性 |
-| `implement_parser` | 实现小型解析函数 | 规划、实现正确性 |
-| `repair_error_path` | 修复异常传播 | 代码理解、稳健性 |
-| `complete_cli` | 补齐 CLI 行为 | 工具使用、任务完成 |
-| `fix_tests` | 根据可见失败定位缺陷 | 验证能力、工具使用 |
-| `multi_file_change` | 完成小型跨文件修改 | 规划、任务完成 |
+| `pricing_total` | 修复价格合计遗漏和空列表边界 | 规划、代码理解、实现 |
+| `slug_normalization` | 实现 ASCII slug 规范化 | 实现、工具使用、验证 |
+| `inventory_reservation` | 修复库存成功与拒绝路径 | 代码理解、工具使用、验证、稳健性 |
 
 每个样本由 Python 代码构造到独立目录，不下载公开数据集。Verifier 在 Codex 进程结束后运行，并只返回：
 
@@ -165,7 +162,7 @@ Runner 行为：
 
 1. 使用参数列表启动子进程，不拼接 Shell 字符串。
 2. 通过受控环境变量把任务请求中的 Ollama 地址传给 Codex。
-3. 使用临时 `CODEX_HOME`，不复用用户历史 Session、项目配置和个人 Skills。
+3. 使用样本工作区内独立 `CODEX_HOME`，不复用用户历史 Session、项目配置和个人 Skills。
 4. 解析 JSONL，记录 Agent 最终消息和可用的模型事件数量。
 5. 超时或取消时终止 Codex 进程。
 6. 返回退出码、最终消息、事件数量、耗时和错误摘要。
@@ -215,7 +212,7 @@ Agent 结果沿用普通 EvaluationResult 的公共字段，并增加 Agent 专�
   "benchmark": "EvalHub Coding Mini",
   "model": "qwen2.5-coder:7b",
   "adapter": "ollama",
-  "metric": "task_success_rate",
+  "metric": "hidden_verifier_pass_rate",
   "total_samples": 3,
   "passed_samples": 2,
   "average_score": 0.6667,
@@ -328,7 +325,7 @@ flowchart LR
 - 每条样本只操作新建临时目录。
 - 使用 Codex `workspace-write` sandbox。
 - 不读取或输出真实密钥、用户 Codex 配置和 `.env`。
-- 临时 `CODEX_HOME` 随样本清理。
+- 每个样本使用独立 `CODEX_HOME`，并随任务运行目录一起保留，便于本地诊断。
 - 结果只保存截断后的消息和错误摘要。
 - 该 MVP 仅用于本机可信用户；生产多租户上线前必须增加外层容器隔离。
 
@@ -371,6 +368,8 @@ API 路由继续复用 `/api/evaluations`，不新增一套 `/api/agents` 调度
 - SVG 测试验证六个顶点、能力多边形和可访问文本。
 
 显式本地集成验证使用已安装 Codex CLI 和 Ollama 模型，至少运行一条 Coding Mini 样本。
+模型必须能在 Codex 壳中实际发起工具调用；缺乏工具调用能力的小型通用模型可能只描述修改而不落盘，
+此时隐藏 Verifier 会正确给出 0 分，而不会相信自然语言中的“已完成”声明。
 
 ## 15. 分阶段实施
 

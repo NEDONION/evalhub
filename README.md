@@ -314,33 +314,37 @@ evalhub/
 
 ## Agent Benchmark 演进路线图
 
-当前的 GSM8K、MMLU 评测本质上仍是一次 `Prompt → Answer` 的 LLM 补全。EvalHub 将借鉴 EvalScope 的 Agent 评测方式：先用通用 AgentLoop 包装普通 Benchmark，再让复杂 Benchmark 自带工具、环境和评分协议，最后评测 Codex、Claude Code 等完整 Agent。蓝色代表当前能力，绿色代表下一步，灰色虚线代表后续规划。
+GSM8K、MMLU 仍用于评测单轮 `Prompt → Answer` 能力；Agent MVP 已提供另一条独立路径：
+固定 Codex CLI 壳和 Coding Mini Benchmark，只替换 Ollama 基模，在隔离 Git 工作区执行任务，
+再由隐藏 Verifier 评分。这样首先回答“同一个 Agent 壳下哪个基模更适合编码任务”，而不提前建设
+通用 Agent 平台。
 
 ```mermaid
 flowchart LR
-    S1["① 单轮 LLM 补全（当前）<br/>Prompt → Answer<br/>Exact Match"]
-    S2["② Native AgentLoop（下一步）<br/>Strategy + Tools + Max Steps<br/>统一 AgentTrace"]
-    S3["③ Agent Benchmark Adapter<br/>Benchmark 自带 Loop / Sandbox / Scorer<br/>GAIA / SWE-bench / BFCL 类任务"]
-    S4["④ External Agent Bridge<br/>Codex / Claude Code 等 Agent CLI<br/>协议转发 + 统一回放与对比"]
+    S1["模型评测<br/>GSM8K / MMLU<br/>Prompt → Answer"]
+    S2["Agent MVP（当前）<br/>Codex CLI + Ollama<br/>Coding Mini + Hidden Verifier"]
+    S3["第二个 Agent 或 Provider<br/>触发通用 Runner / Bridge"]
+    S4["公开复杂 Benchmark<br/>触发更强 Sandbox / Artifact"]
 
-    S1 -->|"普通数据集进入多轮工具循环"| S2
-    S2 -->|"Benchmark 定义专属环境与评分"| S3
-    S3 -->|"同一任务评测完整 Agent"| S4
+    S1 -->|"共用任务中心和结果详情"| S2
+    S2 -.->|"出现真实需求后再抽象"| S3
+    S3 -.->|"需要公开可比结果时"| S4
 
     classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
-    classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
     classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
-    class S1 current;
-    class S2 next;
+    class S1,S2 current;
     class S3,S4 planned;
 ```
 
-有关 Agent Benchmark 的阶段目标与验收标准，请参阅 [docs/product/20260804_Agent评测路线图.md](docs/product/20260804_Agent评测路线图.md)；架构取舍见 [EvalScope 与 EvalHub Agent 评测设计 Diff](docs/architecture/20260804_EvalScope与EvalHub的Agent评测设计差异.md)。
+在 Web 控制台切换到“Agent 评测”，选择本地已安装的 Ollama 模型即可发起任务。页面会展示
+排队/运行进度、隐藏校验结果和规划、代码理解、实现、工具使用、验证、稳健性六维能力图。
+详细边界、流程图和验收标准见
+[Codex 固定 Agent 壳基模评测工程设计](docs/superpowers/specs/20260804_Codex固定Agent壳基模评测工程设计.md)。
 
 ## 下一步建议
 
-1. 增加类型化 `NativeAgentConfig` 和统一 `AgentTrace`，不再把 Agent 配置塞进无约束字典。
-2. 实现 `generate → parse → tool call → observation` 的 Native AgentLoop，让现有 Benchmark 可按配置切换到多轮评测。
-3. 增加 Strategy、Tool、Environment 注册与样本级资源生命周期，先用 Fake Model/Tool 完成确定性测试。
-4. 定义 `AgentBenchmarkAdapter`，让复杂 Benchmark 提供默认 Loop、Sandbox、Scorer 和最终制品提取。
-5. Trace 回放稳定后再实现 External Agent Bridge，逐步接入 Codex、Claude Code 等 Agent CLI。
+1. 先用支持工具调用的代码模型做多轮实测，扩充 Coding Mini 样本前先验证六维分数是否有区分度。
+2. 只有接入第二个 Agent CLI 时才提取通用 `AgentRunner` Registry。
+3. 只有接入远程 Provider 时才增加协议 Bridge；本地 Ollama 继续复用 Codex 原生 Provider。
+4. 只有进入不可信或共享部署时才增加外层容器 Sandbox。
+5. 需要公开横向对比后，再评估 SWE-bench Verified Mini 等公开 Benchmark。

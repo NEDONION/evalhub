@@ -7,12 +7,14 @@ import {
   cancelEvaluationTask,
   cancelModelPull,
   createEvaluation,
+  getBenchmarks,
   getDatasets,
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
   getModelPull,
   getOllamaStatus,
+  getSuites,
   prepareDataset,
   startModelPull,
 } from "./lib/api";
@@ -22,12 +24,14 @@ vi.mock("./lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
   createEvaluation: vi.fn(),
+  getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
   getEvaluationTask: vi.fn(),
   getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
+  getSuites: vi.fn(),
   prepareDataset: vi.fn(),
   startModelPull: vi.fn(),
 }));
@@ -193,6 +197,16 @@ const agentTask: EvaluationTaskSummary = {
   agent_framework: "codex",
   dataset: "coding_mini",
   adapter: "ollama",
+  resources: {
+    ...taskResources,
+    gpu: {
+      supported: true,
+      current_percent: 84,
+      peak_percent: 92,
+      current_memory_bytes: 3_379_724_288,
+      peak_memory_bytes: 3_500_000_000,
+    },
+  },
   progress: { completed_samples: 3, total_samples: 3, percent: 100 },
   result_summary: {
     benchmark: "EvalHub Coding Mini",
@@ -263,6 +277,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
+  vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
+  vi.mocked(getSuites).mockResolvedValue({ suites: [] });
   vi.mocked(getOllamaStatus).mockImplementation(async (model, baseUrl) => {
     const present = ollamaFixture.models.includes(model);
     return {
@@ -578,6 +594,8 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("评测结果"));
     expect(await screen.findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
+    expect(screen.getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();
+    expect(screen.getByText(/系统级 · 设备内存/)).toBeInTheDocument();
   });
 
   it("keeps dataset content available when only Ollama status fails", async () => {

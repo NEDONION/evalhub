@@ -5,6 +5,7 @@ import { formatPassRate, formatScore } from "../../lib/evaluation";
 import type { EvaluationResult } from "../../types";
 import { Badge } from "../ui/Badge";
 import { AgentCapabilityHexagon } from "./AgentCapabilityHexagon";
+import { CapabilityRadar } from "./CapabilityRadar";
 
 interface EvaluationResultDetailProps {
   result: EvaluationResult;
@@ -27,8 +28,8 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
           <h3 className="text-sm font-semibold text-ink">评测结果</h3>
           <p className="mt-1 text-xs leading-5 text-muted">聚合指标与失败样例仅在当前任务详情中展示。</p>
         </div>
-        <Badge tone="success" dot>
-          已完成
+        <Badge tone={result.status === "partial" ? "warning" : "success"} dot>
+          {result.status === "partial" ? "部分完成" : "已完成"}
         </Badge>
       </div>
 
@@ -61,6 +62,8 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
           ) : null}
         </>
       ) : null}
+
+      {result.capability_profile ? <CapabilityRadar profile={result.capability_profile} /> : null}
 
       {result.failed_examples.length > 0 ? (
         <div className="border-b border-border px-5 py-5 sm:px-6">
