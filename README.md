@@ -15,6 +15,75 @@ EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。
 - 本地模型：支持调用 Ollama 本地模型服务。
 - 本地控制台：一个 Python 进程同时提供前端页面和后端 API。
 
+## 30 秒理解 EvalHub
+
+```mermaid
+flowchart LR
+    User[开发者 / 评测负责人]
+    Entry{使用入口}
+    Web[Web Console]
+    CLI[CLI]
+    Engine[Evaluation Engine]
+    Dataset[(Dataset)]
+    Model[Model Adapter]
+    Evaluator[Evaluator Plugin]
+    Result[(样本级结果)]
+    Report[聚合报告]
+
+    User --> Entry
+    Entry --> Web
+    Entry --> CLI
+    Web --> Engine
+    CLI --> Engine
+    Dataset --> Engine
+    Engine --> Model
+    Model --> Engine
+    Engine --> Evaluator
+    Evaluator --> Result
+    Result --> Report
+```
+
+### 当前本地 MVP 架构
+
+```mermaid
+flowchart TB
+    subgraph Client[交互层]
+        Browser[浏览器\nfrontend/]
+        Command[CLI\nsrc/evalhub/cli.py]
+    end
+
+    subgraph Local[本地 EvalHub 进程]
+        Server[HTTP Server\nsrc/evalhub/server.py]
+        Loader[Dataset Loader\nsrc/evalhub/datasets/]
+        Registry[InMemory Registry\nsrc/evalhub/registry/]
+        Runner[Evaluation Runner\nsrc/evalhub/engine/]
+        Eval[Evaluator Registry\nsrc/evalhub/evaluators/]
+        Adapter[Model Adapter\nsrc/evalhub/adapters/]
+    end
+
+    Public[(GSM8K / MMLU)]
+    Cache[(data/ 本地缓存)]
+    Ollama[Ollama API\n127.0.0.1:11434]
+
+    Browser -->|HTTP / JSON| Server
+    Command --> Loader
+    Command --> Runner
+    Server --> Loader
+    Server --> Runner
+    Public -->|首次下载| Cache
+    Cache -->|加载样本| Loader
+    Loader --> Registry
+    Registry --> Runner
+    Runner --> Adapter
+    Adapter -->|POST /api/generate| Ollama
+    Ollama -->|模型输出| Adapter
+    Runner --> Eval
+```
+
+当前 MVP 是单机、同步、零前端构建依赖的实现。Web 与 CLI 复用同一条 Python 评测核心链路。
+
+`data/` 和 Ollama 都在本机；本图只展示当前实现，不把规划中的组件混入其中。
+
 ## 快速开始
 
 ```bash
