@@ -6,9 +6,10 @@
 方法体内任意连续有效代码不得超过 5 行而没有详细中文注释。本任务把同一标准一次性应用到
 现有 Python 代码，并在验证通过后推送到远端 `main`。
 
-当前仓库共有 35 个 Python 文件、约 1,639 行代码，覆盖领域模型、评测引擎、适配器、数据集、
-Registry、CLI、HTTP 服务、配置、入口脚本和测试。`src/evalhub/ollama.py` 与
-`tests/test_ollama_status.py` 存在未提交修改，用户已明确授权将这些修改与注释一起提交。
+当前工作区共有 36 个 Python 文件、约 1,674 行代码，覆盖领域模型、评测引擎、适配器、数据集、
+Registry、CLI、HTTP 服务、配置、入口脚本和测试。执行基线包含 `src/evalhub/ollama.py`、
+`src/evalhub/server.py`、`tests/test_ollama_status.py` 与新增的 `tests/test_server_frontend.py`；用户已
+授权将现有 Python 工作区修改与注释一起提交。
 
 ## 目标
 
@@ -83,8 +84,8 @@ Markdown 与配置文件不纳入本次注释改造；除本设计、实现计�
 
 ## 用户现有修改
 
-- 先只提交用户已授权的 `src/evalhub/ollama.py` 与 `tests/test_ollama_status.py` 当前内容，建立可追踪
-  的实现基线。
+- 先只提交用户已授权纳入的 `src/evalhub/ollama.py`、`src/evalhub/server.py`、
+  `tests/test_ollama_status.py` 与 `tests/test_server_frontend.py` 当前内容，建立可追踪的实现基线。
 - 不暂存或提交其他现有的前端、脚本、文档或工作区修改。
 - 后续在隔离工作区基于该基线补充全量注释，避免和其他进行中的工作相互覆盖。
 
@@ -115,7 +116,7 @@ Markdown 与配置文件不纳入本次注释改造；除本设计、实现计�
 
 ## 完成标准
 
-- 35 个目标 Python 文件全部通过中文 docstring 与注释密度检查。
+- 36 个目标 Python 文件全部通过中文 docstring 与注释密度检查。
 - Ruff 零错误，pytest 全部通过。
 - 注释内容详细、准确，并且没有改变现有业务行为。
 - 用户授权的两份 Python 修改已纳入，其他未提交修改保持原样。
