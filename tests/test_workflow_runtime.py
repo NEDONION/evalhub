@@ -28,9 +28,16 @@ def request(*, suite_id: str | None = None) -> TaskRequest:
 class FakeBenchmarkExecutor:
     """按数据集生成确定性样本事件的内存 Benchmark 执行器。"""
 
-    def __init__(self, *, failures_before_success: int = 0) -> None:
-        """配置成功前需要抛出的瞬时错误次数。"""
+    def __init__(self, *, failures_before_success: int = 0, score: float = 1.0) -> None:
+        """配置执行器的瞬时失败次数和固定样本得分。
+
+        Args:
+            failures_before_success: 成功返回前需要抛出的可重试错误次数。
+            score: 每次样本回调返回的固定得分。
+        """
         self.failures_before_success = failures_before_success
+        self.score = score
+        # 调用次数和恢复跳过集合用于断言重试及断点续跑行为。
         self.attempts: dict[str, int] = {}
         self.seen_skips: list[set[str]] = []
 
@@ -45,17 +52,37 @@ class FakeBenchmarkExecutor:
         skip_sample_ids: set[str] | frozenset[str] = frozenset(),
         on_sample_result: object = None,
     ) -> dict[str, object]:
-        """发送一条满分样本；配置期内先抛出可重试连接错误。"""
+        """发送一条固定得分样本，并按配置模拟可重试连接错误。
+
+        Args:
+            task_id: 当前持久化任务标识。
+            task_request: 包含待运行数据集的任务请求。
+            on_progress: 节点进度回调。
+            on_resources: 资源采样回调。
+            cancel_event: 调用方提供的取消事件。
+            skip_sample_ids: 恢复时无需再次执行的成功样本标识。
+            on_sample_result: 单条样本结果回调。
+
+        Returns:
+            包含任务标识和样本总数的最小结果摘要。
+
+        Raises:
+            TaskExecutionError: 尚未达到配置的成功尝试次数时抛出。
+        """
         dataset = task_request.dataset
         self.attempts[dataset] = self.attempts.get(dataset, 0) + 1
         self.seen_skips.append(set(skip_sample_ids))
+        # 在指定次数内模拟连接中断，验证运行时的自动重试路径。
         if self.attempts[dataset] <= self.failures_before_success:
             raise TaskExecutionError("connection reset by peer")
+        # 测试执行器要求生产调用方完整提供三类可观察回调。
         assert callable(on_progress)
         assert callable(on_resources)
         assert callable(on_sample_result)
+        # 恢复后的进度从已成功样本数开始，并提供一条稳定资源采样。
         on_progress(len(skip_sample_ids), 1)
         on_resources(ResourceUsage(cpu_percent=5.0, memory_bytes=1024))
+        # 未被恢复逻辑跳过时才发送样本，得分决定成功或失败语义。
         if f"{dataset}-sample-1" not in skip_sample_ids:
             on_sample_result(
                 {
@@ -64,12 +91,13 @@ class FakeBenchmarkExecutor:
                     "prediction": "2",
                     "reference": "2",
                     "metric": "exact_match",
-                    "score": 1.0,
-                    "reason": None,
+                    "score": self.score,
+                    "reason": None if self.score >= 1.0 else "答案不匹配",
                 },
                 1,
                 1,
             )
+        # 摘要只服务运行时节点终态，本测试不需要模拟更多指标。
         return {"job_id": task_id, "total_samples": 1}
 
 
@@ -157,6 +185,41 @@ def test_runtime_retries_transient_benchmark_error_three_times(tmp_path: Path) -
     assert [event.event_type for event in repository.list_node_events(benchmark.id)].count(
         "node_retry_scheduled"
     ) == 2
+
+
+def test_runtime_marks_scored_failure_as_debuggable_failed_sample(tmp_path: Path) -> None:
+    """得分未通过的样本应进入失败分页，且断点恢复时允许重新执行。
+
+    Args:
+        tmp_path: pytest 提供的隔离目录，用于创建临时 SQLite 仓储。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    # 固定返回零分样本，直接覆盖失败判定而不依赖真实模型或网络。
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=FakeBenchmarkExecutor(score=0.0),
+        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+    )
+
+    # 完整执行持久化工作流，确保样本状态经过真实运行时和仓储边界。
+    runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    # 读取 Benchmark 节点的恢复集合和失败分页，验证两个公开查询保持一致。
+    benchmark = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "benchmark"
+    )
+    failed_page = repository.list_samples(benchmark.id, status="failed")
+
+    assert repository.successful_sample_keys(benchmark.id) == set()
+    assert [sample.sample_key for sample in failed_page.items] == ["gsm8k-sample-1"]
+    assert failed_page.items[0].result["reason"] == "答案不匹配"
 
 
 def test_core_suite_blocks_unavailable_executors_but_builds_partial_profile(

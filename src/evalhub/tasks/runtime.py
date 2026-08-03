@@ -213,14 +213,23 @@ class PersistentWorkflowExecutor:
             self._report_task_progress(node.task_id, on_progress)
 
         def report_sample(sample: dict[str, object], completed: int, total: int) -> None:
-            """原子保存一个样本结果，并在提交后更新顶层进度。"""
+            """原子保存一个样本结果，并在提交后更新顶层进度。
+
+            Args:
+                sample: Benchmark 返回的样本标识、得分和诊断字段。
+                completed: 当前节点已完成的样本数。
+                total: 当前节点需要执行的样本总数。
+            """
+            # 只有满分样本可在断点恢复时跳过，未通过样本必须保留为可重试失败记录。
+            sample_status = "success" if float(sample.get("score", 0.0)) >= 1.0 else "failed"
+            # 样本结果与节点进度在仓储内一次提交，避免恢复时读到不一致检查点。
             self._repository.record_sample(
                 node.id,
                 EvaluationSampleCheckpoint(
                     node_id=node.id,
                     sample_key=str(sample["sample_id"]),
                     sample_index=max(0, completed - 1),
-                    status="success",
+                    status=sample_status,
                     attempt_count=node.attempt_count,
                     input={"input": sample.get("input"), "reference": sample.get("reference")},
                     result=sample,
