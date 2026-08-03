@@ -17,6 +17,9 @@
 - Do not modify Python, frontend, script, configuration, or build implementation files.
 - Preserve all user changes already present in the working tree.
 - Required validation commands are `.venv/bin/python -m ruff check .` and `.venv/bin/python -m pytest`.
+- Every newly added or modified top-level function, instance method, class method, static method, and async method must have a detailed Chinese docstring.
+- Blank lines, comments, and docstrings do not count as effective code lines; no run of effective code may exceed 5 lines without a detailed Chinese comment.
+- The dense Chinese-comment rule applies only to newly added or modified Python code, not untouched legacy code.
 
 ---
 
@@ -117,8 +120,18 @@ Create `AGENTS.md` with this content:
 - 使用清晰的领域命名；避免无信息量的缩写、布尔参数堆叠和散落的魔法值。
 - 一个函数只承担一个清晰职责。复杂分支应拆成可独立测试的小函数，但不要为单次调用制造无价值抽象。
 - 优先复用现有实体、协议、基类和注册机制，不复制相同业务逻辑。
-- 注释和 docstring 解释约束、原因和非显然行为，不复述代码字面含义。
 - 模块导入时不得执行网络请求、创建文件、启动服务或读取重型数据。
+
+### 中文注释强制规则
+
+- 本规则只约束本次新增或修改的 Python 代码，不要求为了当前任务补写未触及的旧代码。
+- 每个新增或修改的顶层函数、实例方法、类方法、静态方法和异步方法都必须提供详细中文 docstring。
+- docstring 必须说明方法用途，并按实际情况说明参数、返回值和可能抛出的异常；不得只复述方法名。
+- 函数或方法体按有效代码行计数；空行、已有注释和 docstring 不计入 5 行。
+- 任意连续有效代码不得超过 5 行而没有详细中文注释；达到 5 行时，应在下一个逻辑代码块前加入注释。
+- 中文注释必须解释目的、业务含义、约束或原因，不得用“执行下面代码”“处理数据”等无信息文字充数。
+- 注释放在完整表达式和逻辑块边界，不得拆开装饰器、函数签名、多行表达式、多行字符串或链式调用。
+- 注释密度与代码结构冲突时，应先把逻辑拆成更小的方法，再按同一规则添加详细中文注释。
 
 ### 异常、时间与 I/O
 
@@ -201,9 +214,10 @@ test -f AGENTS.md
 rg -n '^## (适用范围与优先级|项目事实|常用命令|修改前要求|Python 代码规范|架构边界|测试规范|前端、脚本与配置|依赖、文档与兼容性|安全与仓库卫生|完成定义)$' AGENTS.md
 rg -n '\.venv/bin/python -m (ruff check \.|pytest)' AGENTS.md
 rg -n 'src/evalhub/|docs/ARCHITECTURE\.md|docs/CODEX_WORKFLOW\.md|frontend/' AGENTS.md
+rg -n '详细中文 docstring|任意连续有效代码不得超过 5 行|空行、已有注释和 docstring 不计入 5 行|不要求为了当前任务补写未触及的旧代码' AGENTS.md
 ```
 
-Expected: the file check exits 0; the heading command returns all 11 sections; both required validation commands and all repository-specific references are present.
+Expected: the file check exits 0; the heading command returns all 11 sections; both required validation commands, all repository-specific references, and all four dense Chinese-comment requirements are present.
 
 - [ ] **Step 4: Run content and project quality checks**
 
