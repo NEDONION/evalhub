@@ -17,6 +17,8 @@ from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks.models import ResourceUsage, TaskRequest
 from evalhub.tasks.resources import ProcessResourceSampler
 
+_PROCESS_EXIT_DRAIN_SECONDS = 0.1
+
 
 class TaskExecutionCanceled(RuntimeError):
     """表示任务服务已请求终止当前评测子进程。"""
@@ -151,6 +153,19 @@ class SubprocessEvaluationExecutor:
     ) -> dict[str, object]:
         """运行一个评测子进程直到成功、失败或收到取消信号。
 
+        Args:
+            task_id: 当前评测任务标识。
+            request: 已校验的评测请求。
+            on_progress: 持久化样本进度的回调。
+            on_resources: 持久化资源快照的回调。
+            cancel_event: 调度层发送取消信号的线程事件。
+            skip_sample_ids: 恢复执行时无需重复计算的样本标识。
+            on_sample_result: 可选的单样本结果回调。
+            on_trace: 可选的 Agent 白名单过程事件回调。
+
+        Returns:
+            子进程生成的最终评测结果字典。
+
         Raises:
             TaskExecutionCanceled: 调度层请求取消任务。
             TaskExecutionError: 子进程报告异常或未返回结果。
@@ -169,6 +184,7 @@ class SubprocessEvaluationExecutor:
         next_sample_at = monotonic()
         result: dict[str, object] | None = None
         error_message: str | None = None
+        process_exited_at: float | None = None
 
         try:
             while True:
@@ -186,9 +202,13 @@ class SubprocessEvaluationExecutor:
                 )
                 if error_message is not None or result is not None:
                     break
-                # 已退出进程在一次队列等待后仍没有终态消息，必须转入明确失败而非空转。
+                # multiprocessing.Queue 的 feeder 可能晚于进程退出状态暴露最后几条消息。
                 if not process.is_alive():
-                    break
+                    if process_exited_at is None:
+                        process_exited_at = monotonic()
+                    elif monotonic() - process_exited_at >= _PROCESS_EXIT_DRAIN_SECONDS:
+                        break
+                    continue
 
                 now = monotonic()
                 if now >= next_sample_at and process.pid is not None:

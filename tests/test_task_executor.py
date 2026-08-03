@@ -234,6 +234,46 @@ class ExitedProcessContext:
         return ExitedProcess()
 
 
+class LaggingResultQueue:
+    """模拟进程退出后一拍才可见最终结果的跨进程队列。"""
+
+    def __init__(self) -> None:
+        """记录读取次数，使第一次读取稳定复现 feeder 延迟。"""
+        self.read_count = 0
+
+    def get(self, *, timeout: float) -> dict[str, object]:
+        """第一次报告空队列，后续返回已由子进程写入的最终结果。"""
+        self.read_count += 1
+        if self.read_count == 1:
+            raise Empty
+        return {"type": "result", "result": {"job_id": "job_lagging_result"}}
+
+    def close(self) -> None:
+        """提供执行器 finally 路径需要的无副作用关闭接口。"""
+
+
+class SuccessfulExitedProcess(ExitedProcess):
+    """模拟已经正常退出、但队列 feeder 尚未暴露结果的子进程。"""
+
+    exitcode = 0
+
+
+class LaggingResultProcessContext:
+    """向执行器提供延迟可见结果和已正常退出的进程。"""
+
+    def __init__(self) -> None:
+        """创建本次执行唯一的延迟队列，便于断言读取行为。"""
+        self.queue = LaggingResultQueue()
+
+    def Queue(self) -> LaggingResultQueue:
+        """返回首次读取为空、随后提供结果的队列。"""
+        return self.queue
+
+    def Process(self, **kwargs: object) -> SuccessfulExitedProcess:
+        """忽略构造参数并返回已经正常退出的固定进程。"""
+        return SuccessfulExitedProcess()
+
+
 class ZeroResourceSampler:
     """为执行器异常退出测试提供无外部依赖的零资源读数。"""
 
@@ -275,3 +315,21 @@ def test_executor_stops_when_process_exits_without_result() -> None:
     assert isinstance(errors[0], TaskExecutionError)
     assert not isinstance(errors[0], TaskExecutionCanceled)
     assert "exit code 7" in str(errors[0])
+
+
+def test_executor_drains_lagging_result_after_process_exits() -> None:
+    """正常退出后的队列短暂为空时，执行器仍应读取随后可见的最终结果。"""
+    executor = SubprocessEvaluationExecutor(resource_sampler=ZeroResourceSampler())
+    context = LaggingResultProcessContext()
+    executor._context = cast(object, context)
+
+    result = executor.execute(
+        "job_lagging_result",
+        request_fixture(),
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert result == {"job_id": "job_lagging_result"}
+    assert context.queue.read_count == 2
