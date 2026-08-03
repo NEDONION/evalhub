@@ -73,13 +73,13 @@
 
 ### Evolution Roadmap
 
-采用三阶段 flowchart：
+标题使用“演进路线图”，采用五条横向能力泳道和四个阶段：
 
-1. Local MVP：静态 Web、CLI、同步 Runner、内存 Registry、本地数据、Ollama。
-2. Service Platform：React Console、FastAPI、PostgreSQL、异步 Job API。
-3. Enterprise Scale：Scheduler、RabbitMQ、Celery Workers、MinIO、Leaderboard、Release Gate、Trace 与审计。
+1. 泳道：体验入口、任务编排、执行与插件、数据与制品、可观测与治理。
+2. 阶段：当前本地 MVP、平台服务化、分布式执行、质量治理。
+3. 当前能力使用蓝色实线节点，下一阶段使用绿色实线节点，后续规划使用灰色虚线节点。
 
-箭头只表示能力演进，不暗示未实现组件已经可用。
+每条泳道只表达同类能力的演进，不把不同组件连接成运行调用链，也不暗示规划组件已经可用。
 
 ## Error Handling and Accuracy
 

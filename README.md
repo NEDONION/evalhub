@@ -49,41 +49,41 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    subgraph Client[交互层]
-        Browser[浏览器<br/>frontend/]
-        Command[CLI<br/>src/evalhub/cli.py]
+    subgraph Client["交互层"]
+        Browser["浏览器<br/>frontend/"]
+        Command["CLI<br/>src/evalhub/cli.py"]
     end
 
-    subgraph Local[本地 EvalHub 进程]
-        Server[HTTP Server<br/>src/evalhub/server.py]
-        subgraph Orchestration[Web / CLI 编排边界]
-            Workflow[run_real_benchmark()<br/>准备、加载、创建记录与依赖]
+    subgraph Local["本地 EvalHub 进程"]
+        Server["HTTP Server<br/>src/evalhub/server.py"]
+        subgraph Orchestration["Web / CLI 编排边界"]
+            Workflow["run_real_benchmark()<br/>准备、加载、创建记录与依赖"]
         end
-        Loader[Dataset Loader<br/>src/evalhub/datasets/]
-        Registry[InMemory Registry<br/>src/evalhub/registry/]
-        Runner[Evaluation Runner<br/>src/evalhub/engine/]
-        Eval[Evaluator Registry<br/>src/evalhub/evaluators/]
-        Adapter[Model Adapter<br/>src/evalhub/adapters/]
+        Loader["Dataset Loader<br/>src/evalhub/datasets/"]
+        Registry["InMemory Registry<br/>src/evalhub/registry/"]
+        Runner["Evaluation Runner<br/>src/evalhub/engine/"]
+        Eval["Evaluator Registry<br/>src/evalhub/evaluators/"]
+        Adapter["Model Adapter<br/>src/evalhub/adapters/"]
     end
 
-    Public[(GSM8K / MMLU)]
-    Cache[(data/ 本地缓存)]
-    Ollama[Ollama API<br/>127.0.0.1:11434]
+    Public[("GSM8K / MMLU")]
+    Cache[("data/ 本地缓存")]
+    Ollama["Ollama API<br/>127.0.0.1:11434"]
 
-    Browser -->|HTTP / JSON| Server
+    Browser -->|"HTTP / JSON"| Server
     Server --> Workflow
     Command --> Workflow
-    Workflow -->|准备并加载| Loader
-    Public -->|首次下载| Cache
-    Cache -->|加载样本| Loader
-    Loader -->|返回 samples| Workflow
-    Workflow -->|创建 Model / Dataset / Benchmark / Job| Registry
-    Workflow -->|create evaluator| Eval
-    Eval -->|返回 Evaluator| Workflow
-    Workflow -->|注入 adapter、evaluator、job、benchmark、samples| Runner
+    Workflow -->|"准备并加载"| Loader
+    Public -->|"首次下载"| Cache
+    Cache -->|"加载样本"| Loader
+    Loader -->|"返回 samples"| Workflow
+    Workflow -->|"创建 Model / Dataset / Benchmark / Job"| Registry
+    Workflow -->|"create evaluator"| Eval
+    Eval -->|"返回 Evaluator"| Workflow
+    Workflow -->|"注入 adapter、evaluator、job、benchmark、samples"| Runner
     Runner --> Adapter
-    Adapter -->|POST /api/generate| Ollama
-    Ollama -->|模型输出| Adapter
+    Adapter -->|"POST /api/generate"| Ollama
+    Ollama -->|"模型输出"| Adapter
 ```
 
 当前 MVP 是单机、同步、零前端构建依赖的实现。Web 与 CLI 复用同一条 Python 评测核心链路。
@@ -130,7 +130,7 @@ flowchart TD
     Quick --> Prepare
     Custom --> Prepare
     Prepare[准备数据集] --> Prepared{数据可用?}
-    Prepared -->|否| DataError[返回准备或加载错误<br/>尚未创建 Job]
+    Prepared -->|否| DataError["返回准备或加载错误<br/>尚未创建 Job"]
     Prepared -->|是| Load[加载并标准化 EvaluationSample]
     Load --> Loaded{样本可用?}
     Loaded -->|否| DataError
@@ -145,8 +145,8 @@ flowchart TD
     More -->|否| Aggregate[聚合 EvaluationReport]
     Aggregate --> Success[Job 标记为 success]
     Success --> Output[CLI JSON 或 Web 结果面板]
-    Infer -->|runner.run() 内服务或推理异常| Failed[Job 标记为 failed]
-    Score -->|runner.run() 内评分异常| Failed
+    Infer -->|"runner.run() 内服务或推理异常"| Failed["Job 标记为 failed"]
+    Score -->|"runner.run() 内评分异常"| Failed
     Failed --> Error[返回错误信息]
 ```
 
@@ -294,43 +294,43 @@ evalhub/
 └── tests/
 ```
 
-## 企业级演进路线图
+## 演进路线图
 
-蓝色实线节点代表当前能力，灰色虚线节点代表规划能力。
+蓝色实线节点代表当前能力，绿色实线节点代表下一阶段，灰色虚线节点代表后续规划。
 
 ```mermaid
-flowchart LR
-    subgraph P1[阶段 1 · 当前 Local MVP]
-        L1[静态 Web + CLI]
-        L2[同步 Evaluation Runner]
-        L3[InMemory Registry]
-        L4[本地 Dataset + Ollama]
-        L1 --> L2 --> L3 --> L4
+flowchart TB
+    subgraph Experience["体验入口"]
+        direction LR
+        UX1["① 当前本地 MVP<br/>静态 Web + CLI"] --> UX2["② 平台服务化（规划）<br/>React Console"] --> UX3["③ 分布式执行（规划）<br/>多项目工作台"] --> UX4["④ 质量治理（规划）<br/>自助报告与门禁视图"]
     end
 
-    subgraph P2[阶段 2 · 服务化（规划）]
-        S1[React Console]
-        S2[FastAPI]
-        S3[PostgreSQL]
-        S4[异步 Evaluation Job API]
-        S1 --> S2 --> S3 --> S4
+    subgraph Orchestration["任务编排"]
+        direction LR
+        OR1["① 当前本地 MVP<br/>同步 API / 命令"] --> OR2["② 平台服务化（规划）<br/>Job API + 状态机"] --> OR3["③ 分布式执行（规划）<br/>Scheduler + Queue + 重试 / 取消"] --> OR4["④ 质量治理（规划）<br/>Policy + Release Gate 编排"]
     end
 
-    subgraph P3[阶段 3 · 企业级平台（规划）]
-        E1[Scheduler + RabbitMQ]
-        E2[Celery Worker Pool]
-        E3[MinIO Artifact Store]
-        E4[Leaderboard + Release Gate]
-        E5[Trace + Audit]
-        E1 --> E2 --> E3 --> E4 --> E5
+    subgraph Execution["执行与插件"]
+        direction LR
+        EX1["① 当前本地 MVP<br/>Runner + Adapter + Evaluator"] --> EX2["② 平台服务化（规划）<br/>Worker 契约 + 插件注册"] --> EX3["③ 分布式执行（规划）<br/>弹性 Worker Pool + 远端推理"] --> EX4["④ 质量治理（规划）<br/>LLM Judge + Safety + Agent Eval"]
     end
 
-    P1 ==> P2 ==> P3
+    subgraph Data["数据与制品"]
+        direction LR
+        DA1["① 当前本地 MVP<br/>本地 Dataset + InMemory Registry"] --> DA2["② 平台服务化（规划）<br/>PostgreSQL Registry"] --> DA3["③ 分布式执行（规划）<br/>MinIO Artifact + Dataset Cache"] --> DA4["④ 质量治理（规划）<br/>版本、血缘与可复现快照"]
+    end
 
-    classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827;
-    classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray: 5 5;
-    class L1,L2,L3,L4 current;
-    class S1,S2,S3,S4,E1,E2,E3,E4,E5 planned;
+    subgraph Governance["可观测与治理"]
+        direction LR
+        GO1["① 当前本地 MVP<br/>JSON 报告 + 失败样例"] --> GO2["② 平台服务化（规划）<br/>指标、日志与任务历史"] --> GO3["③ 分布式执行（规划）<br/>Trace + Audit + 成本统计"] --> GO4["④ 质量治理（规划）<br/>Leaderboard + SLA + 发布审计"]
+    end
+
+    classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
+    classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
+    classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
+    class UX1,OR1,EX1,DA1,GO1 current;
+    class UX2,OR2,EX2,DA2,GO2 next;
+    class UX3,UX4,OR3,OR4,EX3,EX4,DA3,DA4,GO3,GO4 planned;
 ```
 
 有关目标生产架构的更多细节，请参阅 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
