@@ -76,3 +76,34 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
         )
     )
     return tuple(nodes)
+
+
+def build_agent_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
+    """为固定 Agent 壳构建单个可审计 Benchmark 节点。
+
+    Args:
+        request: 已由 API 校验过的 Agent 评测请求。
+
+    Returns:
+        只包含一次 Agent Benchmark 执行的最小工作流，避免复用模型评测 DAG。
+
+    Raises:
+        ValueError: 请求不是 Agent 评测，或缺少固定 Agent 框架。
+    """
+    if request.evaluation_type != "agent":
+        raise ValueError("agent workflow requires an agent evaluation request")
+    if request.agent_framework is None:
+        raise ValueError("agent workflow requires an agent framework")
+    return (
+        WorkflowNodeSpec(
+            node_key=f"agent:{request.dataset}",
+            kind="agent_benchmark",
+            input={
+                "benchmark_id": request.dataset,
+                "agent_framework": request.agent_framework,
+                "model": request.model,
+                "adapter": request.adapter,
+            },
+            max_attempts=1,
+        ),
+    )

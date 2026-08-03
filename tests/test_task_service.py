@@ -8,6 +8,7 @@ from time import monotonic, sleep
 
 import pytest
 
+from evalhub.agent import AgentTraceEvent
 from evalhub.tasks import (
     EvaluationTaskService,
     ResourceUsage,
@@ -36,6 +37,25 @@ def make_request(dataset: str) -> TaskRequest:
         sample_mode="quick",
         subject="abstract_algebra",
         limit=None,
+    )
+
+
+def make_agent_request() -> TaskRequest:
+    """创建固定 Codex 壳与 Coding Mini 的本地 Agent 评测请求。
+
+    Returns:
+        不会在测试中实际启动 Codex 或访问 Ollama 的请求值对象。
+    """
+    return TaskRequest(
+        dataset="coding_mini",
+        adapter="ollama",
+        model="qwen2.5:0.5b",
+        base_url="http://127.0.0.1:11434",
+        sample_mode="quick",
+        subject="",
+        limit=None,
+        evaluation_type="agent",
+        agent_framework="codex",
     )
 
 
@@ -110,6 +130,44 @@ class RecordingExecutor:
         return result_for(task_id, request.dataset)
 
 
+class RecordingAgentExecutor:
+    """发送标准化 Trace 并返回结果的可控 Agent 执行器。"""
+
+    def __init__(self, *, error: str | None = None) -> None:
+        """配置 Agent 成功路径或需要模拟的执行错误。"""
+        self.error = error
+        self.task_ids: list[str] = []
+
+    def execute(
+        self,
+        task_id: str,
+        request: TaskRequest,
+        *,
+        on_progress: Callable[[int, int], None],
+        on_resources: Callable[[ResourceUsage], None],
+        cancel_event: Event,
+        on_trace: Callable[[AgentTraceEvent], None] | None = None,
+    ) -> dict[str, object]:
+        """上报样本开始事件，并按配置返回评测结果或抛出错误。"""
+        self.task_ids.append(task_id)
+        if on_trace is not None:
+            on_trace(
+                {
+                    "event_type": "sample_started",
+                    "actor": "benchmark",
+                    "message": "Fix pricing.total_with_tax",
+                    "payload": {"sample_id": "pricing_total"},
+                }
+            )
+        if self.error is not None:
+            raise RuntimeError(self.error)
+
+        # Agent fake 与真实执行器一样分别报告资源、样本进度和最终聚合结果。
+        on_resources(ResourceUsage(cpu_percent=12.5, memory_bytes=2048))
+        on_progress(1, 3)
+        return result_for(task_id, request.dataset)
+
+
 class BlockingExecutor:
     """等待测试释放或取消信号的可控长任务执行器。"""
 
@@ -138,6 +196,38 @@ class BlockingExecutor:
         if cancel_event.is_set():
             raise TaskExecutionCanceled("evaluation canceled")
         return result_for(task_id, request.dataset)
+
+
+class BlockingAgentExecutor(BlockingExecutor):
+    """复用可取消等待逻辑并接受 Agent Trace 回调的执行器。"""
+
+    def execute(
+        self,
+        task_id: str,
+        request: TaskRequest,
+        *,
+        on_progress: Callable[[int, int], None],
+        on_resources: Callable[[ResourceUsage], None],
+        cancel_event: Event,
+        on_trace: Callable[[AgentTraceEvent], None] | None = None,
+    ) -> dict[str, object]:
+        """发送会话事件后阻塞，直至测试释放或服务发出取消信号。"""
+        if on_trace is not None:
+            on_trace(
+                {
+                    "event_type": "agent_session_started",
+                    "actor": "codex",
+                    "message": "session ready",
+                    "payload": {"session_id": "session-test"},
+                }
+            )
+        return super().execute(
+            task_id,
+            request,
+            on_progress=on_progress,
+            on_resources=on_resources,
+            cancel_event=cancel_event,
+        )
 
 
 class DelayedFirstPutQueue(Queue[str | None]):
@@ -239,26 +329,78 @@ def test_model_submission_persists_generated_workflow_nodes(
     ]
 
 
-def test_agent_submission_keeps_existing_non_registry_execution_path(
+def test_agent_submission_persists_single_auditable_workflow_node(
     repository: SQLiteTaskRepository,
 ) -> None:
-    """Codex Agent MVP 不应被错误映射为 LLM Benchmark DAG。"""
+    """Codex Agent 应使用单节点而不是被错误映射为 LLM Benchmark DAG。"""
     service = EvaluationTaskService(repository, executor=RecordingExecutor())
-    agent_request = TaskRequest(
-        dataset="coding_mini",
-        adapter="ollama",
-        model="qwen2.5:0.5b",
-        base_url="http://127.0.0.1:11434",
-        sample_mode="quick",
-        subject="",
-        limit=None,
-        evaluation_type="agent",
-        agent_framework="codex",
-    )
 
-    task = service.submit(agent_request)
+    task = service.submit(make_agent_request())
 
-    assert service.list_nodes(task.id) == []
+    nodes = service.list_nodes(task.id)
+    assert [(node.node_key, node.kind, node.status) for node in nodes] == [
+        ("agent:coding_mini", "agent_benchmark", "pending")
+    ]
+
+
+def test_service_persists_agent_trace_and_completes_agent_node(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """Agent Trace、节点输出和顶层结果应在同一次服务执行中完整落库。"""
+    executor = RecordingAgentExecutor()
+    service = EvaluationTaskService(repository, agent_executor=executor)
+    service.start()
+    try:
+        task = service.submit(make_agent_request())
+        wait_for_status(repository, task.id, "success")
+    finally:
+        service.stop()
+
+    node = service.list_nodes(task.id)[0]
+    events = service.list_node_events(task.id, node.id)
+    assert node.status == "success"
+    assert node.output == result_for(task.id, "coding_mini")
+    assert "sample_started" in [event.event_type for event in events]
+    assert events[-1].event_type == "node_succeeded"
+
+
+def test_service_fails_agent_node_when_agent_executor_errors(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """Agent 执行异常应同时形成节点和顶层任务的可解释失败状态。"""
+    executor = RecordingAgentExecutor(error="codex unavailable")
+    service = EvaluationTaskService(repository, agent_executor=executor)
+    service.start()
+    try:
+        task = service.submit(make_agent_request())
+        wait_for_status(repository, task.id, "failed")
+    finally:
+        service.stop()
+
+    node = service.list_nodes(task.id)[0]
+    assert (node.status, node.error_message) == ("failed", "codex unavailable")
+    assert service.list_node_events(task.id, node.id)[-1].event_type == "node_failed"
+
+
+def test_service_cancels_running_agent_node(repository: SQLiteTaskRepository) -> None:
+    """取消 Agent 任务时应保留已写 Trace，并把唯一运行节点同步取消。"""
+    executor = BlockingAgentExecutor()
+    service = EvaluationTaskService(repository, agent_executor=executor)
+    service.start()
+    try:
+        task = service.submit(make_agent_request())
+        assert executor.started.wait(1.0)
+        service.cancel(task.id)
+        wait_for_status(repository, task.id, "canceled")
+    finally:
+        executor.release.set()
+        service.stop()
+
+    node = service.list_nodes(task.id)[0]
+    events = service.list_node_events(task.id, node.id)
+    assert node.status == "canceled"
+    assert "agent_session_started" in [event.event_type for event in events]
+    assert events[-1].event_type == "node_canceled"
 
 
 def test_service_recovers_interrupted_workflow_instead_of_failing_task(
