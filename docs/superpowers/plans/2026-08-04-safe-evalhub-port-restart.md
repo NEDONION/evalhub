@@ -240,25 +240,23 @@ git commit -m "feat: safely stop an existing EvalHub"
 - Consumes: `scripts/stop_existing_evalhub.py --host HOST --port PORT`
 - Produces: startup ordering where safe cleanup completes before `run_evalhub.py serve`
 
-- [ ] **Step 1: Write the failing integration assertion**
+- [ ] **Step 1: Write the failing launcher behavior test**
 
-Add this method to `StopExistingEvalHubTests`:
+Add a test that runs the real `scripts/start_local.sh` with a temporary `PATH`. Provide a fake `npm` that exits `0`, a fake `curl` that exits `0` so the script treats Ollama as already running, and a fake `PYTHON` executable that appends every argument list to a temporary log. Assert the launcher exits `0` and the log contains these two literal lines in order:
 
-```python
-def test_launcher_stops_existing_evalhub_before_starting(self) -> None:
-    launcher = (ROOT / "scripts" / "start_local.sh").read_text()
-    stop_call = 'scripts/stop_existing_evalhub.py --host "$HOST" --port "$PORT"'
-    start_call = 'run_evalhub.py serve --host "$HOST" --port "$PORT"'
-    self.assertIn(stop_call, launcher)
-    self.assertLess(launcher.index(stop_call), launcher.index(start_call))
+```text
+scripts/stop_existing_evalhub.py --host 127.0.0.1 --port 8000
+run_evalhub.py serve --host 127.0.0.1 --port 8000
 ```
+
+This test exercises the launcher's observable command ordering instead of inspecting its source text.
 
 - [ ] **Step 2: Run the focused test and verify RED**
 
 Run:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m unittest tests.test_stop_existing_evalhub.StopExistingEvalHubTests.test_launcher_stops_existing_evalhub_before_starting -v
+PYTHONPATH=src .venv/bin/python -m unittest tests.test_stop_existing_evalhub.LauncherIntegrationTests.test_launcher_stops_existing_evalhub_before_starting -v
 ```
 
 Expected: FAIL because the launcher does not yet call the stopper.
