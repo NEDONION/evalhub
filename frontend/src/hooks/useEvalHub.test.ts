@@ -5,13 +5,16 @@ import {
   cancelEvaluationTask,
   cancelModelPull,
   createEvaluation,
+  getBenchmarks,
   getDatasets,
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
   getModelPull,
   getOllamaStatus,
+  getSuites,
   prepareDataset,
+  retryEvaluationNode,
   startModelPull,
 } from "../lib/api";
 import type {
@@ -26,13 +29,16 @@ vi.mock("../lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
   createEvaluation: vi.fn(),
+  getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
   getEvaluationTask: vi.fn(),
   getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
+  getSuites: vi.fn(),
   prepareDataset: vi.fn(),
+  retryEvaluationNode: vi.fn(),
   startModelPull: vi.fn(),
 }));
 
@@ -139,6 +145,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [] });
+  vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
+  vi.mocked(getSuites).mockResolvedValue({ suites: [] });
   vi.mocked(getOllamaStatus).mockResolvedValue(ollamaStatus);
   vi.mocked(getModelPull).mockResolvedValue({ ok: true, task: null });
   vi.mocked(startModelPull).mockResolvedValue({ ok: true, task: pullingTask });
@@ -157,6 +165,7 @@ beforeEach(() => {
   vi.mocked(getEvaluationTask).mockReset();
   vi.mocked(createEvaluation).mockReset();
   vi.mocked(cancelEvaluationTask).mockReset();
+  vi.mocked(retryEvaluationNode).mockReset();
 });
 
 describe("useEvalHub local asset orchestration", () => {
@@ -236,6 +245,42 @@ describe("useEvalHub local asset orchestration", () => {
 });
 
 describe("useEvalHub evaluation task orchestration", () => {
+  it("retries a failed node and refreshes the selected task detail", async () => {
+    const failedDetail: EvaluationTaskDetail = {
+      ...runningEvaluationDetail,
+      status: "failed",
+    };
+    vi.mocked(getEvaluationTasks).mockResolvedValue([{ ...runningEvaluationTask, status: "failed" }]);
+    vi.mocked(getEvaluationTask).mockResolvedValue(failedDetail);
+    vi.mocked(retryEvaluationNode).mockResolvedValue({
+      id: "node-1",
+      task_id: failedDetail.id,
+      node_key: "benchmark:gsm8k",
+      kind: "benchmark",
+      depends_on: ["prepare_assets"],
+      status: "pending",
+      attempt: { count: 0, max: 3 },
+      progress: { completed_samples: 4, total_samples: 5, percent: 80 },
+      timing: {
+        created_at: failedDetail.timing.created_at,
+        started_at: failedDetail.timing.started_at,
+        finished_at: null,
+        elapsed_ms: 1200,
+      },
+      error: null,
+    });
+    const { result } = renderHook(() => useEvalHub("local-test", "http://127.0.0.1:11434"));
+    await waitFor(() => expect(result.current.selectedTask?.id).toBe(failedDetail.id));
+
+    await act(async () => {
+      await result.current.retryNode(failedDetail.id, "node-1");
+    });
+
+    expect(retryEvaluationNode).toHaveBeenCalledWith(failedDetail.id, "node-1");
+    expect(getEvaluationTask).toHaveBeenCalledTimes(2);
+    expect(result.current.retryingNodeId).toBeNull();
+  });
+
   it("waits for a slow task poll before scheduling the next request", async () => {
     const slowPoll = deferred<EvaluationTaskSummary[]>();
     vi.mocked(getEvaluationTasks)

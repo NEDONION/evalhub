@@ -4,16 +4,21 @@ import {
   cancelEvaluationTask,
   cancelModelPull as cancelModelPullRequest,
   createEvaluation,
+  getBenchmarks,
   getDatasets,
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
   getModelPull,
   getOllamaStatus,
+  getSuites,
   prepareDataset,
+  retryEvaluationNode,
   startModelPull as startModelPullRequest,
 } from "../lib/api";
 import type {
+  BenchmarkDefinition,
+  BenchmarkSuite,
   Dataset,
   DatasetName,
   EvaluationRequest,
@@ -28,6 +33,8 @@ type HealthState = "loading" | "online" | "offline";
 interface UseEvalHubResult {
   health: HealthState;
   datasets: Dataset[];
+  benchmarks: BenchmarkDefinition[];
+  suites: BenchmarkSuite[];
   ollama: OllamaStatus | null;
   tasks: EvaluationTaskSummary[];
   selectedTaskId: string | null;
@@ -36,6 +43,7 @@ interface UseEvalHubResult {
   refreshing: boolean;
   preparingDataset: DatasetName | null;
   creatingEvaluation: boolean;
+  retryingNodeId: string | null;
   hasActiveTask: boolean;
   datasetError: string | null;
   datasetNotice: string | null;
@@ -49,6 +57,7 @@ interface UseEvalHubResult {
   run: (request: EvaluationRequest) => Promise<EvaluationTaskSummary | null>;
   selectTask: (taskId: string) => void;
   cancelTask: (taskId: string) => Promise<EvaluationTaskDetail | null>;
+  retryNode: (taskId: string, nodeId: string) => Promise<EvaluationTaskDetail | null>;
 }
 
 /**
@@ -87,6 +96,8 @@ function replaceTask(
 export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [health, setHealth] = useState<HealthState>("loading");
   const [datasets, setDatasets] = useState<Dataset[]>([]);
+  const [benchmarks, setBenchmarks] = useState<BenchmarkDefinition[]>([]);
+  const [suites, setSuites] = useState<BenchmarkSuite[]>([]);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [tasks, setTasks] = useState<EvaluationTaskSummary[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
@@ -95,6 +106,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [refreshing, setRefreshing] = useState(false);
   const [preparingDataset, setPreparingDataset] = useState<DatasetName | null>(null);
   const [creatingEvaluation, setCreatingEvaluation] = useState(false);
+  const [retryingNodeId, setRetryingNodeId] = useState<string | null>(null);
   const [datasetError, setDatasetError] = useState<string | null>(null);
   const [datasetNotice, setDatasetNotice] = useState<string | null>(null);
   const [ollamaError, setOllamaError] = useState<string | null>(null);
@@ -130,19 +142,35 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     const results = await Promise.allSettled([
       getHealth(),
       getDatasets(),
+      getBenchmarks(),
+      getSuites(),
       getOllamaStatus(model, baseUrl),
       getEvaluationTasks(),
     ]);
     if (!mountedRef.current) return;
 
-    // 四类状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
-    const [healthResult, datasetsResult, ollamaResult, tasksResult] = results;
+    // 六类状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
+    const [
+      healthResult,
+      datasetsResult,
+      benchmarksResult,
+      suitesResult,
+      ollamaResult,
+      tasksResult,
+    ] = results;
     setHealth(healthResult.status === "fulfilled" ? "online" : "offline");
     if (datasetsResult.status === "fulfilled") {
       setDatasets(datasetsResult.value.datasets);
       setDatasetError(null);
     } else {
       setDatasetError(errorMessage(datasetsResult.reason));
+    }
+
+    if (benchmarksResult.status === "fulfilled") {
+      setBenchmarks(benchmarksResult.value.benchmarks);
+    }
+    if (suitesResult.status === "fulfilled") {
+      setSuites(suitesResult.value.suites);
     }
 
     if (ollamaResult.status === "fulfilled") {
@@ -369,9 +397,31 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     }
   }, []);
 
+  const retryNode = useCallback(async (taskId: string, nodeId: string) => {
+    setRetryingNodeId(nodeId);
+    setTaskError(null);
+    try {
+      await retryEvaluationNode(taskId, nodeId);
+      detailRequestVersionRef.current += 1;
+      const task = await getEvaluationTask(taskId);
+      if (!mountedRef.current) return null;
+      taskListRequestVersionRef.current += 1;
+      setTasks((current) => replaceTask(current, task));
+      if (selectedTaskIdRef.current === taskId) setSelectedTask(task);
+      return task;
+    } catch (error) {
+      if (mountedRef.current) setTaskError(errorMessage(error));
+      return null;
+    } finally {
+      if (mountedRef.current) setRetryingNodeId(null);
+    }
+  }, []);
+
   return {
     health,
     datasets,
+    benchmarks,
+    suites,
     ollama,
     tasks,
     selectedTaskId,
@@ -380,6 +430,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     refreshing,
     preparingDataset,
     creatingEvaluation,
+    retryingNodeId,
     hasActiveTask,
     datasetError,
     datasetNotice,
@@ -393,5 +444,6 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     run,
     selectTask: setSelectedTaskId,
     cancelTask,
+    retryNode,
   };
 }

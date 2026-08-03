@@ -104,6 +104,7 @@ export function EvaluationForm({
     baseUrl: baseUrlDraft,
     sampleMode,
     limit,
+    suiteId: null,
   };
 
   /**
