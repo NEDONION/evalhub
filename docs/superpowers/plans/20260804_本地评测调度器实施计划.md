@@ -6,7 +6,7 @@
 
 **Architecture:** Persist schedule definitions and run history in SQLite, rebuild APScheduler jobs at service startup, and dispatch immutable evaluation-request snapshots through a bounded single-worker queue. Keep scheduler, repository, dispatcher, and evaluation service behind protocols so Celery/Redis, PostgreSQL, or Temporal can replace local implementations without changing APIs.
 
-**Tech Stack:** Python 3.11+, SQLite via `sqlite3`, APScheduler 3.x, standard-library queue/threading/HTTP, vanilla HTML/CSS/JavaScript, pytest/unittest.
+**Tech Stack:** Python 3.11+, SQLite via `sqlite3`, APScheduler 3.x, standard-library queue/threading/HTTP, React 19, TypeScript, Vite, Vitest/Testing Library, Playwright, pytest/unittest.
 
 ## Global Constraints
 
@@ -459,10 +459,17 @@ git commit -m "feat: expose persistent evaluation schedules"
 ### Task 6: Chinese Scheduling Center UI
 
 **Files:**
-- Modify: `frontend/index.html`
-- Modify: `frontend/styles.css`
-- Modify: `frontend/app.js`
-- Create: `tests/test_scheduler_frontend_contract.py`
+- Modify: `frontend/src/App.tsx`
+- Modify: `frontend/src/types.ts`
+- Modify: `frontend/src/lib/api.ts`
+- Modify: `frontend/src/hooks/useEvalHub.ts`
+- Modify: `frontend/src/styles.css`
+- Create: `frontend/src/components/scheduler/SchedulerView.tsx`
+- Create: `frontend/src/components/scheduler/ScheduleForm.tsx`
+- Create: `frontend/src/components/scheduler/ScheduleTable.tsx`
+- Create: `frontend/src/components/scheduler/ScheduleRunHistory.tsx`
+- Modify/Create: focused `frontend/src/**/*.test.tsx` tests beside the affected behavior
+- Modify: `frontend/scripts/qa-ui.mjs`
 
 **Interfaces:**
 - Consumes: scheduler health, schedules, runs, suites, and model options APIs.
@@ -472,89 +479,48 @@ git commit -m "feat: expose persistent evaluation schedules"
 
 Read and apply `frontend-design` before editing this view. Match the capability workbench's operational density, blue/white palette, Chinese-first copy, stable table dimensions, and 8px maximum card radius.
 
-- [ ] **Step 1: Write failing static contract tests**
+- [ ] **Step 1: Write failing React scheduler behavior tests**
 
-```python
-def test_scheduler_center_mounts_exist() -> None:
-    html = Path("frontend/index.html").read_text(encoding="utf-8")
-    for mount in ("schedulerView", "scheduleTable", "scheduleForm", "scheduleRuns"):
-        assert f'id="{mount}"' in html
+Use Vitest, Testing Library, user-event, and complete typed API fixtures. Assert observable workflows: navigation opens `调度中心` without a reload; the schedule list and run history load; users can choose one-time, interval, or Cron; Cron exposes five structured fields and never accepts shell commands; complete-dataset mode is selected by default; pause/resume and run-now actions refresh visible state.
 
+- [ ] **Step 2: Run and verify scheduler behavior is missing**
 
-def test_cron_form_is_structured_not_a_shell_input() -> None:
-    html = Path("frontend/index.html").read_text(encoding="utf-8")
-    assert 'name="cron_minute"' in html
-    assert 'name="cron_hour"' in html
-    assert 'name="command"' not in html
-```
+Run: `npm --prefix frontend run test:run -- <focused-test-files>`
 
-- [ ] **Step 2: Run and verify missing scheduler UI**
-
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_scheduler_frontend_contract.py -q`
-
-Expected: FAIL because `schedulerView` is absent.
+Expected: FAIL because the scheduling view and workflows do not exist yet.
 
 - [ ] **Step 3: Add view navigation and scheduler metrics**
 
-Make “调度中心” a functional navigation control that toggles the workbench and scheduler views without a page reload. Add status, queue length, running jobs, active schedules, and recent failures as compact metrics.
-
-```javascript
-function showView(viewName) {
-  document.querySelector("#workbenchView").hidden = viewName !== "workbench";
-  document.querySelector("#schedulerView").hidden = viewName !== "scheduler";
-  document.querySelectorAll("[data-view]").forEach((item) => {
-    item.classList.toggle("active", item.dataset.view === viewName);
-  });
-}
-```
+Make “调度中心” a functional React navigation control that switches between the workbench and scheduler views without a page reload. Add status, queue length, running jobs, active schedules, and recent failures as compact metrics. Preserve view state while switching.
 
 - [ ] **Step 4: Build the dense schedule table and actions**
 
-Columns: name, model, suite/Benchmark, trigger rule, state, next run, last result, and icon actions for pause/resume, run now, edit, and delete. Use native confirmation for soft delete and refresh list/history after every mutation.
-
-```javascript
-async function mutateSchedule(id, action) {
-  await fetchJson(`/api/schedules/${encodeURIComponent(id)}/${action}`, { method: "POST" });
-  await Promise.all([refreshSchedules(), refreshScheduleRuns(), refreshSchedulerHealth()]);
-}
-```
+Columns: name, model, Suite/Benchmark, trigger rule, state, next run, last result, and Lucide icon actions for pause/resume, run now, edit, and delete. Use a labeled confirmation dialog for soft delete and refresh list/history/health after every mutation.
 
 - [ ] **Step 5: Build the structured schedule form**
 
-Use trigger tabs for single time, interval, and Cron. Cron uses minute, hour, day-of-month, month, and weekday controls and shows the generated five-field expression plus `Asia/Shanghai` explanation. Default `sample_mode` is `all`; include timeout, retries, retry delay, coalesce, and grace-period fields.
-
-```javascript
-function cronExpression(formData) {
-  return ["cron_minute", "cron_hour", "cron_day", "cron_month", "cron_weekday"]
-    .map((name) => String(formData.get(name) || "*"))
-    .join(" ");
-}
-```
+Use accessible trigger tabs for single time, interval, and Cron. Cron uses minute, hour, day-of-month, month, and weekday controls and shows the generated five-field expression plus `Asia/Shanghai` explanation. Default `sample_mode` is `all`; include timeout, retries, retry delay, coalesce, and grace-period fields. Keep trigger form state typed and validate before sending an API request.
 
 - [ ] **Step 6: Add run history and report links**
 
-Show scheduled time, actual trigger time, attempt, status, Evaluation Job ID, duration, and error. Link successful/partial rows to the capability report and keep failed messages escaped through `textContent`.
+Show scheduled time, actual trigger time, attempt, status, Evaluation Job ID, duration, and error. Link successful/partial rows to the capability report. Render error strings as normal React text children, never as injected HTML.
 
-```javascript
-function appendRunCell(row, value) {
-  const cell = document.createElement("td");
-  cell.textContent = value == null ? "-" : String(value);
-  row.appendChild(cell);
-}
-```
+- [ ] **Step 7: Run React behavior, type, build, and browser tests**
 
-- [ ] **Step 7: Run syntax and frontend contract tests**
+Run: `npm --prefix frontend run test:run`
 
-Run: `node --check frontend/app.js`
+Run: `npm --prefix frontend run typecheck`
 
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_scheduler_frontend_contract.py -q`
+Run: `npm --prefix frontend run build`
 
-Expected: PASS.
+Run the local server and then: `npm --prefix frontend run qa:ui`
+
+Expected: all PASS with no console errors; browser QA verifies scheduler workflows at desktop and mobile viewports.
 
 - [ ] **Step 8: Commit the scheduling center**
 
 ```bash
-git add frontend tests/test_scheduler_frontend_contract.py
+git add frontend
 git commit -m "feat: add Chinese evaluation scheduling center"
 ```
 

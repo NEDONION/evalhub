@@ -37,3 +37,69 @@ def test_runner_generates_sample_results_and_report() -> None:
     # 均分和失败标识共同验证报告没有只统计数量而丢失样本级错误定位。
     assert report.average_score == 0.5
     assert report.failed_sample_ids == ["s2"]
+
+
+def test_runner_reports_progress_after_each_scored_sample() -> None:
+    """Runner 应在每条样本形成结果后按顺序报告真实完成数量。"""
+    # 两条静态样本让测试能精确区分首次和最终进度，且完全不依赖外部模型。
+    samples = [
+        EvaluationSample(id="s1", input="1 + 1", reference="2"),
+        EvaluationSample(id="s2", input="2 + 2", reference="4"),
+    ]
+    adapter = StaticMappingAdapter({"1 + 1": "2", "2 + 2": "4"})
+    runner = EvaluationRunner(adapter, ExactMatchEvaluator())
+
+    # 任务与 Benchmark 只提供 Runner 所需的稳定关联，回调列表记录公开可观察行为。
+    job = EvaluationJob(model_id="model_1", benchmark_id="benchmark_1")
+    benchmark = BenchmarkRecord(
+        id="benchmark_1",
+        name="math-mini",
+        dataset_id="dataset_1",
+        evaluator_type="exact_match",
+    )
+    updates: list[tuple[int, int]] = []
+
+    # 每次回调应发生在对应结果已经生成之后，最终更新必须等于样本总数。
+    results, _ = runner.run(
+        job=job,
+        benchmark=benchmark,
+        samples=samples,
+        on_progress=lambda completed, total: updates.append((completed, total)),
+    )
+
+    assert len(results) == 2
+    assert updates == [(1, 2), (2, 2)]
+
+
+def test_runner_skips_completed_samples_and_reports_new_results() -> None:
+    """恢复执行应跳过成功样本，并只为新结果触发持久化回调。"""
+    samples = [
+        EvaluationSample(id="s1", input="1 + 1", reference="2"),
+        EvaluationSample(id="s2", input="2 + 2", reference="4"),
+    ]
+    adapter = StaticMappingAdapter({"1 + 1": "2", "2 + 2": "4"})
+    runner = EvaluationRunner(adapter, ExactMatchEvaluator())
+    job = EvaluationJob(model_id="model_1", benchmark_id="benchmark_1")
+    benchmark = BenchmarkRecord(
+        id="benchmark_1",
+        name="math-mini",
+        dataset_id="dataset_1",
+        evaluator_type="exact_match",
+    )
+    emitted: list[tuple[str, int, int]] = []
+    progress: list[tuple[int, int]] = []
+
+    results, _ = runner.run(
+        job=job,
+        benchmark=benchmark,
+        samples=samples,
+        skip_sample_ids={"s1"},
+        on_sample_result=lambda result, completed, total: emitted.append(
+            (result.sample_id, completed, total)
+        ),
+        on_progress=lambda completed, total: progress.append((completed, total)),
+    )
+
+    assert [result.sample_id for result in results] == ["s2"]
+    assert emitted == [("s2", 2, 2)]
+    assert progress == [(2, 2)]

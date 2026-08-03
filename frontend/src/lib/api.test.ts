@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
-  cancelModelPull,
+  getBenchmarks,
+  getEvaluationNode,
+  getEvaluationNodeSamples,
   getHealth,
-  getModelPull,
   getOllamaStatus,
-  prepareDataset,
+  getSuites,
+  retryEvaluationNode,
   runEvaluation,
-  startModelPull,
 } from "./api";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -85,75 +86,35 @@ describe("EvalHub API", () => {
     );
   });
 
-  it("creates a streaming Ollama pull task with an explicit model choice", async () => {
-    const task = {
-      model: "qwen2.5:1.5b",
-      status: "pulling",
-      message: "pulling layer",
-      completed_bytes: 50,
-      total_bytes: 100,
-      speed_bytes_per_second: 25,
-      eta_seconds: 2,
-      error: null,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ ok: true, task }, 202));
+  it("uses stable registry and node audit endpoints", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ benchmarks: [] }))
+      .mockResolvedValueOnce(jsonResponse({ suites: [] }))
+      .mockResolvedValueOnce(jsonResponse({ node: { id: "node/1" } }))
+      .mockResolvedValueOnce(jsonResponse({ samples: [], next_cursor: null }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, node: { id: "node/1" } }, 202));
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(startModelPull("qwen2.5:1.5b", "http://127.0.0.1:11434")).resolves.toEqual({
-      ok: true,
-      task,
+    await getBenchmarks();
+    await getSuites();
+    await getEvaluationNode("job 1", "node/1");
+    await getEvaluationNodeSamples("job 1", "node/1", {
+      status: "failed",
+      limit: 20,
+      cursor: "4:sample 5",
     });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/ollama/pulls",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          model: "qwen2.5:1.5b",
-          base_url: "http://127.0.0.1:11434",
-        }),
-      }),
-    );
-  });
+    await retryEvaluationNode("job 1", "node/1");
 
-  it("encodes model names when querying and canceling pull tasks", async () => {
-    const fetchMock = vi.fn().mockImplementation(() =>
-      Promise.resolve(jsonResponse({ ok: true, task: null })),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await getModelPull("qwen2.5:1.5b");
-    await cancelModelPull("qwen2.5:1.5b");
-
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      1,
-      "/api/ollama/pulls?model=qwen2.5%3A1.5b",
-      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
-    );
-    expect(fetchMock).toHaveBeenNthCalledWith(
-      2,
-      "/api/ollama/pulls?model=qwen2.5%3A1.5b",
-      expect.objectContaining({ method: "DELETE" }),
-    );
-  });
-
-  it("sends an explicit force flag when updating a cached dataset", async () => {
-    const response = {
-      ok: true,
-      dataset: "gsm8k",
-      path: "data/raw/gsm8k/test.jsonl",
-      operation: "updated",
-      sample_count: 1319,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await expect(prepareDataset("gsm8k", true)).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/datasets/prepare",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ dataset: "gsm8k", force: true }),
-      }),
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/benchmarks",
+      "/api/suites",
+      "/api/evaluations/job%201/nodes/node%2F1",
+      "/api/evaluations/job%201/nodes/node%2F1/samples?status=failed&limit=20&cursor=4%3Asample+5",
+      "/api/evaluations/job%201/nodes/node%2F1/retry",
+    ]);
+    expect(fetchMock.mock.calls[4]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
     );
   });
 });

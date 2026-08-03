@@ -4,9 +4,9 @@
 
 **Goal:** Build a reproducible industry Benchmark registry, real local dataset execution, normalized six-dimension capability reports, and a Chinese radar-chart workbench.
 
-**Architecture:** Keep EvalHub as the orchestration and reporting layer. Route each versioned Benchmark through a native, lm-eval, or sandboxed-code executor, preserve raw metrics, then aggregate normalized scores into six fixed capabilities. The existing standard-library HTTP server exposes the registry and report APIs, while the static frontend renders local-only assets.
+**Architecture:** Keep EvalHub as the orchestration and reporting layer. Route each versioned Benchmark through a native, lm-eval, or sandboxed-code executor, preserve raw metrics, then aggregate normalized scores into six fixed capabilities. The existing standard-library HTTP server exposes the registry and report APIs and serves locally built React assets.
 
-**Tech Stack:** Python 3.11+, dataclasses, standard-library HTTP/JSON/CSV/ZIP tooling, optional `lm-evaluation-harness`, Docker for generated-code isolation, vanilla HTML/CSS/JavaScript, pytest/unittest.
+**Tech Stack:** Python 3.11+, dataclasses, standard-library HTTP/JSON/CSV/ZIP tooling, optional `lm-evaluation-harness`, Docker for generated-code isolation, React 19, TypeScript, Vite, Vitest/Testing Library, Playwright, pytest/unittest.
 
 ## Global Constraints
 
@@ -648,10 +648,16 @@ git commit -m "feat: expose benchmark suites and capability reports"
 ### Task 7: Chinese Capability Workbench and Radar Chart
 
 **Files:**
-- Modify: `frontend/index.html`
-- Modify: `frontend/styles.css`
-- Modify: `frontend/app.js`
-- Create: `tests/test_frontend_contract.py`
+- Modify: `frontend/src/App.tsx`
+- Modify: `frontend/src/types.ts`
+- Modify: `frontend/src/lib/api.ts`
+- Modify: `frontend/src/hooks/useEvalHub.ts`
+- Modify: `frontend/src/components/dashboard/EvaluationForm.tsx`
+- Modify: `frontend/src/styles.css`
+- Create: `frontend/src/components/dashboard/CapabilityRadar.tsx`
+- Create: `frontend/src/components/dashboard/BenchmarkResultsTable.tsx`
+- Modify/Create: focused `frontend/src/**/*.test.tsx` tests beside the affected behavior
+- Modify: `frontend/scripts/qa-ui.mjs`
 
 **Interfaces:**
 - Consumes: `/api/benchmarks`, `/api/suites`, and suite report JSON.
@@ -661,96 +667,46 @@ git commit -m "feat: expose benchmark suites and capability reports"
 
 Read and apply `frontend-design` before editing the UI. Preserve the approved restrained blue/white enterprise direction, dense operational layout, 8px maximum card radius, and Chinese-first copy.
 
-- [ ] **Step 1: Write failing static frontend contract tests**
+- [ ] **Step 1: Write failing React behavior tests**
 
-```python
-def test_workbench_contains_suite_and_radar_mounts() -> None:
-    html = Path("frontend/index.html").read_text(encoding="utf-8")
-    assert 'id="suiteSelect"' in html
-    assert 'id="capabilityRadar"' in html
-    assert 'id="benchmarkResults"' in html
+Use Vitest, Testing Library, and complete typed API fixtures. Render the workbench and assert observable behavior: the user can switch between Suite and single-Benchmark modes; Suite is the default; all-samples mode is selected; all six Chinese capability labels render; unassessed dimensions show `未评测`; the result table exposes raw and normalized score columns. Do not assert source text or implementation-only test IDs.
 
+- [ ] **Step 2: Run and verify the behavior is missing**
 
-def test_frontend_defines_all_six_chinese_capability_labels() -> None:
-    script = Path("frontend/app.js").read_text(encoding="utf-8")
-    for label in ("知识", "指令遵循", "数学", "综合推理", "代码", "安全可信"):
-        assert label in script
-```
+Run: `npm --prefix frontend run test:run -- <focused-test-files>`
 
-- [ ] **Step 2: Run and verify missing mounts**
-
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_frontend_contract.py -q`
-
-Expected: FAIL because the radar mount is absent.
+Expected: FAIL because the Suite controls and capability report are not rendered yet.
 
 - [ ] **Step 3: Add suite selection and readiness presentation**
 
-Replace the single dataset select with a segmented mode control (`suite`/`benchmark`), a dynamic suite select, and a dynamic single Benchmark select. Show total configured samples, prepared count, executor readiness, six-dimension coverage, and an explicit full-run warning. Keep `sample_mode=all` checked by default.
-
-```javascript
-const evaluationMode = document.querySelector("#evaluationMode");
-const suiteSelect = document.querySelector("#suiteSelect");
-const benchmarkSelect = document.querySelector("#benchmarkSelect");
-
-function selectedEvaluationTarget() {
-  return evaluationMode.value === "suite"
-    ? { suite_id: suiteSelect.value }
-    : { benchmark_id: benchmarkSelect.value };
-}
-```
+Extend the typed API client and application state, then replace the single dataset select with a segmented mode control (`suite`/`benchmark`), dynamic Suite selection, and dynamic single-Benchmark selection. Show configured samples, prepared count, executor readiness, six-dimension coverage, and an explicit full-run warning. Keep `sample_mode=all` selected by default and preserve quick/custom modes as explicit choices.
 
 - [ ] **Step 4: Render a fixed-dimension local SVG radar**
 
-Implement `renderCapabilityRadar(capabilities)` with `document.createElementNS`. Use a stable `viewBox="0 0 520 360"`, five hexagonal grid levels, six labels, and a blue score polygon. Omit unassessed vertices from the score polygon and render `未评测` beside their labels; never substitute zero. Pair the chart with a six-row numeric table containing score, coverage, and status.
-
-```javascript
-const CAPABILITIES = [
-  ["knowledge", "知识"],
-  ["instruction_following", "指令遵循"],
-  ["mathematics", "数学"],
-  ["reasoning", "综合推理"],
-  ["coding", "代码"],
-  ["safety_trust", "安全可信"],
-];
-
-function radarPoint(index, score, cx = 260, cy = 180, radius = 128) {
-  const angle = -Math.PI / 2 + index * Math.PI / 3;
-  const scaled = radius * score / 100;
-  return `${cx + Math.cos(angle) * scaled},${cy + Math.sin(angle) * scaled}`;
-}
-```
+Implement a typed `CapabilityRadar` React component using local SVG elements. Use a stable `viewBox="0 0 520 360"`, five hexagonal grid levels, six labels, and a blue score polygon. Unassessed dimensions render `未评测` and must not be converted to zero or included in aggregate coverage. Pair the chart with a six-row numeric table containing score, coverage, and status. Keep dimensions stable across loading, empty, partial, and complete states.
 
 - [ ] **Step 5: Render Benchmark result details**
 
-Create a dense table with Benchmark, capability, raw score, normalized score, protocol, samples, duration, and status. Add an expandable failure panel below the table. Keep panels at 8px radius or less and preserve current blue/white enterprise tokens.
+Create a typed dense table with Benchmark, capability, raw score, normalized score, protocol, samples, duration, and status. Add an accessible expandable failure panel below the table. Keep panels at 8px radius or less and preserve current blue/white enterprise tokens.
 
-```javascript
-function benchmarkResultCells(result) {
-  return [
-    result.display_name,
-    capabilityLabels[result.capability],
-    formatScore(result.raw_score),
-    formatScore(result.normalized_score),
-    result.protocol_scope,
-    `${result.passed_samples}/${result.total_samples}`,
-    formatDuration(result.duration_seconds),
-    benchmarkStatusLabels[result.status] || result.status,
-  ];
-}
-```
+- [ ] **Step 6: Run React behavior, type, build, browser, and Python tests**
 
-- [ ] **Step 6: Run frontend syntax, contract, and Python tests**
+Run: `npm --prefix frontend run test:run`
 
-Run: `node --check frontend/app.js`
+Run: `npm --prefix frontend run typecheck`
 
-Run: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_frontend_contract.py -q`
+Run: `npm --prefix frontend run build`
 
-Expected: both PASS.
+Run the local server and then: `npm --prefix frontend run qa:ui`
+
+Run: `PYTHONPATH=src .venv/bin/python -m pytest -q`
+
+Expected: all PASS with no console errors; browser QA verifies the capability workbench at desktop and mobile viewports.
 
 - [ ] **Step 7: Commit the workbench**
 
 ```bash
-git add frontend tests/test_frontend_contract.py
+git add frontend
 git commit -m "feat: add six-dimension capability workbench"
 ```
 

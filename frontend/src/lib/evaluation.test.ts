@@ -9,6 +9,7 @@ import {
 } from "./evaluation";
 
 const baseValues: EvaluationFormValues = {
+  evaluationType: "model",
   dataset: "gsm8k",
   subject: "abstract_algebra",
   adapter: "ollama",
@@ -16,11 +17,42 @@ const baseValues: EvaluationFormValues = {
   baseUrl: "http://127.0.0.1:11434",
   sampleMode: "all",
   limit: "20",
+  suiteId: null,
 };
+
+it("builds the fixed Codex Coding Mini request for Agent evaluation", () => {
+  expect(
+    buildEvaluationRequest({
+      ...baseValues,
+      evaluationType: "agent",
+      dataset: "mmlu",
+      adapter: "oracle",
+      sampleMode: "custom",
+      limit: "99",
+    }),
+  ).toEqual({
+    evaluation_type: "agent",
+    agent_framework: "codex",
+    dataset: "coding_mini",
+    adapter: "ollama",
+    model: baseValues.model,
+    base_url: baseValues.baseUrl,
+    sample_mode: "quick",
+  });
+});
 
 describe("evaluation form rules", () => {
   it("omits limit when running all samples", () => {
     expect(buildEvaluationRequest(baseValues)).not.toHaveProperty("limit");
+  });
+
+  it("includes the selected industry suite without replacing the dataset fallback", () => {
+    expect(
+      buildEvaluationRequest({ ...baseValues, suiteId: "llm-industry-core-v1" }),
+    ).toMatchObject({
+      dataset: "gsm8k",
+      suite_id: "llm-industry-core-v1",
+    });
   });
 
   it("leaves the quick sample limit to the backend", () => {

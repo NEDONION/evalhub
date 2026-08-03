@@ -78,6 +78,61 @@ body {
   grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 1fr) 90px 100px 100px;
 }
 
+.task-row {
+  grid-template-columns: minmax(190px, 0.8fr) minmax(220px, 1.4fr) minmax(80px, 0.35fr);
+}
+
+.task-row-selected {
+  position: relative;
+  background: color-mix(in srgb, var(--primary-soft) 72%, white);
+}
+
+.task-row-selected::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--primary);
+  content: "";
+}
+
+.task-track-fill {
+  transition: width 300ms ease;
+}
+
+.task-track-cursor {
+  transform: translateY(-50%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+  animation: task-cursor-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes task-cursor-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 10%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 18%, transparent);
+  }
+}
+
+@media (max-width: 639px) {
+  .task-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .task-row > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .task-row > :nth-child(3) {
+    grid-column: 2;
+    grid-row: 1;
+  }
+}
+
 @media (min-width: 1024px) {
   .readiness-rail > *:nth-child(n + 2) {
     border-top: 0;
@@ -104,5 +159,9 @@ select {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
+  }
+
+  .task-track-cursor {
+    animation: none;
   }
 }

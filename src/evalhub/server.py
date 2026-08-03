@@ -5,10 +5,31 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from evalhub.benchmarks import (
+    ExecutorKind,
+    benchmark_registry,
+    get_benchmark_spec,
+    get_suite_spec,
+    suite_registry,
+)
 from evalhub.cli import run_real_benchmark
 from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
 from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
 from evalhub.ollama_pull import OllamaPullManager
+from evalhub.tasks import (
+    EvaluationTaskService,
+    SQLiteTaskRepository,
+    TaskConflictError,
+    TaskNotFoundError,
+    TaskRequest,
+)
+from evalhub.tasks.presentation import (
+    node_detail,
+    node_summary,
+    sample_page,
+    task_detail,
+    task_summary,
+)
 
 OLLAMA_PULL_MANAGER = OllamaPullManager()
 
@@ -39,10 +60,9 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
 
     # 自定义服务器标识便于本地诊断时区分 Python 开发服务与其他静态服务器。
     server_version = "EvalHubLocal/0.1"
+    task_service: EvaluationTaskService | None = None
 
-    def __init__(
-        self, *args: object, directory: str | None = None, **kwargs: object
-    ) -> None:
+    def __init__(self, *args: object, directory: str | None = None, **kwargs: object) -> None:
         """初始化请求处理器并选择显式目录或默认前端构建目录。
 
         Args:
@@ -74,6 +94,12 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/datasets":
             self._json(self._dataset_status())
             return
+        if parsed.path == "/api/benchmarks":
+            self._json(_benchmark_catalog())
+            return
+        if parsed.path == "/api/suites":
+            self._json(_suite_catalog())
+            return
         if parsed.path == "/api/ollama/status":
             # 查询参数允许控制台切换模型与服务地址，同时保留安全默认值。
             query = parse_qs(parsed.query)
@@ -89,6 +115,57 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "error": "model is required"}, status=400)
                 return
             self._json({"ok": True, "task": OLLAMA_PULL_MANAGER.get(model)})
+            return
+        if parsed.path == "/api/evaluations":
+            # 高频轮询只发送轻量摘要，完整结果由用户选择任务后再按需读取。
+            tasks = [task_summary(task) for task in self._require_task_service().list()]
+            self._json({"tasks": tasks})
+            return
+        sample_route = _node_samples_route(parsed.path)
+        if sample_route is not None:
+            task_id, node_id = sample_route
+            query = parse_qs(parsed.query)
+            try:
+                limit = int(_first(query, "limit", "50"))
+                status = _first(query, "status", "").strip() or None
+                cursor = _first(query, "cursor", "").strip() or None
+                page = self._require_task_service().list_node_samples(
+                    task_id,
+                    node_id,
+                    limit=limit,
+                    cursor=cursor,
+                    status=status,
+                )
+            except TaskNotFoundError as exc:
+                self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+                return
+            except ValueError as exc:
+                self._json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._json(sample_page(page))
+            return
+        node_route = _node_detail_route(parsed.path)
+        if node_route is not None:
+            task_id, node_id = node_route
+            try:
+                service = self._require_task_service()
+                node = service.get_node(task_id, node_id)
+                events = service.list_node_events(task_id, node_id)
+            except TaskNotFoundError as exc:
+                self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+                return
+            self._json({"node": node_detail(node, events=events)})
+            return
+        task_id = _task_detail_id(parsed.path)
+        if task_id is not None:
+            try:
+                service = self._require_task_service()
+                task = service.get(task_id)
+                nodes = service.list_nodes(task_id)
+            except TaskNotFoundError as exc:
+                self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+                return
+            self._json({"task": task_detail(task, nodes=nodes)})
             return
         # 根路径映射到 Vite 构建入口，其他路径继续使用标准静态文件处理逻辑。
         if parsed.path == "/":
@@ -124,6 +201,51 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 self._json({"ok": False, "error": str(exc)}, status=500)
             else:
                 self._json({"ok": True, "task": task}, status=202)
+            return
+
+        if parsed.path == "/api/evaluations":
+            try:
+                request = _task_request(self._read_json())
+                task = self._require_task_service().submit(request)
+            except (TypeError, ValueError) as exc:
+                # 无效组合不得写入持久队列，浏览器可以直接展示字段级诊断。
+                self._json({"ok": False, "error": str(exc)}, status=400)
+                return
+            self._json({"ok": True, "task": task_summary(task)}, status=202)
+            return
+
+        retry_route = _node_retry_route(parsed.path)
+        if retry_route is not None:
+            task_id, node_id = retry_route
+            try:
+                node = self._require_task_service().retry_node(task_id, node_id)
+            except TaskNotFoundError as exc:
+                self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+                return
+            except TaskConflictError as exc:
+                self._json({"ok": False, "error": str(exc)}, status=409)
+                return
+            self._json({"ok": True, "node": node_summary(node)}, status=202)
+            return
+
+        cancel_task_id = _cancel_task_id(parsed.path)
+        if cancel_task_id is not None:
+            try:
+                task = self._require_task_service().cancel(cancel_task_id)
+            except TaskNotFoundError as exc:
+                self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+                return
+            except TaskConflictError as exc:
+                self._json({"ok": False, "error": str(exc)}, status=409)
+                return
+            self._json(
+                {
+                    "ok": True,
+                    "task": task_detail(
+                        task, nodes=self._require_task_service().list_nodes(task.id)
+                    ),
+                }
+            )
             return
 
         if parsed.path == "/api/datasets/prepare":
@@ -202,6 +324,19 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             return
         self._json({"ok": True, "task": task})
 
+    def _require_task_service(self) -> EvaluationTaskService:
+        """返回处理器已经装配的任务服务。
+
+        Returns:
+            提供持久化列表、详情、提交与取消能力的任务服务。
+
+        Raises:
+            RuntimeError: 服务入口或测试没有为处理器装配任务服务。
+        """
+        if self.task_service is None:
+            raise RuntimeError("evaluation task service is not configured")
+        return self.task_service
+
     def _dataset_status(self) -> dict[str, object]:
         """汇总数据集元数据、本地准备状态和可读取样本数。
 
@@ -260,7 +395,10 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         if length == 0:
             return {}
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        return payload
 
     def _json(self, payload: dict[str, object], status: int = 200) -> None:
         """以 UTF-8 JSON 编码并发送完整 HTTP 响应。
@@ -291,18 +429,27 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
         host: 监听地址，默认仅允许本机访问。
         port: 监听 TCP 端口。
     """
-    # 多线程服务器避免长时间评测请求阻塞健康检查和静态资源访问。
+    # 任务数据库位于仓库忽略的运行目录，重启服务后仍可恢复历史与排队任务。
+    project_root = Path(__file__).resolve().parents[2]
+    task_repository = SQLiteTaskRepository(project_root / ".runtime" / "evalhub.db")
+    task_service = EvaluationTaskService(task_repository)
+    EvalHubRequestHandler.task_service = task_service
+
+    # 先绑定端口再启动 Worker，端口冲突时不会遗留不可访问的执行线程。
     server = ThreadingHTTPServer((host, port), EvalHubRequestHandler)
-    print(f"EvalHub local console: http://{host}:{port}")
-    print("Press Ctrl+C to stop.")
-    # 主循环持续处理请求，终端中断被视为本地开发服务的正常停止信号。
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        # 用户主动中断属于正常本地退出流程，只输出提示而不传播堆栈。
-        print("\nEvalHub local console stopped.")
+        task_service.start()
+        print(f"EvalHub local console: http://{host}:{port}")
+        print("Press Ctrl+C to stop.")
+        # 主循环持续处理请求，终端中断被视为本地开发服务的正常停止信号。
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            # 用户主动中断属于正常本地退出流程，只输出提示而不传播堆栈。
+            print("\nEvalHub local console stopped.")
     finally:
-        # 无论正常中断还是服务异常都关闭监听套接字，避免端口残留占用。
+        # 先终止执行子进程，再关闭套接字，避免本地退出后继续占用 CPU 或 GPU。
+        task_service.stop()
         server.server_close()
 
 
@@ -321,6 +468,80 @@ def _dataset_is_prepared(dataset: str) -> bool:
     spec = dataset_catalog()[dataset]
     path = Path(spec.local_path)
     return path.exists() and (path.is_file() or any(path.glob("*")))
+
+
+def _benchmark_catalog() -> dict[str, object]:
+    """构建行业 Benchmark Registry 及当前本地执行器真实就绪状态。
+
+    Returns:
+        包含稳定 Benchmark 元数据、本地可运行标记和不可用原因的 JSON 对象。
+    """
+    # 中文标签属于 API 展示契约，避免前端重复维护能力枚举的翻译映射。
+    capability_labels = {
+        "knowledge": "知识",
+        "instruction_following": "指令遵循",
+        "mathematics": "数学",
+        "reasoning": "综合推理",
+        "coding": "代码",
+        "safety_trust": "安全可信",
+    }
+    benchmarks = []
+    # Registry 顺序即套件展示顺序；只把已经接通的原生执行器标记为可运行。
+    for spec in benchmark_registry().values():
+        locally_runnable = spec.executor == ExecutorKind.NATIVE
+        reason = None
+        if not locally_runnable:
+            # 未接通执行器仍公开规格，但必须返回可诊断原因，不能伪装成本地可用。
+            executor_name = {
+                ExecutorKind.LM_EVAL: "lm_eval",
+                ExecutorKind.SANDBOXED_CODE: "代码沙箱",
+            }[spec.executor]
+            reason = f"{executor_name} 执行器尚未配置"
+        # 显式选择公开字段，防止内部生成配置或枚举表示意外改变 HTTP 契约。
+        benchmarks.append(
+            {
+                "id": spec.id,
+                "version": spec.version,
+                "display_name": spec.display_name,
+                "capability": spec.capability.value,
+                "capability_label": capability_labels[spec.capability.value],
+                "dataset_source": spec.dataset_source,
+                "dataset_revision": spec.dataset_revision,
+                "homepage": spec.homepage,
+                "executor": spec.executor.value,
+                "metric": spec.metric,
+                "locally_runnable": locally_runnable,
+                "readiness_reason": reason,
+            }
+        )
+    return {"benchmarks": benchmarks}
+
+
+def _suite_catalog() -> dict[str, object]:
+    """构建版本化评测套件并汇总当前可本地运行的成员数量。
+
+    Returns:
+        包含套件版本、成员 ID、总数和本地可运行数量的 JSON 对象。
+    """
+    benchmarks = benchmark_registry()
+    suites = []
+    # 每次从同一 Registry 计算计数，避免套件响应与 Benchmark 就绪状态漂移。
+    for spec in suite_registry().values():
+        runnable_count = sum(
+            benchmarks[item].executor == ExecutorKind.NATIVE for item in spec.benchmark_ids
+        )
+        # 套件可以部分就绪，因此同时暴露总数和可运行数供调用方明确提示。
+        suites.append(
+            {
+                "id": spec.id,
+                "version": spec.version,
+                "display_name": spec.display_name,
+                "benchmark_ids": list(spec.benchmark_ids),
+                "benchmark_count": len(spec.benchmark_ids),
+                "locally_runnable_count": runnable_count,
+            }
+        )
+    return {"suites": suites}
 
 
 def _first(query: dict[str, list[str]], key: str, default: str) -> str:
@@ -353,3 +574,197 @@ def _parse_limit(payload: dict[str, object]) -> int | None:
     if raw_limit in (None, ""):
         return None
     return int(raw_limit)
+
+
+def _task_request(payload: object) -> TaskRequest:
+    """校验任务创建正文并转换为可持久化请求。
+
+    Args:
+        payload: 浏览器提交并已完成 JSON 解析的值。
+
+    Returns:
+        字段完整且样本数量合法的任务请求。
+
+    Raises:
+        ValueError: 评测类型、Agent 组合或通用运行字段不合法。
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    evaluation_type = str(payload.get("evaluation_type", "model"))
+    if evaluation_type not in {"model", "agent"}:
+        raise ValueError("evaluation_type must be one of: model, agent")
+
+    # 套件只适用于模型评测；校验后用首个成员填充旧版必填 dataset 兼容字段。
+    suite_id: str | None = None
+    raw_suite_id = payload.get("suite_id")
+    if evaluation_type == "model" and raw_suite_id not in (None, ""):
+        suite_id = str(raw_suite_id).strip()
+        try:
+            suite = get_suite_spec(suite_id)
+        except KeyError as exc:
+            raise ValueError(_exception_message(exc)) from exc
+        default_dataset = suite.benchmark_ids[0]
+    else:
+        default_dataset = ""
+
+    # 数据集与模型共同标识一次执行目标，两者都必须在入队前完成校验。
+    dataset = str(payload.get("dataset", default_dataset)).strip()
+    model = str(payload.get("model", "")).strip()
+    if not dataset or not model:
+        raise ValueError("dataset and model are required")
+
+    adapter = str(payload.get("adapter", "ollama"))
+    if adapter not in {"ollama", "oracle"}:
+        raise ValueError("adapter must be one of: ollama, oracle")
+    agent_framework: str | None = None
+    if evaluation_type == "agent":
+        # Agent MVP 只接受已实现的 Codex 与 Coding Mini 组合，拒绝虚假可用选项。
+        agent_framework = str(payload.get("agent_framework", ""))
+        if agent_framework != "codex":
+            raise ValueError("agent_framework must be codex")
+        if dataset != "coding_mini":
+            raise ValueError("agent dataset must be coding_mini")
+        if adapter != "ollama":
+            raise ValueError("agent adapter must be ollama")
+    else:
+        try:
+            get_benchmark_spec(dataset)
+        except KeyError as exc:
+            raise ValueError(_exception_message(exc)) from exc
+    sample_mode = str(payload.get("sample_mode", "custom"))
+    if sample_mode not in {"all", "quick", "custom"}:
+        raise ValueError("sample_mode must be one of: all, quick, custom")
+
+    # 预设模式由执行器统一解释；只有自定义模式要求并持久化显式正整数。
+    limit = None
+    if sample_mode == "custom":
+        raw_limit = payload.get("limit")
+        if isinstance(raw_limit, bool):
+            raise ValueError("limit must be a positive integer")
+        try:
+            limit = int(raw_limit) if raw_limit is not None else None
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit must be a positive integer") from exc
+        if limit is None or limit <= 0:
+            raise ValueError("limit must be a positive integer")
+
+    return TaskRequest(
+        dataset=dataset,
+        adapter=adapter,
+        model=model,
+        base_url=str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
+        sample_mode=sample_mode,
+        subject=str(payload.get("subject", "abstract_algebra")),
+        limit=limit,
+        evaluation_type=evaluation_type,
+        agent_framework=agent_framework,
+        suite_id=suite_id,
+    )
+
+
+def _task_detail_id(path: str) -> str | None:
+    """从任务详情路径中提取单个非空任务标识。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        匹配详情路由时返回任务标识，否则返回 ``None``。
+    """
+    parts = path.strip("/").split("/")
+    if len(parts) == 3 and parts[:2] == ["api", "evaluations"] and parts[2]:
+        return parts[2]
+    return None
+
+
+def _cancel_task_id(path: str) -> str | None:
+    """从任务取消路径中提取单个非空任务标识。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        匹配取消路由时返回任务标识，否则返回 ``None``。
+    """
+    parts = path.strip("/").split("/")
+    if len(parts) == 4 and parts[:2] == ["api", "evaluations"]:
+        if parts[2] and parts[3] == "cancel":
+            return parts[2]
+    return None
+
+
+def _node_detail_route(path: str) -> tuple[str, str] | None:
+    """匹配任务内节点详情路径。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        精确匹配时返回任务与节点标识，否则返回 ``None``。
+    """
+    # 固定分段数量避免把样本、重试或额外尾路径误识别为节点详情。
+    parts = path.strip("/").split("/")
+    if len(parts) == 5 and parts[:2] == ["api", "evaluations"] and parts[3] == "nodes":
+        if parts[2] and parts[4]:
+            return parts[2], parts[4]
+    return None
+
+
+def _node_samples_route(path: str) -> tuple[str, str] | None:
+    """匹配任务内节点样本分页路径。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        精确匹配时返回任务与节点标识，否则返回 ``None``。
+    """
+    # 只接受固定 samples 尾段，防止详情路由或未知子资源被错误分派。
+    parts = path.strip("/").split("/")
+    if (
+        len(parts) == 6
+        and parts[:2] == ["api", "evaluations"]
+        and parts[3] == "nodes"
+        and parts[5] == "samples"
+        and parts[2]
+        and parts[4]
+    ):
+        return parts[2], parts[4]
+    return None
+
+
+def _node_retry_route(path: str) -> tuple[str, str] | None:
+    """匹配任务内节点人工重试路径。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        精确匹配时返回任务与节点标识，否则返回 ``None``。
+    """
+    # 重试是显式写操作，只允许固定 retry 尾段进入状态变更处理。
+    parts = path.strip("/").split("/")
+    if (
+        len(parts) == 6
+        and parts[:2] == ["api", "evaluations"]
+        and parts[3] == "nodes"
+        and parts[5] == "retry"
+        and parts[2]
+        and parts[4]
+    ):
+        return parts[2], parts[4]
+    return None
+
+
+def _exception_message(exc: Exception) -> str:
+    """提取领域异常正文，避免 KeyError 派生异常自动附加引号。
+
+    Args:
+        exc: 需要映射到本地 JSON 边界的领域异常。
+
+    Returns:
+        适合直接展示的稳定错误消息。
+    """
+    if exc.args:
+        return str(exc.args[0])
+    return str(exc)

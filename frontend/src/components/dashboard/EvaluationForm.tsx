@@ -1,9 +1,17 @@
-import { Play, SlidersHorizontal } from "lucide-react";
+import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
-import type { AdapterType, Dataset, DatasetName, EvaluationRequest, ModelOption, SampleMode } from "../../types";
+import type {
+  AdapterType,
+  Dataset,
+  DatasetName,
+  EvaluationRequest,
+  EvaluationType,
+  ModelOption,
+  SampleMode,
+} from "../../types";
 import { Button } from "../ui/Button";
 import { FieldMessage } from "../ui/FieldMessage";
 import { Panel } from "../ui/Panel";
@@ -18,6 +26,7 @@ interface EvaluationFormProps {
   onModelChange: (model: string) => void;
   onBaseUrlCommit: (baseUrl: string) => void;
   onManageAssets: () => void;
+  onPrepare: (dataset: DatasetName) => void;
   onSubmit: (request: EvaluationRequest) => void;
 }
 
@@ -31,18 +40,10 @@ const sampleModes: Array<{ value: SampleMode; label: string; meta: string }> = [
 ];
 
 /**
- * 渲染一次真实 Benchmark 的配置表单，并在提交前校验样本数量和 Ollama 模型可用性。
+ * 渲染模型与 Agent 两类评测配置，并在提交前校验样本数量和 Ollama 模型可用性。
  *
- * @param datasets 可选择的数据集及其本地准备状态。
- * @param modelOptions Ollama 已安装与推荐模型选项。
- * @param model 当前由父组件持有的模型标签。
- * @param baseUrl 当前 Ollama 服务地址。
- * @param running 是否正在执行评测，用于禁止重复提交。
- * @param preparing 是否正在准备数据集，用于避免资产变化期间提交。
- * @param onModelChange 模型选择变化回调。
- * @param onBaseUrlCommit 地址失焦或提交时的持久化回调。
- * @param onManageAssets 模型缺失时前往资产管理目录的回调。
- * @param onSubmit 校验通过后提交标准化评测请求的回调。
+ * @param props 数据集、模型、运行状态，以及资产管理、缓存和任务创建回调。
+ * @returns 仅提交后端真实支持组合的评测表单。
  */
 export function EvaluationForm({
   datasets,
@@ -54,8 +55,10 @@ export function EvaluationForm({
   onModelChange,
   onBaseUrlCommit,
   onManageAssets,
+  onPrepare,
   onSubmit,
 }: EvaluationFormProps) {
+  const [evaluationType, setEvaluationType] = useState<EvaluationType>("model");
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
   const [subject, setSubject] = useState("abstract_algebra");
   const [adapter, setAdapter] = useState<AdapterType>("ollama");
@@ -79,11 +82,21 @@ export function EvaluationForm({
   const availableModels =
     modelOptions.length > 0
       ? modelOptions
-      : [{ name: model, label: model, description: "当前模型", installed: false, size_bytes: null, size_kind: "unknown" as const }];
+      : [
+          {
+            name: model,
+            label: model,
+            description: "当前模型",
+            installed: false,
+            size_bytes: null,
+            size_kind: "unknown" as const,
+          },
+        ];
   const selectedModelOption = availableModels.find((option) => option.name === model);
-  const missingOllamaModel = adapter === "ollama" && !selectedModelOption?.installed;
+  const missingOllamaModel = (evaluationType === "agent" || adapter === "ollama") && !selectedModelOption?.installed;
 
   const values: EvaluationFormValues = {
+    evaluationType,
     dataset,
     subject,
     adapter,
@@ -93,6 +106,11 @@ export function EvaluationForm({
     limit,
   };
 
+  /**
+   * 校验当前表单并提交稳定的模型或 Agent 请求。
+   *
+   * @param event 浏览器表单提交事件，用于阻止页面刷新。
+   */
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextErrors = validateEvaluation(values);
@@ -101,6 +119,21 @@ export function EvaluationForm({
     if (Object.keys(nextErrors).length > 0) return;
     onBaseUrlCommit(baseUrlDraft);
     onSubmit(buildEvaluationRequest(values));
+  }
+
+  /**
+   * 切换评测对象，并把 Agent 模式收敛到当前后端真实支持的 quick + Ollama 组合。
+   *
+   * @param event 评测类型 radio 的变更事件。
+   */
+  function changeEvaluationType(event: React.ChangeEvent<HTMLInputElement>) {
+    const nextType = event.target.value as EvaluationType;
+    setEvaluationType(nextType);
+    setErrors({});
+    if (nextType === "agent") {
+      setAdapter("ollama");
+      setSampleMode("quick");
+    }
   }
 
   return (
@@ -120,69 +153,121 @@ export function EvaluationForm({
       </div>
 
       <form onSubmit={submit} noValidate className="grid lg:grid-cols-2">
+        <fieldset className="border-b border-border px-5 py-4 sm:px-6 lg:col-span-2">
+          <legend className="sr-only">评测对象</legend>
+          <div className="inline-flex rounded-md border border-border bg-slate-50 p-1">
+            {(["model", "agent"] as const).map((value) => (
+              <label key={value} className="cursor-pointer">
+                <input
+                  type="radio"
+                  name="evaluation-type"
+                  value={value}
+                  aria-label={value === "model" ? "模型评测" : "Agent 评测"}
+                  checked={evaluationType === value}
+                  onChange={changeEvaluationType}
+                  className="peer sr-only"
+                />
+                <span className="block rounded px-4 py-2 text-xs font-semibold text-muted transition-colors peer-checked:bg-white peer-checked:text-primary peer-checked:shadow-sm">
+                  {value === "model" ? "模型评测" : "Agent 评测"}
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+
         <div className="space-y-4 border-b border-border p-5 sm:p-6 lg:border-r lg:border-b-0">
+          {evaluationType === "model" ? (
+            <>
+              <div>
+                <label htmlFor="dataset" className="mb-1.5 block text-xs font-medium text-muted">
+                  数据集
+                </label>
+                <select
+                  id="dataset"
+                  className={controlClass}
+                  value={dataset}
+                  onChange={(event) => setDataset(event.target.value as DatasetName)}
+                >
+                  {datasetOptions.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.display_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {dataset === "mmlu" ? (
+                <div>
+                  <label htmlFor="subject" className="mb-1.5 block text-xs font-medium text-muted">
+                    MMLU 学科
+                  </label>
+                  <input
+                    id="subject"
+                    className={controlClass}
+                    value={subject}
+                    onChange={(event) => setSubject(event.target.value)}
+                  />
+                </div>
+              ) : null}
+
+              <div>
+                <label htmlFor="adapter" className="mb-1.5 block text-xs font-medium text-muted">
+                  模型适配器
+                </label>
+                <select
+                  id="adapter"
+                  className={controlClass}
+                  value={adapter}
+                  onChange={(event) => setAdapter(event.target.value as AdapterType)}
+                >
+                  <option value="ollama">Ollama 本地模型</option>
+                  <option value="oracle">Oracle 管线自检</option>
+                </select>
+              </div>
+            </>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="rounded-md border border-blue-100 bg-blue-50/55 p-4">
+                <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
+                  Benchmark
+                </span>
+                <strong className="mt-1 block text-sm text-blue-950">EvalHub Coding Mini</strong>
+                <span className="mt-1 block text-xs leading-5 text-blue-700">3 个隐藏校验编码任务</span>
+              </div>
+              <div className="rounded-md border border-blue-100 bg-blue-50/55 p-4">
+                <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
+                  Agent shell
+                </span>
+                <strong className="mt-1 block text-sm text-blue-950">Codex CLI</strong>
+                <span className="mt-1 block text-xs leading-5 text-blue-700">固定工具与 workspace-write 沙箱</span>
+              </div>
+            </div>
+          )}
+
           <div>
-            <label htmlFor="dataset" className="mb-1.5 block text-xs font-medium text-muted">
-              数据集
+            <label htmlFor="model" className="mb-1.5 block text-xs font-medium text-muted">
+              {evaluationType === "agent" ? "Agent 基模" : "模型"}
             </label>
             <select
-              id="dataset"
+              id="model"
               className={controlClass}
-              value={dataset}
-              onChange={(event) => setDataset(event.target.value as DatasetName)}
+              value={model}
+              onChange={(event) => onModelChange(event.target.value)}
             >
-              {datasetOptions.map((item) => (
-                <option key={item.name} value={item.name}>
-                  {item.display_name}
+              {availableModels.map((option) => (
+                <option key={option.name} value={option.name}>
+                  {option.label} · {formatBytes(option.size_bytes)} · {option.installed ? "已安装" : "未下载"}
                 </option>
               ))}
             </select>
-          </div>
-
-          {dataset === "mmlu" ? (
-            <div>
-              <label htmlFor="subject" className="mb-1.5 block text-xs font-medium text-muted">
-                MMLU 学科
-              </label>
-              <input id="subject" className={controlClass} value={subject} onChange={(event) => setSubject(event.target.value)} />
-            </div>
-          ) : null}
-
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="adapter" className="mb-1.5 block text-xs font-medium text-muted">
-                模型适配器
-              </label>
-              <select
-                id="adapter"
-                className={controlClass}
-                value={adapter}
-                onChange={(event) => setAdapter(event.target.value as AdapterType)}
-              >
-                <option value="ollama">Ollama 本地模型</option>
-                <option value="oracle">Oracle 管线自检</option>
-              </select>
-            </div>
-            <div>
-              <label htmlFor="model" className="mb-1.5 block text-xs font-medium text-muted">
-                模型
-              </label>
-              <select id="model" className={controlClass} value={model} onChange={(event) => onModelChange(event.target.value)}>
-                {availableModels.map((option) => (
-                  <option key={option.name} value={option.name}>
-                    {option.label} · {formatBytes(option.size_bytes)} · {option.installed ? "已安装" : "未下载"}
-                  </option>
-                ))}
-              </select>
-              {missingOllamaModel ? (
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
-                  <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
-                    前往资产管理
-                  </Button>
-                </div>
-              ) : null}
-            </div>
+            {missingOllamaModel ? (
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
+                <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
+                  前往资产管理
+                </Button>
+              </div>
+            ) : null}
           </div>
 
           <div>
@@ -200,64 +285,88 @@ export function EvaluationForm({
         </div>
 
         <div className="flex min-w-0 flex-col p-5 sm:p-6">
-          <fieldset>
-            <legend className="mb-3 text-xs font-medium text-muted">样本范围</legend>
-            <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-              {sampleModes.map((option) => (
-                <label key={option.value} className="relative cursor-pointer">
-                  <input
-                    type="radio"
-                    name="sample-mode"
-                    value={option.value}
-                    aria-label={option.label}
-                    checked={sampleMode === option.value}
-                    onChange={() => {
-                      setSampleMode(option.value);
-                      setErrors({});
-                    }}
-                    className="peer sr-only"
-                  />
-                  <span className="flex min-h-16 flex-col justify-center rounded-md border border-border bg-white px-3 transition-colors peer-checked:border-blue-300 peer-checked:bg-blue-50 peer-checked:shadow-[inset_0_0_0_1px_rgba(37,99,235,0.08)]">
-                    <strong className="text-xs font-semibold text-ink peer-checked:text-primary">{option.label}</strong>
-                    <span className="mt-1 text-[11px] text-slate-400">{option.meta}</span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </fieldset>
+          {evaluationType === "model" ? (
+            <>
+              <fieldset>
+                <legend className="mb-3 text-xs font-medium text-muted">样本范围</legend>
+                <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+                  {sampleModes.map((option) => (
+                    <label key={option.value} className="relative cursor-pointer">
+                      <input
+                        type="radio"
+                        name="sample-mode"
+                        value={option.value}
+                        aria-label={option.label}
+                        checked={sampleMode === option.value}
+                        onChange={() => {
+                          // 切换样本范围时清除只属于上一次自定义输入的校验消息。
+                          setSampleMode(option.value);
+                          setErrors({});
+                        }}
+                        className="peer sr-only"
+                      />
+                      <span className="flex min-h-16 flex-col justify-center rounded-md border border-border bg-white px-3 transition-colors peer-checked:border-blue-300 peer-checked:bg-blue-50 peer-checked:shadow-[inset_0_0_0_1px_rgba(37,99,235,0.08)]">
+                        <strong className="text-xs font-semibold text-ink peer-checked:text-primary">
+                          {option.label}
+                        </strong>
+                        <span className="mt-1 text-[11px] text-slate-400">{option.meta}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
 
-          {sampleMode === "custom" ? (
-            <div className="mt-4">
-              <label htmlFor="limit" className="mb-1.5 block text-xs font-medium text-muted">
-                自定义样本数量
-              </label>
-              <input
-                id="limit"
-                type="number"
-                min="1"
-                step="1"
-                className={controlClass}
-                value={limit}
-                aria-invalid={Boolean(errors.limit)}
-                aria-describedby={errors.limit ? "limit-error" : undefined}
-                onChange={(event) => setLimit(event.target.value)}
-              />
-              {errors.limit ? <FieldMessage id="limit-error">{errors.limit}</FieldMessage> : null}
+              {sampleMode === "custom" ? (
+                <div className="mt-4">
+                  <label htmlFor="limit" className="mb-1.5 block text-xs font-medium text-muted">
+                    自定义样本数量
+                  </label>
+                  <input
+                    id="limit"
+                    type="number"
+                    min="1"
+                    step="1"
+                    className={controlClass}
+                    value={limit}
+                    aria-invalid={Boolean(errors.limit)}
+                    aria-describedby={errors.limit ? "limit-error" : undefined}
+                    onChange={(event) => setLimit(event.target.value)}
+                  />
+                  {errors.limit ? <FieldMessage id="limit-error">{errors.limit}</FieldMessage> : null}
+                </div>
+              ) : null}
+            </>
+          ) : (
+            <div>
+              <p className="text-xs font-medium text-muted">本次 Agent 评测流程</p>
+              <ol className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">1. 创建独立 Git 样本工作区</li>
+                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Codex 使用所选基模完成任务</li>
+                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">3. 隐藏 Verifier 评分并聚合六维能力</li>
+              </ol>
             </div>
-          ) : null}
+          )}
 
           <div className="mt-auto pt-7">
             <div className="mb-4 rounded-md border border-blue-100 bg-blue-50/65 p-3 text-xs leading-5 text-blue-800">
-              {sampleMode === "all"
+              {evaluationType === "agent"
+                ? "固定运行 3 个 Coding Mini 任务；最终消息不会直接参与得分。"
+                : sampleMode === "all"
                 ? "将运行完整数据集，耗时取决于模型和本地设备。"
                 : sampleMode === "quick"
                   ? "固定运行 5 条样本，适合验证链路是否正常。"
                   : `将运行前 ${limit || "—"} 条样本。`}
             </div>
-            <div className="flex justify-end">
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              {evaluationType === "model" ? (
+                <Button variant="secondary" onClick={() => onPrepare(dataset)} disabled={preparing || running}>
+                  <DatabaseZap className="h-4 w-4" aria-hidden="true" />
+                  {preparing ? "正在缓存" : "缓存当前数据集"}
+                </Button>
+              ) : null}
               <Button type="submit" disabled={running || preparing || missingOllamaModel}>
                 <Play className="h-4 w-4" aria-hidden="true" />
-                {running ? "正在评测" : "发起评测"}
+                {running ? "正在评测" : evaluationType === "agent" ? "发起 Agent 评测" : "发起评测"}
               </Button>
             </div>
           </div>

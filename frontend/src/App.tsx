@@ -1,12 +1,12 @@
 import { useMemo, useState } from "react";
 
-import { Header } from "./components/dashboard/Header";
 import { DatasetTable } from "./components/dashboard/DatasetTable";
 import { EvaluationForm } from "./components/dashboard/EvaluationForm";
+import { EvaluationTaskPanel } from "./components/dashboard/EvaluationTaskPanel";
+import { Header } from "./components/dashboard/Header";
 import { MetricStrip } from "./components/dashboard/MetricStrip";
 import { OllamaPanel } from "./components/dashboard/OllamaPanel";
 import { OverviewPanel } from "./components/dashboard/OverviewPanel";
-import { ResultPanel } from "./components/dashboard/ResultPanel";
 import { SidebarNav, type WorkspaceView } from "./components/dashboard/SidebarNav";
 import { useEvalHub } from "./hooks/useEvalHub";
 import { formatScore } from "./lib/evaluation";
@@ -31,16 +31,17 @@ const pageCopy: Record<WorkspaceView, { eyebrow: string; title: string; descript
     description: "集中管理 Ollama 模型与公开 Benchmark 缓存。",
   },
   results: {
-    eyebrow: "Evaluation output",
-    title: "评测结果",
-    description: "查看最近一次任务的聚合指标和失败样本。",
+    eyebrow: "Evaluation jobs",
+    title: "评测任务",
+    description: "先追踪执行状态与资源占用，选择任务后再查看完整评测结果。",
   },
 };
 
 /**
- * 渲染 EvalHub 本地评测工作区，并持有跨目录共享的模型、服务地址与当前视图状态。
- * 组件通过 `useEvalHub` 统一驱动状态刷新、模型下载、数据集准备和评测任务；目录切换只控制
- * 面板可见性，因此不会中断进行中的异步任务，也不会清空已经填写的评测表单。
+ * 渲染 EvalHub 工作区，并持有跨目录共享的模型、服务地址与当前视图状态。
+ * 任务中心与资产操作由同一 Hook 驱动，目录切换不会中断下载、排队任务或活动评测。
+ *
+ * @returns 包含概览、评测配置、资产管理和持久化任务中心的完整页面。
  */
 export default function App() {
   const [model, setModel] = useState(DEFAULT_MODEL);
@@ -58,6 +59,11 @@ export default function App() {
     }
     return dashboard.ollama.running ? ("warning" as const) : ("offline" as const);
   }, [dashboard.ollama, dashboard.ollamaError]);
+
+  const latestScore = useMemo(() => {
+    const latestCompleted = dashboard.tasks.find((task) => task.result_summary !== null);
+    return latestCompleted ? formatScore(latestCompleted.result_summary!.average_score) : "—";
+  }, [dashboard.tasks]);
   const pullActive = Boolean(
     dashboard.modelPullTask && ["pending", "pulling", "verifying"].includes(dashboard.modelPullTask.status),
   );
@@ -74,8 +80,8 @@ export default function App() {
             onNavigate={setCurrentView}
             modelPullActive={pullActive}
             datasetPreparing={Boolean(dashboard.preparingDataset)}
-            evaluationRunning={dashboard.runningEvaluation}
-            resultAvailable={Boolean(dashboard.result)}
+            evaluationRunning={dashboard.hasActiveTask}
+            resultAvailable={dashboard.tasks.some((task) => task.result_summary !== null)}
           />
 
           <div className="min-w-0">
@@ -91,7 +97,7 @@ export default function App() {
                 ollamaState={ollamaState}
                 datasetCount={dashboard.datasets.length}
                 preparedCount={dashboard.datasets.filter((dataset) => dataset.prepared).length}
-                latestScore={dashboard.result ? formatScore(dashboard.result.average_score) : "—"}
+                latestScore={latestScore}
               />
               <OverviewPanel onNavigate={setCurrentView} />
             </div>
@@ -102,7 +108,7 @@ export default function App() {
                 modelOptions={dashboard.ollama?.model_options || []}
                 model={model}
                 baseUrl={baseUrl}
-                running={dashboard.runningEvaluation}
+                running={dashboard.creatingEvaluation}
                 preparing={Boolean(dashboard.preparingDataset)}
                 onModelChange={(nextModel) => {
                   setDismissedDownloadModel(null);
@@ -110,6 +116,7 @@ export default function App() {
                 }}
                 onBaseUrlCommit={setBaseUrl}
                 onManageAssets={() => setCurrentView("assets")}
+                onPrepare={(dataset) => void dashboard.prepare(dataset)}
                 onSubmit={(request) => {
                   setCurrentView("results");
                   void dashboard.run(request);
@@ -148,10 +155,13 @@ export default function App() {
             </div>
 
             <div hidden={currentView !== "results"}>
-              <ResultPanel
-                result={dashboard.result}
-                running={dashboard.runningEvaluation}
-                error={dashboard.evaluationError}
+              <EvaluationTaskPanel
+                tasks={dashboard.tasks}
+                selectedTaskId={dashboard.selectedTaskId}
+                selectedTask={dashboard.selectedTask}
+                error={dashboard.taskError}
+                onSelect={dashboard.selectTask}
+                onCancel={(taskId) => void dashboard.cancelTask(taskId)}
               />
             </div>
           </div>

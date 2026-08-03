@@ -2,26 +2,37 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  cancelEvaluationTask,
   cancelModelPull,
+  createEvaluation,
   getDatasets,
+  getEvaluationTask,
+  getEvaluationTasks,
   getHealth,
   getModelPull,
   getOllamaStatus,
   prepareDataset,
-  runEvaluation,
   startModelPull,
 } from "../lib/api";
-import type { OllamaPullTask, OllamaStatus } from "../types";
+import type {
+  EvaluationTaskDetail,
+  EvaluationTaskSummary,
+  OllamaPullTask,
+  OllamaStatus,
+} from "../types";
 import { useEvalHub } from "./useEvalHub";
 
 vi.mock("../lib/api", () => ({
+  cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
+  createEvaluation: vi.fn(),
   getDatasets: vi.fn(),
+  getEvaluationTask: vi.fn(),
+  getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
   prepareDataset: vi.fn(),
-  runEvaluation: vi.fn(),
   startModelPull: vi.fn(),
 }));
 
@@ -65,6 +76,65 @@ const successTask: OllamaPullTask = {
   eta_seconds: 0,
 };
 
+const runningEvaluationTask: EvaluationTaskSummary = {
+  id: "task-running",
+  status: "running",
+  dataset: "gsm8k",
+  model: "local-test",
+  adapter: "oracle",
+  progress: { completed_samples: 1, total_samples: 5, percent: 20 },
+  timing: {
+    created_at: "2026-08-04T02:00:00+00:00",
+    started_at: "2026-08-04T02:00:01+00:00",
+    finished_at: null,
+    elapsed_seconds: 12,
+  },
+  resources: {
+    cpu: { current_percent: 10, peak_percent: 20 },
+    memory: { current_bytes: 1024, peak_bytes: 2048 },
+    gpu: {
+      supported: false,
+      current_percent: null,
+      peak_percent: null,
+      current_memory_bytes: null,
+      peak_memory_bytes: null,
+    },
+  },
+  result_summary: null,
+  error_message: null,
+};
+
+const runningEvaluationDetail: EvaluationTaskDetail = {
+  ...runningEvaluationTask,
+  request: {
+    dataset: "gsm8k",
+    adapter: "oracle",
+    model: "local-test",
+    base_url: "http://127.0.0.1:11434",
+    sample_mode: "quick",
+  },
+  result: null,
+};
+
+/**
+ * 创建可由测试显式完成的 Promise，用于稳定控制并发响应顺序。
+ *
+ * @returns Promise、成功解析函数和失败函数组成的测试控制器。
+ */
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
@@ -83,7 +153,10 @@ beforeEach(() => {
     operation: "updated",
     sample_count: 1319,
   });
-  vi.mocked(runEvaluation).mockReset();
+  vi.mocked(getEvaluationTasks).mockResolvedValue([]);
+  vi.mocked(getEvaluationTask).mockReset();
+  vi.mocked(createEvaluation).mockReset();
+  vi.mocked(cancelEvaluationTask).mockReset();
 });
 
 describe("useEvalHub local asset orchestration", () => {
@@ -159,5 +232,63 @@ describe("useEvalHub local asset orchestration", () => {
 
     expect(prepareDataset).toHaveBeenCalledWith("gsm8k", true);
     expect(result.current.datasetNotice).toBe("GSM8K 已更新，1,319 条样本");
+  });
+});
+
+describe("useEvalHub evaluation task orchestration", () => {
+  it("waits for a slow task poll before scheduling the next request", async () => {
+    const slowPoll = deferred<EvaluationTaskSummary[]>();
+    vi.mocked(getEvaluationTasks)
+      .mockResolvedValueOnce([runningEvaluationTask])
+      .mockImplementationOnce(() => slowPoll.promise)
+      .mockResolvedValue([runningEvaluationTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue(runningEvaluationDetail);
+    renderHook(() => useEvalHub("local-test", "http://127.0.0.1:11434"));
+
+    await waitFor(() => expect(getEvaluationTasks).toHaveBeenCalledTimes(2), { timeout: 1800 });
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    expect(getEvaluationTasks).toHaveBeenCalledTimes(2);
+
+    await act(async () => slowPoll.resolve([runningEvaluationTask]));
+    await waitFor(() => expect(getEvaluationTasks).toHaveBeenCalledTimes(3), { timeout: 1800 });
+  }, 6000);
+
+  it("does not replace a newly selected task when an earlier cancel finishes", async () => {
+    const completedTask: EvaluationTaskSummary = {
+      ...runningEvaluationTask,
+      id: "task-completed",
+      status: "success",
+      result_summary: {
+        benchmark: "GSM8K 测试集",
+        total_samples: 5,
+        passed_samples: 5,
+        average_score: 1,
+      },
+    };
+    const completedDetail: EvaluationTaskDetail = {
+      ...runningEvaluationDetail,
+      ...completedTask,
+    };
+    const cancelResponse = deferred<EvaluationTaskDetail>();
+    vi.mocked(getEvaluationTasks).mockResolvedValue([runningEvaluationTask, completedTask]);
+    vi.mocked(getEvaluationTask).mockImplementation(async (taskId) =>
+      taskId === completedTask.id ? completedDetail : runningEvaluationDetail,
+    );
+    vi.mocked(cancelEvaluationTask).mockImplementation(() => cancelResponse.promise);
+    const { result } = renderHook(() => useEvalHub("local-test", "http://127.0.0.1:11434"));
+    await waitFor(() => expect(result.current.selectedTask?.id).toBe(runningEvaluationTask.id));
+
+    let cancelPromise: Promise<EvaluationTaskDetail | null>;
+    act(() => {
+      cancelPromise = result.current.cancelTask(runningEvaluationTask.id);
+      result.current.selectTask(completedTask.id);
+    });
+    await waitFor(() => expect(result.current.selectedTask?.id).toBe(completedTask.id));
+
+    await act(async () => {
+      cancelResponse.resolve({ ...runningEvaluationDetail, status: "canceled" });
+      await cancelPromise!;
+    });
+    expect(result.current.selectedTask?.id).toBe(completedTask.id);
   });
 });

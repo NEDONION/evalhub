@@ -22,6 +22,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [系统架构](architecture/20260804_系统架构.md) | 分层、核心模块、目标架构与扩展原则 |
+| [EvalHub 借鉴 EvalScope 的目标架构设计](architecture/20260804_EvalHub借鉴EvalScope的目标架构设计.md) | 平台外壳与评测内核、核心契约、执行流程、缓存恢复和分阶段迁移 |
 | [EvalScope Agent 评测设计 Diff](architecture/20260804_EvalScope与EvalHub的Agent评测设计差异.md) | 对比两套架构并给出 Agent 能力借鉴顺序 |
 | [API 草案](architecture/20260804_API接口草案.md) | 模型、数据集、任务、结果与门禁接口 |
 | [数据模型](architecture/20260804_数据模型.md) | 核心实体、字段和关系 |

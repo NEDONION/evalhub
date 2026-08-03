@@ -1,0 +1,233 @@
+"""验证隔离评测执行器的子进程消息与异常退出处理。"""
+
+from dataclasses import asdict, replace
+from queue import Empty
+from threading import Event, Thread
+from typing import cast
+
+import pytest
+
+import evalhub.tasks.executor as executor_module
+from evalhub.domain import EvaluationSampleResult
+from evalhub.tasks import ResourceUsage, TaskRequest
+from evalhub.tasks.executor import (
+    SubprocessEvaluationExecutor,
+    TaskExecutionCanceled,
+    TaskExecutionError,
+    _evaluation_process,
+)
+
+
+def request_fixture() -> TaskRequest:
+    """构造子进程入口可直接执行的离线 quick 请求。"""
+    return TaskRequest(
+        dataset="gsm8k",
+        adapter="oracle",
+        model="local-test",
+        base_url="http://127.0.0.1:11434",
+        sample_mode="quick",
+        subject="abstract_algebra",
+        limit=None,
+    )
+
+
+class RecordingQueue:
+    """记录子进程入口发送事件的内存队列。"""
+
+    def __init__(self) -> None:
+        """初始化空事件列表。"""
+        self.events: list[dict[str, object]] = []
+
+    def put(self, value: dict[str, object]) -> None:
+        """按发送顺序保存一个 JSON 兼容事件。"""
+        self.events.append(value)
+
+
+def test_evaluation_process_reports_progress_and_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """子进程入口应沿用任务 ID，把 quick 转成 5 条并发送最终结果。"""
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_benchmark(**kwargs: object) -> dict[str, object]:
+        """记录执行参数并通过真实回调通道发送两个进度事件。"""
+        observed.update(kwargs)
+        on_progress = kwargs["on_progress"]
+        on_progress(0, 5)
+        on_progress(5, 5)
+        return {"job_id": kwargs["job_id"], "total_samples": 5}
+
+    monkeypatch.setattr(executor_module, "run_real_benchmark", fake_benchmark)
+    _evaluation_process("job_process", asdict(request_fixture()), event_queue)
+
+    assert observed["job_id"] == "job_process"
+    assert observed["limit"] == 5
+    assert event_queue.events == [
+        {"type": "progress", "completed": 0, "total": 5},
+        {"type": "progress", "completed": 5, "total": 5},
+        {"type": "result", "result": {"job_id": "job_process", "total_samples": 5}},
+    ]
+
+
+def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex Agent 请求应进入 Coding Mini，并把 quick 映射为三条编码样本。"""
+    request = replace(
+        request_fixture(),
+        evaluation_type="agent",
+        agent_framework="codex",
+        dataset="coding_mini",
+        adapter="ollama",
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_agent_benchmark(**kwargs: object) -> dict[str, object]:
+        """记录 Agent benchmark 参数并返回最小公共结果。"""
+        observed.update(kwargs)
+        return {
+            "job_id": kwargs["job_id"],
+            "evaluation_type": "agent",
+            "total_samples": 3,
+        }
+
+    monkeypatch.setattr(executor_module, "run_codex_agent_benchmark", fake_agent_benchmark)
+    _evaluation_process("job_agent", asdict(request), event_queue)
+
+    assert observed["job_id"] == "job_agent"
+    assert observed["limit"] == 3
+    assert observed["model"] == "local-test"
+    assert event_queue.events[-1]["result"]["evaluation_type"] == "agent"
+
+
+def test_evaluation_process_serializes_sample_result_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """子进程应在终态结果前发送可持久化的样本级结果事件。"""
+    event_queue = RecordingQueue()
+
+    def fake_benchmark(**kwargs: object) -> dict[str, object]:
+        """通过公开回调发送一条真实领域样本结果。"""
+        on_sample_result = kwargs["on_sample_result"]
+        on_sample_result(
+            EvaluationSampleResult(
+                job_id="job_process",
+                sample_id="sample-1",
+                input="1 + 1",
+                prediction="2",
+                reference="2",
+                metric="exact_match",
+                score=1.0,
+            ),
+            1,
+            1,
+        )
+        return {"job_id": "job_process", "total_samples": 1}
+
+    monkeypatch.setattr(executor_module, "run_real_benchmark", fake_benchmark)
+    _evaluation_process(
+        "job_process",
+        asdict(request_fixture()),
+        event_queue,
+        ("already-complete",),
+    )
+
+    assert event_queue.events[0] == {
+        "type": "sample_result",
+        "completed": 1,
+        "total": 1,
+        "sample": {
+            "sample_id": "sample-1",
+            "input": "1 + 1",
+            "prediction": "2",
+            "reference": "2",
+            "metric": "exact_match",
+            "score": 1.0,
+            "reason": None,
+        },
+    }
+    assert event_queue.events[-1]["type"] == "result"
+
+
+class EmptyParentQueue:
+    """模拟子进程崩溃时没有任何终态消息的父进程队列。"""
+
+    def get(self, *, timeout: float) -> dict[str, object]:
+        """始终表示超时期间没有事件到达。"""
+        raise Empty
+
+    def close(self) -> None:
+        """提供执行器 finally 路径需要的无副作用关闭接口。"""
+
+
+class ExitedProcess:
+    """模拟启动后立即以非零状态退出的评测子进程。"""
+
+    pid = 321
+    exitcode = 7
+
+    def start(self) -> None:
+        """保持进程已经退出的固定状态。"""
+
+    def is_alive(self) -> bool:
+        """返回 false 表示子进程已不再运行。"""
+        return False
+
+    def join(self, *, timeout: float) -> None:
+        """模拟立即完成的进程回收。"""
+
+    def terminate(self) -> None:
+        """记录接口兼容性；退出进程无需再次终止。"""
+
+
+class ExitedProcessContext:
+    """向执行器提供固定的空队列和已退出进程。"""
+
+    def Queue(self) -> EmptyParentQueue:
+        """返回不会产生任何消息的父进程队列。"""
+        return EmptyParentQueue()
+
+    def Process(self, **kwargs: object) -> ExitedProcess:
+        """忽略构造参数并返回已退出进程。"""
+        return ExitedProcess()
+
+
+class ZeroResourceSampler:
+    """为执行器异常退出测试提供无外部依赖的零资源读数。"""
+
+    def sample(self, process_id: int) -> ResourceUsage:
+        """返回零读数，使测试只观察缺失终态消息行为。"""
+        return ResourceUsage()
+
+
+def test_executor_stops_when_process_exits_without_result() -> None:
+    """子进程没有终态消息时执行器应快速失败，不能无限等待队列。"""
+    executor = SubprocessEvaluationExecutor(resource_sampler=ZeroResourceSampler())
+    executor._context = cast(object, ExitedProcessContext())
+    cancel_event = Event()
+    errors: list[Exception] = []
+
+    def run_executor() -> None:
+        """在线程中调用执行器，允许测试检测无限等待并安全释放。"""
+        try:
+            executor.execute(
+                "job_crashed",
+                request_fixture(),
+                on_progress=lambda completed, total: None,
+                on_resources=lambda usage: None,
+                cancel_event=cancel_event,
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = Thread(target=run_executor)
+    thread.start()
+    thread.join(timeout=0.2)
+    finished_without_cancel = not thread.is_alive()
+    # 若实现错误地无限等待，设置取消信号回收测试线程，再对原始行为做断言。
+    cancel_event.set()
+    thread.join(timeout=1.0)
+
+    assert finished_without_cancel is True
+    assert len(errors) == 1
+    assert isinstance(errors[0], TaskExecutionError)
+    assert not isinstance(errors[0], TaskExecutionCanceled)
+    assert "exit code 7" in str(errors[0])

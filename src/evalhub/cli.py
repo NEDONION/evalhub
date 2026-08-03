@@ -13,7 +13,7 @@ from evalhub.domain import (
     ModelRecord,
     ModelType,
 )
-from evalhub.engine import EvaluationRunner
+from evalhub.engine import EvaluationRunner, ProgressCallback, SampleResultCallback
 from evalhub.evaluators import default_evaluator_registry
 from evalhub.registry import InMemoryRegistry
 
@@ -137,6 +137,10 @@ def run_real_benchmark(
     base_url: str,
     limit: int | None,
     subject: str,
+    job_id: str | None = None,
+    on_progress: ProgressCallback | None = None,
+    skip_sample_ids: set[str] | frozenset[str] = frozenset(),
+    on_sample_result: SampleResultCallback | None = None,
 ) -> dict[str, object]:
     """准备真实数据集并使用指定模型适配器执行同步评测。
 
@@ -147,6 +151,10 @@ def run_real_benchmark(
         base_url: Ollama 本地服务根地址。
         limit: 最多执行的样本数；为 ``None`` 时执行完整数据集。
         subject: MMLU 学科名称，其他数据集会忽略该值。
+        job_id: 调度层预先创建的任务标识；为空时沿用领域实体默认生成逻辑。
+        on_progress: 接收已完成样本数与总样本数的可选进度回调。
+        skip_sample_ids: 恢复执行时已经成功持久化的样本标识。
+        on_sample_result: 新样本完成评分后接收完整结果的可选回调。
 
     Returns:
         包含任务状态、汇总指标和最多五条失败示例的 JSON 兼容字典。
@@ -166,6 +174,10 @@ def run_real_benchmark(
     )
     if not samples:
         raise RuntimeError(f"no samples loaded for dataset: {dataset}")
+    # 样本加载完成后先公布真实分母，让任务在首条模型响应前也能显示确定进度。
+    completed_before_run = sum(1 for sample in samples if sample.id in skip_sample_ids)
+    if on_progress is not None:
+        on_progress(completed_before_run, len(samples))
 
     # 每次命令创建独立 Registry，避免本地重复试跑共享上一轮的临时状态。
     registry = InMemoryRegistry()
@@ -190,7 +202,16 @@ def run_real_benchmark(
             config={"temperature": 0, "num_predict": 256},
         )
     )
-    job = registry.jobs.add(EvaluationJob(model_id=model_record.id, benchmark_id=benchmark.id))
+    # 调度层提供任务标识时沿用同一 ID，CLI 直接运行则继续使用领域默认值。
+    if job_id is None:
+        evaluation_job = EvaluationJob(model_id=model_record.id, benchmark_id=benchmark.id)
+    else:
+        evaluation_job = EvaluationJob(
+            id=job_id,
+            model_id=model_record.id,
+            benchmark_id=benchmark.id,
+        )
+    job = registry.jobs.add(evaluation_job)
 
     # Ollama 执行真实推理，oracle 直接回放参考答案，只用于验证 EvalHub 自身管线。
     if adapter_type == "ollama":
@@ -204,7 +225,14 @@ def run_real_benchmark(
     # 评测器由 Benchmark 类型动态创建，Runner 只负责统一编排与状态转换。
     evaluator = default_evaluator_registry().create(benchmark.evaluator_type)
     runner = EvaluationRunner(adapter, evaluator)
-    results, report = runner.run(job=job, benchmark=benchmark, samples=samples)
+    results, report = runner.run(
+        job=job,
+        benchmark=benchmark,
+        samples=samples,
+        on_progress=on_progress,
+        skip_sample_ids=skip_sample_ids,
+        on_sample_result=on_sample_result,
+    )
 
     # 报告只携带前五条失败示例并截断长文本，控制 CLI 与 HTTP 响应体积。
     failed_examples = [

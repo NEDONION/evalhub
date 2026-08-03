@@ -4,24 +4,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import App from "./App";
 import {
+  cancelEvaluationTask,
   cancelModelPull,
+  createEvaluation,
   getDatasets,
+  getEvaluationTask,
+  getEvaluationTasks,
   getHealth,
   getModelPull,
   getOllamaStatus,
   prepareDataset,
-  runEvaluation,
   startModelPull,
 } from "./lib/api";
+import type { EvaluationTaskDetail, EvaluationTaskSummary } from "./types";
 
 vi.mock("./lib/api", () => ({
+  cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
+  createEvaluation: vi.fn(),
   getDatasets: vi.fn(),
+  getEvaluationTask: vi.fn(),
+  getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
   prepareDataset: vi.fn(),
-  runEvaluation: vi.fn(),
   startModelPull: vi.fn(),
 }));
 
@@ -115,6 +122,131 @@ const evaluationFixture = {
   ],
 };
 
+const taskResources = {
+  cpu: { current_percent: 12.5, peak_percent: 40 },
+  memory: { current_bytes: 1024, peak_bytes: 2048 },
+  gpu: {
+    supported: false,
+    current_percent: null,
+    peak_percent: null,
+    current_memory_bytes: null,
+    peak_memory_bytes: null,
+  },
+};
+
+const pendingTask: EvaluationTaskSummary = {
+  id: "job_pending",
+  status: "pending",
+  evaluation_type: "model",
+  agent_framework: null,
+  dataset: "gsm8k",
+  model: "qwen2.5:0.5b",
+  adapter: "oracle",
+  progress: { completed_samples: 0, total_samples: 0, percent: 0 },
+  timing: {
+    created_at: "2026-08-04T02:00:00+00:00",
+    started_at: null,
+    finished_at: null,
+    elapsed_seconds: 0,
+  },
+  resources: taskResources,
+  result_summary: null,
+  error_message: null,
+};
+
+const successfulTask: EvaluationTaskSummary = {
+  ...pendingTask,
+  id: "job_success",
+  status: "success",
+  progress: { completed_samples: 5, total_samples: 5, percent: 100 },
+  timing: {
+    ...pendingTask.timing,
+    started_at: "2026-08-04T02:00:01+00:00",
+    finished_at: "2026-08-04T02:02:15+00:00",
+    elapsed_seconds: 135,
+  },
+  result_summary: {
+    benchmark: "GSM8K 测试集",
+    total_samples: 5,
+    passed_samples: 4,
+    average_score: 0.8,
+  },
+};
+
+const successfulTaskDetail: EvaluationTaskDetail = {
+  ...successfulTask,
+  request: {
+    evaluation_type: "model",
+    dataset: "gsm8k",
+    adapter: "oracle",
+    model: "qwen2.5:0.5b",
+    base_url: "http://127.0.0.1:11434",
+    sample_mode: "quick",
+  },
+  result: evaluationFixture,
+};
+
+const agentTask: EvaluationTaskSummary = {
+  ...successfulTask,
+  id: "job_agent_success",
+  evaluation_type: "agent",
+  agent_framework: "codex",
+  dataset: "coding_mini",
+  adapter: "ollama",
+  progress: { completed_samples: 3, total_samples: 3, percent: 100 },
+  result_summary: {
+    benchmark: "EvalHub Coding Mini",
+    total_samples: 3,
+    passed_samples: 2,
+    average_score: 0.6667,
+  },
+};
+
+const agentTaskDetail: EvaluationTaskDetail = {
+  ...agentTask,
+  request: {
+    evaluation_type: "agent",
+    agent_framework: "codex",
+    dataset: "coding_mini",
+    adapter: "ollama",
+    model: "qwen2.5:0.5b",
+    base_url: "http://127.0.0.1:11434",
+    sample_mode: "quick",
+  },
+  result: {
+    job_id: "job_agent_success",
+    status: "success",
+    evaluation_type: "agent",
+    dataset: "coding_mini",
+    benchmark: "EvalHub Coding Mini",
+    model: "qwen2.5:0.5b",
+    adapter: "ollama",
+    metric: "hidden_verifier_pass_rate",
+    total_samples: 3,
+    passed_samples: 2,
+    average_score: 0.6667,
+    failed_sample_ids: ["pricing_total"],
+    failed_examples: [],
+    agent: {
+      framework: "codex",
+      cli_version: "codex-cli 0.test",
+      scaffold_hash: "a1b2c3d4e5f6",
+    },
+    capability_report: {
+      overall_score: 0.6616,
+      dimensions: [
+        { key: "planning", label: "规划", score: 0 },
+        { key: "code_understanding", label: "代码理解", score: 0.3333 },
+        { key: "implementation", label: "实现正确性", score: 0.6364 },
+        { key: "tool_use", label: "工具使用", score: 1 },
+        { key: "verification", label: "验证能力", score: 1 },
+        { key: "robustness", label: "稳健性", score: 1 },
+      ],
+    },
+    sample_results: [],
+  },
+};
+
 /**
  * 从工作区目录中按可访问名称取得导航按钮，避免与表单内同名业务操作混淆。
  *
@@ -154,7 +286,10 @@ beforeEach(() => {
     operation: "cached",
     sample_count: 1319,
   });
-  vi.mocked(runEvaluation).mockReset();
+  vi.mocked(getEvaluationTasks).mockResolvedValue([]);
+  vi.mocked(getEvaluationTask).mockReset();
+  vi.mocked(createEvaluation).mockReset();
+  vi.mocked(cancelEvaluationTask).mockReset();
 });
 
 describe("EvalHub console", () => {
@@ -186,8 +321,8 @@ describe("EvalHub console", () => {
     expect(screen.getByRole("region", { name: "数据集资产" })).toBeVisible();
 
     await user.click(navigationButton("评测结果"));
-    expect(screen.getByRole("heading", { level: 1, name: "评测结果" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "评测结果" })).toBeVisible();
+    expect(screen.getByRole("heading", { level: 1, name: "评测任务" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "评测任务" })).toBeVisible();
   });
 
   it("keeps evaluation form choices while moving between views", async () => {
@@ -304,7 +439,7 @@ describe("EvalHub console", () => {
     await user.selectOptions(await screen.findByLabelText("模型"), "qwen2.5:1.5b");
     expect(await screen.findByText("先下载模型或选择已安装模型")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发起评测" })).toBeDisabled();
-    expect(runEvaluation).not.toHaveBeenCalled();
+    expect(createEvaluation).not.toHaveBeenCalled();
 
     await user.selectOptions(screen.getByLabelText("模型适配器"), "oracle");
     expect(screen.getByRole("button", { name: "发起评测" })).toBeEnabled();
@@ -324,7 +459,7 @@ describe("EvalHub console", () => {
     await user.click(screen.getByRole("button", { name: "发起评测" }));
 
     expect(screen.getByText("样本数量必须是大于 0 的整数")).toBeInTheDocument();
-    expect(runEvaluation).not.toHaveBeenCalled();
+    expect(createEvaluation).not.toHaveBeenCalled();
   });
 
   it("shows real dataset sources and prepares an uncached dataset", async () => {
@@ -372,26 +507,77 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("评测结果"));
-    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
-    expect(within(resultPanel).getByText("尚未运行评测")).toBeInTheDocument();
-    expect(within(resultPanel).getByText("配置上方参数后发起第一次评测。")).toBeInTheDocument();
+    const resultPanel = await screen.findByRole("region", { name: "评测任务" });
+    expect(within(resultPanel).getByText("尚无评测任务")).toBeInTheDocument();
+    expect(within(resultPanel).getByText("提交评测后，可在这里追踪进度和资源占用。")).toBeInTheDocument();
+  });
+
+  it("shows how many active FIFO tasks are ahead of a pending task", async () => {
+    const user = userEvent.setup();
+    const runningTask: EvaluationTaskSummary = {
+      ...pendingTask,
+      id: "job_running",
+      status: "running",
+      timing: { ...pendingTask.timing, started_at: "2026-08-04T01:59:00+00:00" },
+    };
+    vi.mocked(getEvaluationTasks).mockResolvedValue([pendingTask, runningTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue({
+      ...pendingTask,
+      request: successfulTaskDetail.request,
+      result: null,
+    });
+    render(<App />);
+
+    await user.click(navigationButton("评测结果"));
+
+    expect(await screen.findByText("等待 Worker · 前方 1 个任务")).toBeInTheDocument();
   });
 
   it("presents a successful evaluation before collapsed raw JSON", async () => {
     const user = userEvent.setup();
-    vi.mocked(runEvaluation).mockResolvedValue(evaluationFixture);
+    vi.mocked(getEvaluationTasks).mockResolvedValue([successfulTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue(successfulTaskDetail);
+    render(<App />);
+
+    await user.click(navigationButton("评测结果"));
+
+    const resultPanel = await screen.findByRole("region", { name: "评测任务" });
+    expect(await within(resultPanel).findByText("0.8000")).toBeInTheDocument();
+    expect(within(resultPanel).getAllByText("4 / 5").length).toBeGreaterThan(0);
+    const details = within(resultPanel).getByText("原始 JSON").closest("details");
+    expect(details).not.toHaveAttribute("open");
+  });
+
+  it("submits a fixed Codex Agent task and shows its six-dimension report", async () => {
+    const user = userEvent.setup();
+    vi.mocked(createEvaluation).mockResolvedValue(pendingTask);
+    vi.mocked(getEvaluationTask)
+      .mockResolvedValueOnce({ ...pendingTask, request: successfulTaskDetail.request, result: null })
+      .mockResolvedValue(agentTaskDetail);
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
-    await screen.findByLabelText("数据集");
-    await user.click(screen.getByRole("button", { name: "发起评测" }));
+    await user.click(await screen.findByRole("radio", { name: "Agent 评测" }));
+    expect(screen.getByText("EvalHub Coding Mini")).toBeInTheDocument();
+    expect(screen.getByText("Codex CLI")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "发起 Agent 评测" }));
 
-    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
-    expect(await within(resultPanel).findByText("0.8000")).toBeInTheDocument();
-    expect(within(resultPanel).getByText("4 / 5")).toBeInTheDocument();
-    expect(within(resultPanel).getByText("80%")).toBeInTheDocument();
-    const details = within(resultPanel).getByText("原始 JSON").closest("details");
-    expect(details).not.toHaveAttribute("open");
+    expect(createEvaluation).toHaveBeenCalledWith({
+      evaluation_type: "agent",
+      agent_framework: "codex",
+      dataset: "coding_mini",
+      adapter: "ollama",
+      model: "qwen2.5:0.5b",
+      base_url: "http://127.0.0.1:11434",
+      sample_mode: "quick",
+    });
+
+    vi.mocked(getEvaluationTasks).mockResolvedValue([agentTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue(agentTaskDetail);
+    await user.click(navigationButton("概览"));
+    await user.click(navigationButton("评测结果"));
+    expect(await screen.findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
   });
 
   it("keeps dataset content available when only Ollama status fails", async () => {
@@ -406,14 +592,14 @@ describe("EvalHub console", () => {
 
   it("shows evaluation failures inside the result module", async () => {
     const user = userEvent.setup();
-    vi.mocked(runEvaluation).mockRejectedValue(new Error("评测执行失败：模型不可用"));
+    vi.mocked(createEvaluation).mockRejectedValue(new Error("评测执行失败：模型不可用"));
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
     await screen.findByLabelText("数据集");
     await user.click(screen.getByRole("button", { name: "发起评测" }));
 
-    const resultPanel = await screen.findByRole("region", { name: "评测结果" });
+    const resultPanel = await screen.findByRole("region", { name: "评测任务" });
     expect(await within(resultPanel).findByRole("alert")).toHaveTextContent("评测执行失败：模型不可用");
   });
 });

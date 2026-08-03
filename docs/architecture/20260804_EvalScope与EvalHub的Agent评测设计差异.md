@@ -1,5 +1,7 @@
 # EvalScope 与 EvalHub Agent 评测设计 Diff
 
+> 本文聚焦 Agent 评测差异。EvalHub 的完整目标分层、通用评测流水线、核心契约、缓存恢复和迁移阶段见[《EvalHub 借鉴 EvalScope 的目标架构设计》](20260804_EvalHub借鉴EvalScope的目标架构设计.md)。
+
 ## 1. 对比范围
 
 本文聚焦 Agent 评测，不比较 EvalScope 的 VLM、AIGC、压测、Arena 等其他能力。
