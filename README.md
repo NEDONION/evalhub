@@ -278,6 +278,47 @@ evalhub/
 └── tests/
 ```
 
+## 企业级演进路线图
+
+蓝色实线节点代表当前能力，灰色虚线节点代表规划能力。
+
+```mermaid
+flowchart LR
+    subgraph P1[阶段 1 · 当前 Local MVP]
+        L1[静态 Web + CLI]
+        L2[同步 Evaluation Runner]
+        L3[InMemory Registry]
+        L4[本地 Dataset + Ollama]
+        L1 --> L2 --> L3 --> L4
+    end
+
+    subgraph P2[阶段 2 · 服务化（规划）]
+        S1[React Console]
+        S2[FastAPI]
+        S3[PostgreSQL]
+        S4[异步 Evaluation Job API]
+        S1 --> S2 --> S3 --> S4
+    end
+
+    subgraph P3[阶段 3 · 企业级平台（规划）]
+        E1[Scheduler + RabbitMQ]
+        E2[Celery Worker Pool]
+        E3[MinIO Artifact Store]
+        E4[Leaderboard + Release Gate]
+        E5[Trace + Audit]
+        E1 --> E2 --> E3 --> E4 --> E5
+    end
+
+    P1 ==> P2 ==> P3
+
+    classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827;
+    classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray: 5 5;
+    class L1,L2,L3,L4 current;
+    class S1,S2,S3,S4,E1,E2,E3,E4,E5 planned;
+```
+
+有关目标生产架构的更多细节，请参阅 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## 下一步建议
 
 1. 把内存 Registry 替换成 SQLAlchemy + PostgreSQL。
