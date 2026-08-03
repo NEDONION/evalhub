@@ -1,5 +1,7 @@
 """验证 Codex Agent Runner 的固定命令、结果提取和错误边界。"""
 
+import io
+import json
 import subprocess
 from pathlib import Path
 
@@ -34,6 +36,184 @@ class RecordingCommandRunner:
             output_path.write_text(self.final_message, encoding="utf-8")
         stdout = '{"type":"turn.started"}\n{"type":"turn.completed"}\nnot-json\n'
         return subprocess.CompletedProcess(command, self.return_code, stdout, "codex stderr")
+
+
+class CompletedStreamingProcess:
+    """模拟已经产生完整 stdout/stderr 的 Codex 流式子进程。"""
+
+    def __init__(self, stdout: str, stderr: str = "", return_code: int = 0) -> None:
+        """保存可逐行读取的输出及确定性退出码。"""
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        self.returncode = return_code
+
+    def poll(self) -> int:
+        """返回已经完成的退出码。"""
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        """忽略测试超时并返回已经完成的退出码。"""
+        del timeout
+        return self.returncode
+
+    def terminate(self) -> None:
+        """记录兼容接口；完成态测试不需要改变状态。"""
+
+    def kill(self) -> None:
+        """记录兼容接口；完成态测试不需要改变状态。"""
+
+
+class RecordingProcessFactory:
+    """创建可流式读取的 Fake Codex 进程并写入最终消息文件。"""
+
+    def __init__(self, stdout: str, *, final_message: str = "done") -> None:
+        """配置 JSONL stdout 和 Codex 最终消息。"""
+        self.stdout = stdout
+        self.final_message = final_message
+        self.calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def __call__(self, command: list[str], **kwargs: object) -> CompletedStreamingProcess:
+        """记录启动参数、模拟最终消息副作用并返回完成进程。"""
+        self.calls.append((command, kwargs))
+        output_index = command.index("--output-last-message") + 1
+        output_path = Path(command[output_index])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(self.final_message, encoding="utf-8")
+        return CompletedStreamingProcess(self.stdout)
+
+
+class HangingStreamingProcess:
+    """模拟输出流已结束但进程拒绝优雅退出的 Codex 子进程。"""
+
+    def __init__(self) -> None:
+        """初始化空输出及终止调用记录。"""
+        self.stdout = io.StringIO("")
+        self.stderr = io.StringIO("")
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def poll(self) -> int | None:
+        """强制终止前始终报告进程仍在运行。"""
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        """未强制终止时持续抛出超时，模拟忽略 terminate 的进程。"""
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("codex exec", timeout)
+        return self.returncode
+
+    def terminate(self) -> None:
+        """记录优雅终止请求但保持运行态。"""
+        self.terminated = True
+
+    def kill(self) -> None:
+        """记录强制终止并切换到确定退出码。"""
+        self.killed = True
+        self.returncode = -9
+
+
+def test_codex_runner_streams_whitelisted_events_and_counts_tools(tmp_path: Path) -> None:
+    """Runner 应逐行输出稳定事件，并忽略未知事件中的任意原始字段。"""
+    stdout = (
+        '{"type":"thread.started","thread_id":"thread-1"}\n'
+        '{"type":"item.started","item":{"id":"item-1","type":"command_execution",'
+        '"command":"python -m pytest"}}\n'
+        '{"type":"item.completed","item":{"id":"item-1","type":"command_execution",'
+        '"command":"python -m pytest","exit_code":0,"aggregated_output":"1 passed"}}\n'
+        '{"type":"item.completed","item":{"id":"item-2","type":"agent_message",'
+        '"text":"修复完成"}}\n'
+        '{"type":"future.event","secret":"must-not-persist"}\n'
+    )
+    process_factory = RecordingProcessFactory(stdout)
+    events: list[dict[str, object]] = []
+    runner = CodexAgentRunner(
+        run_command=RecordingCommandRunner(tmp_path),
+        process_factory=process_factory,
+    )
+
+    result = runner.run(
+        instruction="Fix the bug",
+        model="local-test",
+        base_url="http://127.0.0.1:11434",
+        workspace=tmp_path,
+        timeout_seconds=30,
+        on_event=events.append,
+    )
+
+    assert [item["event_type"] for item in events] == [
+        "agent_session_started",
+        "tool_started",
+        "tool_finished",
+        "agent_message",
+    ]
+    assert result.event_count == 5
+    assert result.tool_call_count == 1
+    assert events[2]["payload"]["output"] == "1 passed"
+    assert all("secret" not in str(item) for item in events)
+
+
+def test_codex_runner_truncates_persisted_messages_and_tool_output(tmp_path: Path) -> None:
+    """超长模型消息和命令输出不得突破审计事件的持久化体积上限。"""
+    stdout = (
+        json.dumps(
+            {
+                "type": "item.completed",
+                "item": {"type": "agent_message", "text": "A" * 1_005},
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "python -m pytest",
+                    "exit_code": 0,
+                    "aggregated_output": "B" * 2_005,
+                },
+            }
+        )
+        + "\n"
+    )
+    events: list[dict[str, object]] = []
+    runner = CodexAgentRunner(
+        run_command=RecordingCommandRunner(tmp_path),
+        process_factory=RecordingProcessFactory(stdout),
+    )
+
+    runner.run(
+        instruction="Fix the bug",
+        model="local-test",
+        base_url="http://127.0.0.1:11434",
+        workspace=tmp_path,
+        timeout_seconds=30,
+        on_event=events.append,
+    )
+
+    assert len(events[0]["payload"]["text"]) == 1_000
+    assert len(events[1]["payload"]["output"]) == 2_000
+
+
+def test_codex_runner_force_kills_streaming_process_after_timeout(tmp_path: Path) -> None:
+    """流式进程超过总时限且忽略 terminate 时必须继续 kill，避免遗留 Codex。"""
+    process = HangingStreamingProcess()
+    runner = CodexAgentRunner(
+        run_command=RecordingCommandRunner(tmp_path),
+        process_factory=lambda command, **kwargs: process,
+    )
+
+    with pytest.raises(CodexAgentError, match="codex timed out after 0.01 seconds"):
+        runner.run(
+            instruction="Fix the bug",
+            model="local-test",
+            base_url="http://127.0.0.1:11434",
+            workspace=tmp_path,
+            timeout_seconds=0.01,
+        )
+
+    assert process.terminated is True
+    assert process.killed is True
 
 
 def test_codex_runner_uses_fixed_local_ollama_scaffold(tmp_path: Path) -> None:
