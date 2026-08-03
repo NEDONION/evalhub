@@ -3,7 +3,7 @@
 from subprocess import CompletedProcess
 from types import SimpleNamespace
 
-from evalhub.tasks.resources import NvidiaGpuProbe, ProcessResourceSampler
+from evalhub.tasks.resources import AppleGpuProbe, NvidiaGpuProbe, ProcessResourceSampler
 
 
 class FakeProcess:
@@ -88,6 +88,43 @@ def test_resource_sampler_reuses_process_objects_between_cpu_samples() -> None:
     assert first_usage.cpu_percent == 0.0
     assert second_usage.cpu_percent == 37.5
     assert len(created_processes) == 1
+
+
+def test_resource_sampler_uses_system_cpu_for_external_ollama_workload() -> None:
+    """Ollama 模式应显示包含独立模型服务的本机 CPU，而不是只看轻量 Python 客户端。"""
+    root = FakeProcess(300, 0.3, 1024)
+    sampler = ProcessResourceSampler(
+        process_factory=lambda process_id: root,
+        gpu_probe=lambda: (False, None, None),
+        include_system_cpu=True,
+        system_cpu_probe=lambda: 87.5,
+    )
+
+    usage = sampler.sample(300)
+
+    assert usage.cpu_percent == 87.5
+
+
+def test_apple_gpu_probe_reads_agx_utilization_and_unified_memory() -> None:
+    """Apple Silicon 应从 AGX PerformanceStatistics 读取系统 GPU 与统一内存。"""
+    output = (
+        '+-o AGXAcceleratorG14X <class AGXAcceleratorG14X>\n'
+        '  "PerformanceStatistics" = {'
+        '"Renderer Utilization %"=58,"Device Utilization %"=84,'
+        '"In use system memory"=3379724288}\n'
+    )
+
+    def command_runner(*args: object, **kwargs: object) -> CompletedProcess[str]:
+        """返回包含 M 系列 AGX 设备统计的稳定 ioreg 文本。"""
+        return CompletedProcess(args=[], returncode=0, stdout=output, stderr="")
+
+    supported, percent, memory_bytes = AppleGpuProbe(
+        command_runner=command_runner
+    ).sample()
+
+    assert supported is True
+    assert percent == 84.0
+    assert memory_bytes == 3379724288
 
 
 def test_nvidia_probe_uses_busiest_device_and_converts_megabytes() -> None:

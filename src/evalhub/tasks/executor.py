@@ -127,7 +127,7 @@ class SubprocessEvaluationExecutor:
             resource_sampler: 读取评测进程树资源的可替换采样器。
             sample_interval: 连续资源快照之间的最小秒数。
         """
-        self._resource_sampler = resource_sampler or ProcessResourceSampler()
+        self._resource_sampler = resource_sampler
         self._sample_interval = sample_interval
         self._context = multiprocessing.get_context("spawn")
 
@@ -155,6 +155,10 @@ class SubprocessEvaluationExecutor:
             daemon=True,
         )
         process.start()
+        # Ollama 推理在独立服务进程执行，生产采样器需纳入本机 CPU；测试注入保持原接口。
+        resource_sampler = self._resource_sampler or ProcessResourceSampler(
+            include_system_cpu=request.adapter == "ollama"
+        )
         next_sample_at = monotonic()
         result: dict[str, object] | None = None
         error_message: str | None = None
@@ -181,7 +185,7 @@ class SubprocessEvaluationExecutor:
                 now = monotonic()
                 if now >= next_sample_at and process.pid is not None:
                     # 资源采样与进度消息独立，慢模型响应期间仍会持续刷新遥测。
-                    on_resources(self._resource_sampler.sample(process.pid))
+                    on_resources(resource_sampler.sample(process.pid))
                     next_sample_at = now + self._sample_interval
 
             process.join(timeout=1.0)

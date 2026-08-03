@@ -396,10 +396,17 @@ def _aggregate_dimensions(
 
 
 def _failed_examples(sample_results: list[dict[str, object]]) -> list[dict[str, object]]:
-    """提取简短失败摘要，供现有通用结果详情兼容展示。"""
+    """提取通用结果详情可直接展示的失败样例。
+
+    Agent Benchmark 没有传统问答数据集的输入与参考答案，因此把样本标识作为输入、
+    Agent 最终消息作为预测，并用隐藏校验通过作为期望结果；额外保留校验错误供诊断。
+    """
     return [
         {
             "sample_id": result["sample_id"],
+            "input": str(result["sample_id"]),
+            "prediction": str(result["final_message"]),
+            "reference": "hidden verifier passed",
             "score": result["score"],
             "reason": result["verifier_message"],
         }

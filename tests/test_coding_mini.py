@@ -120,3 +120,7 @@ def test_coding_mini_scores_failed_sample_by_declared_capability_weights(
     failed_result = result["sample_results"][0]
     assert failed_result["status"] == "failed"
     assert failed_result["verifier_message"]
+    failed_example = result["failed_examples"][0]
+    assert failed_example["input"] == "pricing_total"
+    assert failed_example["prediction"] == "fixed"
+    assert failed_example["reference"] == "hidden verifier passed"

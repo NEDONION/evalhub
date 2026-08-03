@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+import sys
 from collections.abc import Callable
 from typing import Protocol
 
@@ -95,6 +97,75 @@ class NvidiaGpuProbe:
         return devices
 
 
+class AppleGpuProbe:
+    """通过 macOS IOKit 导出的 AGX 统计读取 Apple Silicon 系统 GPU 负载。"""
+
+    _DEVICE_PERCENT_PATTERN = re.compile(r'"Device Utilization %"\s*=\s*([0-9.]+)')
+    _MEMORY_PATTERN = re.compile(r'"In use system memory"\s*=\s*(\d+)')
+
+    def __init__(
+        self,
+        *,
+        command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> None:
+        """注入 ioreg 命令边界，便于在非 macOS 测试环境验证解析和降级。
+
+        Args:
+            command_runner: 接收标准 ``subprocess.run`` 参数并返回文本结果的调用方。
+        """
+        self._command_runner = command_runner
+
+    def sample(self) -> GpuSample:
+        """读取 Apple AGX 设备的系统利用率和已占用统一内存。
+
+        Returns:
+            支持状态、0–100 的系统 GPU 百分比和已占用统一内存字节数；
+            命令不可用或字段缺失时返回显式不支持。
+        """
+        command = ["ioreg", "-r", "-d", "1", "-w", "0", "-c", "AGXAccelerator"]
+        try:
+            # ioreg 不需要管理员权限；短超时避免驱动异常阻塞任务轮询和取消。
+            completed = self._command_runner(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=1.0,
+                check=False,
+            )
+            if completed.returncode != 0:
+                return False, None, None
+            percent, memory_bytes = self._parse_statistics(completed.stdout)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError, ValueError):
+            # 不存在 AGX 或输出格式变化时不伪造零值，由 UI 明确展示不可用。
+            return False, None, None
+        return True, percent, memory_bytes
+
+    @classmethod
+    def _parse_statistics(cls, output: str) -> tuple[float, int | None]:
+        """从 AGX PerformanceStatistics 文本中提取利用率与统一内存。
+
+        Args:
+            output: ``ioreg`` 输出的完整设备树文本。
+
+        Returns:
+            设备利用率，以及字段存在时的统一内存字节数。
+
+        Raises:
+            ValueError: 输出中没有可识别的设备利用率，或百分比超出合法范围。
+        """
+        percent_match = cls._DEVICE_PERCENT_PATTERN.search(output)
+        if percent_match is None:
+            raise ValueError("Apple GPU utilization is unavailable")
+        percent = float(percent_match.group(1))
+        if not 0 <= percent <= 100:
+            raise ValueError("Apple GPU utilization is outside 0-100")
+
+        # 统一内存字段可能因系统版本缺失；利用率仍可独立作为可靠 GPU 指标展示。
+        memory_match = cls._MEMORY_PATTERN.search(output)
+        memory_bytes = int(memory_match.group(1)) if memory_match is not None else None
+        return percent, memory_bytes
+
+
 class ProcessResourceSampler:
     """聚合一个评测根进程与其递归子进程的 CPU 和 RSS。"""
 
@@ -103,10 +174,26 @@ class ProcessResourceSampler:
         *,
         process_factory: Callable[[int], ProcessLike] = psutil.Process,
         gpu_probe: Callable[[], GpuSample] | None = None,
+        include_system_cpu: bool = False,
+        system_cpu_probe: Callable[[], float] = psutil.cpu_percent,
     ) -> None:
-        """注入进程和 GPU 探测边界，生产环境默认使用 psutil 与 NVIDIA CLI。"""
+        """配置进程树、系统 CPU 和平台 GPU 的真实采样边界。
+
+        Args:
+            process_factory: 根据 PID 构建可持续采样进程对象的工厂。
+            gpu_probe: 返回平台 GPU 利用率和显存/统一内存的可选探针。
+            include_system_cpu: 是否用本机总 CPU 覆盖进程树读数，适用于独立 Ollama 服务。
+            system_cpu_probe: 返回 0–100 本机 CPU 利用率的采样函数。
+        """
         self._process_factory = process_factory
-        self._gpu_probe = gpu_probe or NvidiaGpuProbe().sample
+        if gpu_probe is not None:
+            self._gpu_probe = gpu_probe
+        elif sys.platform == "darwin":
+            self._gpu_probe = AppleGpuProbe().sample
+        else:
+            self._gpu_probe = NvidiaGpuProbe().sample
+        self._include_system_cpu = include_system_cpu
+        self._system_cpu_probe = system_cpu_probe
         self._process_cache: dict[int, ProcessLike] = {}
         self._root_process_id: int | None = None
 
@@ -152,6 +239,10 @@ class ProcessResourceSampler:
         # 采样期间退出的进程立即移除，若相同 PID 被新子进程复用，下次可重新建立基线。
         for unavailable_process_id in unavailable_processes:
             self._process_cache.pop(unavailable_process_id, None)
+
+        # Ollama 在独立服务进程执行推理；系统 CPU 才能覆盖用户实际感受到的本机负载。
+        if self._include_system_cpu:
+            cpu_percent = float(self._system_cpu_probe())
 
         gpu_supported, gpu_percent, gpu_memory_bytes = self._gpu_probe()
         return ResourceUsage(
