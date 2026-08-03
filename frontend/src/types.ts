@@ -224,6 +224,7 @@ export interface EvaluationTaskSummary {
   evaluation_type?: EvaluationType;
   agent_framework?: AgentFramework | null;
   dataset: DatasetName;
+  suite_id?: string | null;
   model: string;
   adapter: AdapterType;
   progress: EvaluationTaskProgress;

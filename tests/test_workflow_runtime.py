@@ -212,9 +212,7 @@ def test_runtime_marks_scored_failure_as_debuggable_failed_sample(tmp_path: Path
         cancel_event=Event(),
     )
     # 读取 Benchmark 节点的恢复集合和失败分页，验证两个公开查询保持一致。
-    benchmark = next(
-        node for node in repository.list_nodes(task.id) if node.kind == "benchmark"
-    )
+    benchmark = next(node for node in repository.list_nodes(task.id) if node.kind == "benchmark")
     failed_page = repository.list_samples(benchmark.id, status="failed")
 
     assert repository.successful_sample_keys(benchmark.id) == set()

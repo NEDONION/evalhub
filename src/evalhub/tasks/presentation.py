@@ -47,6 +47,7 @@ def task_summary(task: EvaluationTask, *, now: datetime | None = None) -> dict[s
         "evaluation_type": task.request.evaluation_type,
         "agent_framework": task.request.agent_framework,
         "dataset": task.request.dataset,
+        "suite_id": task.request.suite_id,
         "model": task.request.model,
         "adapter": task.request.adapter,
         "progress": {

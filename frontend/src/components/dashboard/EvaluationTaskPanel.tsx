@@ -166,7 +166,9 @@ function TaskRow({ task, tasksAhead, selected, onSelect }: TaskRowProps): JSX.El
           {statusLabels[task.status]}
         </Badge>
         <div className="min-w-0">
-          <strong className="block truncate text-sm font-semibold text-ink">{task.dataset.toUpperCase()}</strong>
+          <strong className="block truncate text-sm font-semibold text-ink">
+            {task.suite_id ? "LLM 行业能力套件" : task.dataset.toUpperCase()}
+          </strong>
           <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400">
             {task.model}
             {task.status === "pending" ? ` · ${tasksAhead > 0 ? `前方 ${tasksAhead} 个` : "即将开始"}` : ""}

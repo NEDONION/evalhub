@@ -338,6 +338,19 @@ def test_list_evaluations_excludes_full_result() -> None:
     assert task["agent_framework"] is None
 
 
+def test_list_evaluations_includes_suite_id() -> None:
+    """套件任务列表项应携带稳定标识，供前端区分套件和单项 Benchmark。"""
+    task = task_fixture()
+    suite_request = replace(task.request, suite_id="llm-industry-core-v1")
+    service = FakeTaskService(replace(task, request=suite_request))
+
+    # 通过列表路由验证轻量摘要契约，不要求前端额外读取任务详情。
+    status, response = call_handler(method="GET", path="/api/evaluations", service=service)
+
+    assert status == 200
+    assert response["tasks"][0]["suite_id"] == "llm-industry-core-v1"
+
+
 def test_get_evaluation_detail_includes_full_result() -> None:
     """详情端点应只为选中任务返回完整评测结果。"""
     service = FakeTaskService(task_fixture(status="success", with_result=True))

@@ -16,7 +16,7 @@ const profile: ModelCapabilityProfile = {
     CAPABILITY_ORDER.map((key, index) => [
       key,
       {
-        label: ["知识", "指令遵循", "数学", "综合推理", "代码", "安全可信"][index],
+        label: key,
         score: index === 0 || index === 2 ? 80 : null,
         status: index === 0 || index === 2 ? "partial" : "unassessed",
         coverage: index === 0 || index === 2 ? 0.5 : 0,

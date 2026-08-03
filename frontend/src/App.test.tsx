@@ -549,6 +549,22 @@ describe("EvalHub console", () => {
     expect(await screen.findByText("等待 Worker · 前方 1 个任务")).toBeInTheDocument();
   });
 
+  it("labels suite tasks without presenting the first benchmark as the task name", async () => {
+    const user = userEvent.setup();
+    const suiteTask = { ...pendingTask, id: "job_suite", suite_id: "llm-industry-core-v1" };
+    vi.mocked(getEvaluationTasks).mockResolvedValue([suiteTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue({
+      ...suiteTask,
+      request: { ...successfulTaskDetail.request, suite_id: "llm-industry-core-v1" },
+      result: null,
+    });
+    render(<App />);
+
+    await user.click(navigationButton("评测结果"));
+
+    expect(await screen.findByText("LLM 行业能力套件")).toBeInTheDocument();
+  });
+
   it("presents a successful evaluation before collapsed raw JSON", async () => {
     const user = userEvent.setup();
     vi.mocked(getEvaluationTasks).mockResolvedValue([successfulTask]);
