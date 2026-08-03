@@ -201,8 +201,8 @@ cd /Users/nedonion/PycharmProjects/evalhub
 `--adapter oracle` 只用于验证 EvalHub 管线是否正常，不代表真实模型评测。
 
 完整文档导航见：[docs/README.md](docs/README.md)。
-Ollama 安装和故障排查见：[docs/getting-started/OLLAMA.md](docs/getting-started/OLLAMA.md)。
-Codex 对话后的文档沉淀流程见：[docs/development/CODEX_WORKFLOW.md](docs/development/CODEX_WORKFLOW.md)。
+Ollama 安装和故障排查见：[docs/getting-started/20260804_Ollama本地模型安装与验证.md](docs/getting-started/20260804_Ollama本地模型安装与验证.md)。
+Codex 对话后的文档沉淀流程见：[docs/development/20260804_Codex对话沉淀工作流.md](docs/development/20260804_Codex对话沉淀工作流.md)。
 
 ## 本地前后端一键启动
 
@@ -273,17 +273,17 @@ evalhub/
 ├── docs/
 │   ├── README.md
 │   ├── getting-started/
-│   │   ├── LOCAL_RUN.md
-│   │   └── OLLAMA.md
+│   │   ├── 20260804_本地运行指南.md
+│   │   └── 20260804_Ollama本地模型安装与验证.md
 │   ├── architecture/
-│   │   ├── ARCHITECTURE.md
-│   │   ├── API.md
-│   │   └── DATA_MODEL.md
+│   │   ├── 20260804_系统架构.md
+│   │   ├── 20260804_API接口草案.md
+│   │   └── 20260804_数据模型.md
 │   ├── product/
-│   │   ├── PRD.md
-│   │   └── ROADMAP.md
+│   │   ├── 20260804_产品需求文档.md
+│   │   └── 20260804_Agent评测路线图.md
 │   ├── development/
-│   │   └── CODEX_WORKFLOW.md
+│   │   └── 20260804_Codex对话沉淀工作流.md
 │   └── superpowers/
 │       ├── plans/
 │       └── specs/
@@ -303,60 +303,35 @@ evalhub/
 └── tests/
 ```
 
-## 演进路线图
+## Agent Benchmark 演进路线图
 
-蓝色实线节点代表当前能力，绿色实线节点代表下一阶段，灰色虚线节点代表后续规划。
+当前的 GSM8K、MMLU 评测本质上仍是一次 `Prompt → Answer` 的 LLM 补全。EvalHub 将借鉴 EvalScope 的 Agent 评测方式：先用通用 AgentLoop 包装普通 Benchmark，再让复杂 Benchmark 自带工具、环境和评分协议，最后评测 Codex、Claude Code 等完整 Agent。蓝色代表当前能力，绿色代表下一步，灰色虚线代表后续规划。
 
 ```mermaid
-flowchart TB
-    subgraph Experience["体验入口"]
-        direction LR
-        UX1["① 当前本地 MVP<br/>静态 Web + CLI"] --> UX2["② 平台服务化（规划）<br/>React Console"] --> UX3["③ 分布式执行（规划）<br/>多项目工作台"] --> UX4["④ 质量治理（规划）<br/>自助报告与门禁视图"]
-    end
+flowchart LR
+    S1["① 单轮 LLM 补全（当前）<br/>Prompt → Answer<br/>Exact Match"]
+    S2["② Native AgentLoop（下一步）<br/>Strategy + Tools + Max Steps<br/>统一 AgentTrace"]
+    S3["③ Agent Benchmark Adapter<br/>Benchmark 自带 Loop / Sandbox / Scorer<br/>GAIA / SWE-bench / BFCL 类任务"]
+    S4["④ External Agent Bridge<br/>Codex / Claude Code 等 Agent CLI<br/>协议转发 + 统一回放与对比"]
 
-    subgraph Orchestration["任务编排"]
-        direction LR
-        OR1["① 当前本地 MVP<br/>同步 API / 命令"] --> OR2["② 平台服务化（规划）<br/>Job API + 状态机"] --> OR3["③ 分布式执行（规划）<br/>Scheduler + Queue + 重试 / 取消"] --> OR4["④ 质量治理（规划）<br/>Policy + Release Gate 编排"]
-    end
-
-    subgraph Execution["执行与插件"]
-        direction LR
-        EX1["① 当前本地 MVP<br/>Runner + Adapter + Evaluator"] --> EX2["② 平台服务化（规划）<br/>Worker 契约 + 插件注册"] --> EX3["③ 分布式执行（规划）<br/>弹性 Worker Pool + 远端推理"] --> EX4["④ 质量治理（规划）<br/>LLM Judge + Safety + Agent Eval"]
-    end
-
-    subgraph Data["数据与制品"]
-        direction LR
-        DA1["① 当前本地 MVP<br/>本地 Dataset + InMemory Registry"] --> DA2["② 平台服务化（规划）<br/>PostgreSQL Registry"] --> DA3["③ 分布式执行（规划）<br/>MinIO Artifact + Dataset Cache"] --> DA4["④ 质量治理（规划）<br/>版本、血缘与可复现快照"]
-    end
-
-    subgraph Governance["可观测与治理"]
-        direction LR
-        GO1["① 当前本地 MVP<br/>JSON 报告 + 失败样例"] --> GO2["② 平台服务化（规划）<br/>指标、日志与任务历史"] --> GO3["③ 分布式执行（规划）<br/>Trace + Audit + 成本统计"] --> GO4["④ 质量治理（规划）<br/>Leaderboard + SLA + 发布审计"]
-    end
-
-    UX1 ~~~ OR1
-    UX4 ~~~ OR4
-    OR1 ~~~ EX1
-    OR4 ~~~ EX4
-    EX1 ~~~ DA1
-    EX4 ~~~ DA4
-    DA1 ~~~ GO1
-    DA4 ~~~ GO4
+    S1 -->|"普通数据集进入多轮工具循环"| S2
+    S2 -->|"Benchmark 定义专属环境与评分"| S3
+    S3 -->|"同一任务评测完整 Agent"| S4
 
     classDef current fill:#e8f1ff,stroke:#1d6fd8,color:#111827,stroke-width:2px;
     classDef next fill:#ecfdf3,stroke:#16a34a,color:#14532d,stroke-width:2px;
     classDef planned fill:#f8fafc,stroke:#94a3b8,color:#475569,stroke-dasharray:5 5;
-    class UX1,OR1,EX1,DA1,GO1 current;
-    class UX2,OR2,EX2,DA2,GO2 next;
-    class UX3,UX4,OR3,OR4,EX3,EX4,DA3,DA4,GO3,GO4 planned;
+    class S1 current;
+    class S2 next;
+    class S3,S4 planned;
 ```
 
-有关目标生产架构的更多细节，请参阅 [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md)。
+有关 Agent Benchmark 的阶段目标与验收标准，请参阅 [docs/product/20260804_Agent评测路线图.md](docs/product/20260804_Agent评测路线图.md)；架构取舍见 [EvalScope 与 EvalHub Agent 评测设计 Diff](docs/architecture/20260804_EvalScope与EvalHub的Agent评测设计差异.md)。
 
 ## 下一步建议
 
-1. 把内存 Registry 替换成 SQLAlchemy + PostgreSQL。
-2. 用 FastAPI 暴露 Model/Dataset/Benchmark/Job/Result API。
-3. 引入 Celery Worker，实现异步 Evaluation Job。
-4. 接入对象存储，保存 Dataset、Report、Trace 和 Artifact。
-5. 增加 LLM-as-a-Judge、Leaderboard、Release Gate 和 Agent Evaluation。
+1. 增加类型化 `NativeAgentConfig` 和统一 `AgentTrace`，不再把 Agent 配置塞进无约束字典。
+2. 实现 `generate → parse → tool call → observation` 的 Native AgentLoop，让现有 Benchmark 可按配置切换到多轮评测。
+3. 增加 Strategy、Tool、Environment 注册与样本级资源生命周期，先用 Fake Model/Tool 完成确定性测试。
+4. 定义 `AgentBenchmarkAdapter`，让复杂 Benchmark 提供默认 Loop、Sandbox、Scorer 和最终制品提取。
+5. Trace 回放稳定后再实现 External Agent Bridge，逐步接入 Codex、Claude Code 等 Agent CLI。

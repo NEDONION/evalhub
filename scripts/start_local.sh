@@ -66,7 +66,7 @@ else
       echo "Ollama did not become ready yet. Logs: .runtime/ollama.log"
     fi
   else
-    echo "Ollama is not installed. See docs/OLLAMA.md"
+    echo "Ollama is not installed. See docs/getting-started/20260804_Ollama本地模型安装与验证.md"
   fi
 fi
 
