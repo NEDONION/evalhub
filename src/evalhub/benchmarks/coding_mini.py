@@ -11,7 +11,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from evalhub.agent.codex import CodexAgentError, CodexAgentRunner, CodexRunResult
+from evalhub.agent.codex import (
+    AgentTraceEvent,
+    CodexAgentError,
+    CodexAgentRunner,
+    CodexRunResult,
+    TraceCallback,
+)
 
 CAPABILITY_DIMENSIONS: tuple[tuple[str, str], ...] = (
     ("planning", "规划"),
@@ -50,6 +56,7 @@ class AgentRunner(Protocol):
         base_url: str,
         workspace: Path,
         timeout_seconds: float,
+        on_event: TraceCallback | None = None,
     ) -> CodexRunResult:
         """在隔离工作区执行一个编码样本并返回运行元数据。"""
 
@@ -155,6 +162,7 @@ def run_codex_agent_benchmark(
     on_progress: ProgressCallback | None = None,
     runner: AgentRunner | None = None,
     runtime_root: Path = Path(".runtime/agent-runs"),
+    on_trace: TraceCallback | None = None,
 ) -> dict[str, object]:
     """运行 Coding Mini 并聚合六维 Agent 能力报告。
 
@@ -166,6 +174,7 @@ def run_codex_agent_benchmark(
         on_progress: 接收已完成样本数和总数的可选回调。
         runner: 可替换的 Agent 壳；默认创建真实 ``CodexAgentRunner``。
         runtime_root: 所有 Agent 样本工作区的父目录。
+        on_trace: 接收样本阶段和 Codex 外部动作的可选实时回调。
 
     返回：
         与普通评测公共字段兼容，并包含 Agent 元数据、样本结果和六维报告的字典。
@@ -196,6 +205,7 @@ def run_codex_agent_benchmark(
                 model=model,
                 base_url=base_url,
                 runner=active_runner,
+                on_trace=on_trace,
             )
         )
         if on_progress is not None:
@@ -318,8 +328,28 @@ def _run_sample(
     model: str,
     base_url: str,
     runner: AgentRunner,
+    on_trace: TraceCallback | None,
 ) -> dict[str, object]:
-    """运行单条 Agent 样本，再以隐藏 Verifier 判定唯一分数。"""
+    """运行单条 Agent 样本并生成文件证据、隐藏校验和可解释分类。"""
+    _emit_trace(
+        on_trace,
+        event_type="sample_started",
+        actor="benchmark",
+        message=sample.instruction,
+        payload={"sample_id": sample.id, "instruction": sample.instruction},
+    )
+
+    def relay_codex_event(event: AgentTraceEvent) -> None:
+        """为 Codex 原始外部事件补充稳定样本标识后向上游转发。"""
+        payload = {**event["payload"], "sample_id": sample.id}
+        _emit_trace(
+            on_trace,
+            event_type=event["event_type"],
+            actor=event["actor"],
+            message=event["message"],
+            payload=payload,
+        )
+
     try:
         run_result = runner.run(
             instruction=sample.instruction,
@@ -327,9 +357,21 @@ def _run_sample(
             base_url=base_url,
             workspace=workspace,
             timeout_seconds=180,
+            on_event=relay_codex_event,
         )
     except CodexAgentError as exc:
-        # CLI 层错误只降低当前样本分数，使其余样本仍能提供能力诊断。
+        # Runner 错误独立于解题正确性，仍检查文件证据并继续后续样本。
+        changed_files = _changed_files(workspace)
+        diagnostics = _diagnostics(
+            outcome="runtime_error",
+            tool_call_count=0,
+            changed_files=changed_files,
+            final_message_present=False,
+            verifier_passed=False,
+        )
+        _emit_runner_error(on_trace, sample.id, exc)
+        _emit_workspace_changed(on_trace, sample.id, changed_files)
+        _emit_sample_finished(on_trace, sample.id, diagnostics, score=0.0)
         return {
             "sample_id": sample.id,
             "status": "failed",
@@ -338,18 +380,205 @@ def _run_sample(
             "event_count": 0,
             "wall_time_seconds": 0.0,
             "verifier_message": str(exc),
+            "diagnostics": diagnostics,
         }
 
+    # Git 变化回答 Agent 是否真正采取动作，隐藏校验只回答最终实现是否正确。
+    changed_files = _changed_files(workspace)
+    _emit_workspace_changed(on_trace, sample.id, changed_files)
     verifier_passed, verifier_message = _verify_workspace(sample, workspace)
+    _emit_verifier_finished(
+        on_trace,
+        sample_id=sample.id,
+        verifier_passed=verifier_passed,
+        verifier_message=verifier_message,
+    )
+    outcome = "passed" if verifier_passed else "wrong_solution" if changed_files else "no_action"
+    diagnostics = _diagnostics(
+        outcome=outcome,
+        tool_call_count=run_result.tool_call_count,
+        changed_files=changed_files,
+        final_message_present=bool(run_result.final_message),
+        verifier_passed=verifier_passed,
+    )
+    score = 1.0 if verifier_passed else 0.0
+    _emit_sample_finished(on_trace, sample.id, diagnostics, score=score)
     return {
         "sample_id": sample.id,
         "status": "success" if verifier_passed else "failed",
-        "score": 1.0 if verifier_passed else 0.0,
+        "score": score,
         "final_message": run_result.final_message[:1000],
         "event_count": run_result.event_count,
         "wall_time_seconds": round(run_result.wall_time_seconds, 3),
         "verifier_message": verifier_message,
+        "diagnostics": diagnostics,
     }
+
+
+def _changed_files(workspace: Path) -> list[str]:
+    """返回相对初始提交发生变化的受控文件路径。
+
+    已跟踪修改和新增文件分别由 Git 查询，诊断目录与 Python 字节码不会冒充 Agent 行为。
+    """
+    tracked = _run_git_names(["git", "diff", "--name-only", "-z", "HEAD"], workspace)
+    untracked = _run_git_names(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        workspace,
+    )
+    candidates = {*tracked, *untracked}
+    return sorted(path for path in candidates if path and _is_controlled_change(path))
+
+
+def _run_git_names(command: list[str], workspace: Path) -> list[str]:
+    """执行只读 Git 文件名查询并返回 NUL 分隔的相对路径。
+
+    异常：
+        RuntimeError: Git 无法启动、超时或返回非零退出码时抛出。
+    """
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"failed to inspect benchmark workspace: {exc}") from exc
+
+    # 文件证据不可用时必须让平台显式失败，不能把未知状态误报为 no_action。
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown git error"
+        raise RuntimeError(f"failed to inspect benchmark workspace: {detail[-1000:]}")
+    return [item for item in completed.stdout.split("\0") if item]
+
+
+def _is_controlled_change(relative_name: str) -> bool:
+    """判断相对路径是否属于可用于证明 Agent 行为的受控文件。"""
+    parts = Path(relative_name).parts
+    if ".evalhub" in parts or "__pycache__" in parts:
+        return False
+    return Path(relative_name).suffix != ".pyc"
+
+
+def _diagnostics(
+    *,
+    outcome: str,
+    tool_call_count: int,
+    changed_files: list[str],
+    final_message_present: bool,
+    verifier_passed: bool,
+) -> dict[str, object]:
+    """构造最终结果和实时事件共同使用的样本诊断事实。"""
+    return {
+        "outcome": outcome,
+        "tool_call_count": tool_call_count,
+        "changed_files": changed_files,
+        "final_message_present": final_message_present,
+        "verifier_passed": verifier_passed,
+    }
+
+
+def _emit_trace(
+    callback: TraceCallback | None,
+    *,
+    event_type: str,
+    actor: str,
+    message: str | None,
+    payload: dict[str, object],
+) -> None:
+    """向可选上游发送一条 JSON 兼容且不包含隐藏断言的审计事件。"""
+    if callback is None:
+        return
+    event: AgentTraceEvent = {
+        "event_type": event_type,
+        "actor": actor,
+        "message": message,
+        "payload": payload,
+    }
+    callback(event)
+
+
+def _emit_runner_error(
+    callback: TraceCallback | None,
+    sample_id: str,
+    error: CodexAgentError,
+) -> None:
+    """发送明确归属于运行边界的失败事件。"""
+    _emit_trace(
+        callback,
+        event_type="runner_error",
+        actor="benchmark",
+        message=str(error),
+        payload={
+            "sample_id": sample_id,
+            "error_type": "codex_agent_error",
+            "message": str(error),
+        },
+    )
+
+
+def _emit_workspace_changed(
+    callback: TraceCallback | None,
+    sample_id: str,
+    changed_files: list[str],
+) -> None:
+    """发送 Codex 退出后由 Git 独立观察到的受控文件变化。"""
+    message = f"修改 {len(changed_files)} 个受控文件" if changed_files else "无受控文件变化"
+    _emit_trace(
+        callback,
+        event_type="workspace_changed",
+        actor="benchmark",
+        message=message,
+        payload={"sample_id": sample_id, "changed_files": changed_files},
+    )
+
+
+def _emit_verifier_finished(
+    callback: TraceCallback | None,
+    *,
+    sample_id: str,
+    verifier_passed: bool,
+    verifier_message: str,
+) -> None:
+    """在 Agent 已退出后发送隐藏校验结论和安全失败摘要。"""
+    message = "隐藏校验通过" if verifier_passed else "隐藏校验失败"
+    _emit_trace(
+        callback,
+        event_type="verifier_finished",
+        actor="benchmark",
+        message=message,
+        payload={
+            "sample_id": sample_id,
+            "passed": verifier_passed,
+            "message": verifier_message,
+        },
+    )
+
+
+def _emit_sample_finished(
+    callback: TraceCallback | None,
+    sample_id: str,
+    diagnostics: dict[str, object],
+    *,
+    score: float,
+) -> None:
+    """发送单条样本的最终可解释分类。"""
+    outcome_labels = {
+        "runtime_error": "Agent 运行失败",
+        "no_action": "未产生代码修改",
+        "wrong_solution": "修改未通过隐藏校验",
+        "passed": "样本通过",
+    }
+    outcome = str(diagnostics["outcome"])
+    _emit_trace(
+        callback,
+        event_type="sample_finished",
+        actor="benchmark",
+        message=outcome_labels[outcome],
+        payload={"sample_id": sample_id, "score": score, **diagnostics},
+    )
 
 
 def _verify_workspace(sample: CodingAgentSample, workspace: Path) -> tuple[bool, str]:

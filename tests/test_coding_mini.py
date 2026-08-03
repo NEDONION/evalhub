@@ -1,8 +1,9 @@
 """验证内置 Coding Mini 的隐藏校验、进度和六维能力聚合。"""
 
+import json
 from pathlib import Path
 
-from evalhub.agent.codex import CodexRunResult
+from evalhub.agent.codex import AgentTraceEvent, CodexAgentError, CodexRunResult, TraceCallback
 from evalhub.benchmarks.coding_mini import CAPABILITY_DIMENSIONS, run_codex_agent_benchmark
 
 
@@ -26,6 +27,7 @@ class EditingFakeRunner:
         base_url: str,
         workspace: Path,
         timeout_seconds: float,
+        on_event: TraceCallback | None = None,
     ) -> CodexRunResult:
         """根据工作区样本标识写入正确实现，并返回稳定的 Agent 元数据。"""
         del instruction, model, base_url, timeout_seconds
@@ -33,7 +35,16 @@ class EditingFakeRunner:
         sample_id = workspace.parent.name
         if sample_id != self.skip_sample:
             self._apply_fix(sample_id, workspace)
-        return CodexRunResult("fixed", 2, 0, 0.01, self.version())
+        if on_event is not None:
+            on_event(
+                {
+                    "event_type": "tool_started",
+                    "actor": "codex",
+                    "message": "edit file",
+                    "payload": {"tool_name": "file_change", "command": "edit file"},
+                }
+            )
+        return CodexRunResult("fixed", 2, 0, 0.01, self.version(), tool_call_count=1)
 
     @staticmethod
     def _apply_fix(sample_id: str, workspace: Path) -> None:
@@ -61,6 +72,67 @@ class EditingFakeRunner:
                 "    return True\n",
                 encoding="utf-8",
             )
+
+
+class NoActionFakeRunner(EditingFakeRunner):
+    """返回文字但不调用工具或修改文件，用于验证 no_action 分类。"""
+
+    def run(
+        self,
+        *,
+        instruction: str,
+        model: str,
+        base_url: str,
+        workspace: Path,
+        timeout_seconds: float,
+        on_event: TraceCallback | None = None,
+    ) -> CodexRunResult:
+        """保留初始工作区并返回存在的最终消息。"""
+        del instruction, model, base_url, timeout_seconds, on_event
+        self.workspaces.append(workspace)
+        return CodexRunResult("only narration", 1, 0, 0.01, self.version())
+
+
+class WrongEditFakeRunner(EditingFakeRunner):
+    """修改受控文件但保留缺陷，用于验证 wrong_solution 分类。"""
+
+    def run(
+        self,
+        *,
+        instruction: str,
+        model: str,
+        base_url: str,
+        workspace: Path,
+        timeout_seconds: float,
+        on_event: TraceCallback | None = None,
+    ) -> CodexRunResult:
+        """写入无效注释，使 Git 有变化但隐藏校验仍失败。"""
+        del instruction, model, base_url, timeout_seconds, on_event
+        self.workspaces.append(workspace)
+        target = workspace / "pricing.py"
+        target.write_text(
+            target.read_text(encoding="utf-8") + "# attempted fix\n",
+            encoding="utf-8",
+        )
+        return CodexRunResult("wrong edit", 2, 0, 0.01, self.version(), tool_call_count=1)
+
+
+class ErrorFakeRunner(EditingFakeRunner):
+    """模拟 Codex 无最终消息等运行时故障。"""
+
+    def run(
+        self,
+        *,
+        instruction: str,
+        model: str,
+        base_url: str,
+        workspace: Path,
+        timeout_seconds: float,
+        on_event: TraceCallback | None = None,
+    ) -> CodexRunResult:
+        """不修改工作区并抛出稳定 Runner 错误。"""
+        del instruction, model, base_url, workspace, timeout_seconds, on_event
+        raise CodexAgentError("codex produced no final message")
 
 
 def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Path) -> None:
@@ -124,3 +196,65 @@ def test_coding_mini_scores_failed_sample_by_declared_capability_weights(
     assert failed_example["input"] == "pricing_total"
     assert failed_example["prediction"] == "fixed"
     assert failed_example["reference"] == "hidden verifier passed"
+
+
+def test_coding_mini_classifies_passed_no_action_wrong_solution_and_runtime_error(
+    tmp_path: Path,
+) -> None:
+    """文件证据和 Verifier 应稳定区分四类 Agent 样本结果。"""
+    cases = (
+        ("passed", EditingFakeRunner(), ["pricing.py"], True, True, 1),
+        ("no_action", NoActionFakeRunner(), [], True, False, 0),
+        ("wrong_solution", WrongEditFakeRunner(), ["pricing.py"], True, False, 1),
+        ("runtime_error", ErrorFakeRunner(), [], False, False, 0),
+    )
+
+    # 每个 case 使用独立任务目录，避免 Git 文件副作用污染其他分类。
+    for index, (outcome, runner, changed_files, final_message, verifier, tool_count) in enumerate(
+        cases
+    ):
+        result = run_codex_agent_benchmark(
+            job_id=f"job_outcome_{index}",
+            model="local-test",
+            base_url="http://127.0.0.1:11434",
+            limit=1,
+            runner=runner,
+            runtime_root=tmp_path,
+        )
+        diagnostics = result["sample_results"][0]["diagnostics"]
+        assert diagnostics == {
+            "outcome": outcome,
+            "tool_call_count": tool_count,
+            "changed_files": changed_files,
+            "final_message_present": final_message,
+            "verifier_passed": verifier,
+        }
+
+
+def test_coding_mini_emits_auditable_stages_without_hidden_verifier_code(
+    tmp_path: Path,
+) -> None:
+    """实时事件应包含题目和外部动作，但不得提前泄漏隐藏断言源码。"""
+    events: list[AgentTraceEvent] = []
+
+    run_codex_agent_benchmark(
+        job_id="job_trace",
+        model="local-test",
+        base_url="http://127.0.0.1:11434",
+        limit=1,
+        runner=EditingFakeRunner(),
+        runtime_root=tmp_path,
+        on_trace=events.append,
+    )
+
+    assert [event["event_type"] for event in events] == [
+        "sample_started",
+        "tool_started",
+        "workspace_changed",
+        "verifier_finished",
+        "sample_finished",
+    ]
+    assert events[1]["payload"]["sample_id"] == "pricing_total"
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "Fix pricing.total_with_tax" in serialized
+    assert "assert total_with_tax" not in serialized
