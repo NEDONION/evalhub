@@ -18,6 +18,7 @@ from evalhub.tasks import (
     TaskNotFoundError,
     TaskRequest,
 )
+from evalhub.tasks.presentation import task_detail
 
 
 def request_fixture() -> TaskRequest:
@@ -389,6 +390,24 @@ def test_get_node_detail_includes_checkpoint_and_audit_events() -> None:
     assert node["checkpoint"] == {"completed_samples": 4, "total_samples": 5}
     assert node["events"][0]["event_type"] == "node_failed"
     assert node["events"][0]["attempt"] == 2
+
+
+def test_failed_suite_detail_keeps_finalized_partial_capability_profile() -> None:
+    """部分 Benchmark 阻塞时，详情仍应展示已经持久化的模型能力画像。"""
+    partial_result = {
+        "status": "partial",
+        "capability_profile": {"status": "partial", "capabilities": {}},
+    }
+    finalizer = replace(
+        node_fixture(status="success"),
+        node_key="workflow_finalize",
+        kind="workflow_finalize",
+        output=partial_result,
+    )
+
+    detail = task_detail(task_fixture(status="failed"), nodes=[finalizer])
+
+    assert detail["result"] == partial_result
 
 
 def test_list_node_samples_preserves_cursor_and_failure_filter() -> None:
