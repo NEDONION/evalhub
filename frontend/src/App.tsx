@@ -137,7 +137,8 @@ export default function App() {
                 datasets={dashboard.datasets}
                 preparingDataset={dashboard.preparingDataset}
                 error={dashboard.datasetError}
-                onPrepare={(dataset) => void dashboard.prepare(dataset)}
+                notice={dashboard.datasetNotice}
+                onPrepare={(dataset, force) => void dashboard.prepare(dataset, force)}
               />
             </div>
 

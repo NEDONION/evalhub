@@ -343,6 +343,24 @@ describe("EvalHub console", () => {
     expect(prepareDataset).toHaveBeenCalledWith("mmlu", false);
   });
 
+  it("force-refreshes a cached dataset and reports what changed", async () => {
+    const user = userEvent.setup();
+    vi.mocked(prepareDataset).mockResolvedValue({
+      ok: true,
+      dataset: "gsm8k",
+      path: datasetFixture.local_path,
+      operation: "updated",
+      sample_count: 1319,
+    });
+    render(<App />);
+
+    await user.click(navigationButton("资产管理"));
+    await user.click(await screen.findByRole("button", { name: "更新 GSM8K 测试集" }));
+
+    expect(prepareDataset).toHaveBeenCalledWith("gsm8k", true);
+    expect(await screen.findByText("GSM8K 已更新，1,319 条样本")).toBeInTheDocument();
+  });
+
   it("starts with a directed evaluation empty state", async () => {
     const user = userEvent.setup();
     render(<App />);
