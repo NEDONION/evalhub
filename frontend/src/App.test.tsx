@@ -9,6 +9,8 @@ import {
   createEvaluation,
   getBenchmarks,
   getDatasets,
+  getEvaluationNode,
+  getEvaluationNodeSamples,
   getEvaluationTask,
   getEvaluationTasks,
   getHealth,
@@ -18,7 +20,12 @@ import {
   prepareDataset,
   startModelPull,
 } from "./lib/api";
-import type { EvaluationTaskDetail, EvaluationTaskSummary } from "./types";
+import type {
+  EvaluationNodeDetail,
+  EvaluationNodeSummary,
+  EvaluationTaskDetail,
+  EvaluationTaskSummary,
+} from "./types";
 
 vi.mock("./lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
@@ -26,6 +33,8 @@ vi.mock("./lib/api", () => ({
   createEvaluation: vi.fn(),
   getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
+  getEvaluationNode: vi.fn(),
+  getEvaluationNodeSamples: vi.fn(),
   getEvaluationTask: vi.fn(),
   getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
@@ -216,6 +225,32 @@ const agentTask: EvaluationTaskSummary = {
   },
 };
 
+const agentNodeSummary: EvaluationNodeSummary = {
+  id: "node_agent",
+  task_id: "job_agent_success",
+  node_key: "agent:coding_mini",
+  kind: "agent_benchmark",
+  depends_on: [],
+  status: "success",
+  attempt: { count: 1, max: 1 },
+  progress: { completed_samples: 3, total_samples: 3, percent: 100 },
+  timing: {
+    created_at: "2026-08-04T02:00:00+00:00",
+    started_at: "2026-08-04T02:00:01+00:00",
+    finished_at: "2026-08-04T02:00:10+00:00",
+    elapsed_ms: 9000,
+  },
+  error: null,
+};
+
+const agentNodeDetail: EvaluationNodeDetail = {
+  ...agentNodeSummary,
+  input: { benchmark_id: "coding_mini" },
+  checkpoint: { completed_samples: 3, total_samples: 3 },
+  output: { passed_samples: 2, total_samples: 3 },
+  events: [],
+};
+
 const agentTaskDetail: EvaluationTaskDetail = {
   ...agentTask,
   request: {
@@ -227,6 +262,7 @@ const agentTaskDetail: EvaluationTaskDetail = {
     base_url: "http://127.0.0.1:11434",
     sample_mode: "quick",
   },
+  nodes: [agentNodeSummary],
   result: {
     job_id: "job_agent_success",
     status: "success",
@@ -303,6 +339,8 @@ beforeEach(() => {
     sample_count: 1319,
   });
   vi.mocked(getEvaluationTasks).mockResolvedValue([]);
+  vi.mocked(getEvaluationNode).mockResolvedValue(agentNodeDetail);
+  vi.mocked(getEvaluationNodeSamples).mockResolvedValue({ samples: [], next_cursor: null });
   vi.mocked(getEvaluationTask).mockReset();
   vi.mocked(createEvaluation).mockReset();
   vi.mocked(cancelEvaluationTask).mockReset();
@@ -609,6 +647,7 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("概览"));
     await user.click(navigationButton("评测结果"));
     expect(await screen.findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
+    expect(await screen.findByText("Agent 实时过程")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
     expect(screen.getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();
     expect(screen.getByText(/系统级 · 设备内存/)).toBeInTheDocument();
