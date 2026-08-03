@@ -16,31 +16,37 @@ RECOMMENDED_OLLAMA_MODELS = [
         "name": "qwen2.5:0.5b",
         "label": "Qwen2.5 0.5B",
         "description": "默认轻量模型，适合快速验证中文和数学任务。",
+        "estimated_size_bytes": 397_000_000,
     },
     {
         "name": "qwen2.5:1.5b",
         "label": "Qwen2.5 1.5B",
         "description": "轻量中文能力更好，适合本地评测入门。",
+        "estimated_size_bytes": 986_000_000,
     },
     {
         "name": "llama3.2:1b",
         "label": "Llama 3.2 1B",
         "description": "轻量英文通用模型，适合低资源机器试跑。",
+        "estimated_size_bytes": 1_300_000_000,
     },
     {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
         "description": "通用能力更强，本地运行成本中等。",
+        "estimated_size_bytes": 2_000_000_000,
     },
     {
         "name": "deepseek-r1:1.5b",
         "label": "DeepSeek R1 1.5B",
         "description": "轻量推理模型，适合观察推理题表现。",
+        "estimated_size_bytes": 1_110_000_000,
     },
     {
         "name": "phi3:mini",
         "label": "Phi-3 Mini",
         "description": "小型通用模型，适合快速本地实验。",
+        "estimated_size_bytes": 2_200_000_000,
     },
 ]
 
@@ -111,7 +117,15 @@ def get_ollama_status(
         }
 
     # 不同 Ollama 版本可能使用 ``name`` 或 ``model`` 字段，这里统一为字符串标签。
-    models = [str(item.get("name") or item.get("model")) for item in body.get("models", [])]
+    model_items = body.get("models", [])
+    models = [str(item.get("name") or item.get("model")) for item in model_items]
+    actual_sizes = {
+        str(item.get("name") or item.get("model")): int(item["size"])
+        for item in model_items
+        if (item.get("name") or item.get("model"))
+        and isinstance(item.get("size"), int)
+        and not isinstance(item.get("size"), bool)
+    }
     model_present = model in models
     # 成功状态同时返回已安装模型和推荐补充项，供前端直接渲染同一个选择列表。
     return {
@@ -122,14 +136,16 @@ def get_ollama_status(
         "base_url": base_url,
         "model": model,
         "models": models,
-        "model_options": _build_model_options(models),
+        "model_options": _build_model_options(models, actual_sizes),
         "message": "Ollama 已就绪。"
         if model_present
         else f"Ollama 正在运行，但未找到模型 {model}。请先执行：ollama pull {model}",
     }
 
 
-def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]:
+def _build_model_options(
+    installed_models: list[str], actual_sizes: dict[str, int] | None = None
+) -> list[dict[str, object]]:
     """合并已安装模型和推荐模型为去重的展示选项。
 
     Args:
@@ -140,6 +156,7 @@ def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]
     """
     # 集合分别承担快速安装状态判断和去重，列表继续保留用户本地模型顺序。
     installed_set = set(installed_models)
+    actual_sizes = actual_sizes or {}
     options: list[dict[str, object]] = []
     seen: set[str] = set()
 
@@ -147,14 +164,18 @@ def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]
     for model in installed_models:
         recommended = _recommended_by_name(model)
         options.append(
-            {
-                "name": model,
-                "label": recommended.get("label", model) if recommended else model,
-                "description": recommended.get("description", "本机已安装模型。")
-                if recommended
-                else "本机已安装模型。",
-                "installed": True,
-            }
+            _model_option(
+                name=model,
+                label=str(recommended.get("label", model)) if recommended else model,
+                description=(
+                    str(recommended.get("description", "本机已安装模型。"))
+                    if recommended
+                    else "本机已安装模型。"
+                ),
+                installed=True,
+                recommended=recommended,
+                actual_size=actual_sizes.get(model),
+            )
         )
         seen.add(model)
 
@@ -164,19 +185,51 @@ def _build_model_options(installed_models: list[str]) -> list[dict[str, object]]
         if name in seen:
             continue
         options.append(
-            {
-                "name": name,
-                "label": model["label"],
-                "description": model["description"],
-                "installed": name in installed_set,
-            }
+            _model_option(
+                name=name,
+                label=str(model["label"]),
+                description=str(model["description"]),
+                installed=name in installed_set,
+                recommended=model,
+                actual_size=actual_sizes.get(name),
+            )
         )
 
     # 返回全新列表，调用方的展示排序不会反向修改模块级推荐配置。
     return options
 
 
-def _recommended_by_name(name: str) -> dict[str, str] | None:
+def _model_option(
+    *,
+    name: str,
+    label: str,
+    description: str,
+    installed: bool,
+    recommended: dict[str, object] | None,
+    actual_size: int | None,
+) -> dict[str, object]:
+    """创建带实际或预估容量来源的统一模型选项。"""
+    estimated_size = recommended.get("estimated_size_bytes") if recommended else None
+    if actual_size is not None:
+        size_bytes = actual_size
+        size_kind = "actual"
+    elif isinstance(estimated_size, int) and not isinstance(estimated_size, bool):
+        size_bytes = estimated_size
+        size_kind = "estimated"
+    else:
+        size_bytes = None
+        size_kind = "unknown"
+    return {
+        "name": name,
+        "label": label,
+        "description": description,
+        "installed": installed,
+        "size_bytes": size_bytes,
+        "size_kind": size_kind,
+    }
+
+
+def _recommended_by_name(name: str) -> dict[str, object] | None:
     """按模型标签查找推荐展示元数据。
 
     Returns:
