@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-from pathlib import Path
 import shutil
 import socket
 import subprocess
@@ -10,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "stop_existing_evalhub.py"
