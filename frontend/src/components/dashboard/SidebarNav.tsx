@@ -103,7 +103,7 @@ export function SidebarNav({
                   <span className="mt-0.5 hidden truncate text-[11px] text-slate-400 lg:block">{description}</span>
                 </span>
                 {status ? (
-                  <span className="ml-auto hidden rounded-full border border-blue-200 bg-white px-2 py-0.5 text-[10px] font-medium text-blue-700 xl:inline">
+                  <span className="ml-auto hidden shrink-0 whitespace-nowrap rounded-full border border-blue-200 bg-white px-2 py-0.5 text-[10px] font-medium text-blue-700 xl:inline">
                     {status}
                   </span>
                 ) : null}
