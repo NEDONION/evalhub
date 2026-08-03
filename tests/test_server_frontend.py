@@ -179,6 +179,56 @@ class OllamaPullRouteTests(unittest.TestCase):
         self.assertEqual(body, {"ok": False, "error": "pull task not found"})
 
 
+class DatasetPrepareRouteTests(unittest.TestCase):
+    """保护数据集强制更新参数和可观察成功响应。"""
+
+    def test_force_update_returns_operation_and_sample_count(self) -> None:
+        """已缓存数据集更新必须把 force 传到加载器并报告样本数。"""
+        with (
+            patch("evalhub.server._dataset_is_prepared", return_value=True, create=True),
+            patch("evalhub.server.prepare_dataset", return_value=Path("data/raw/gsm8k/test.jsonl"))
+            as prepare,
+            patch("evalhub.server.load_samples", return_value=[object(), object()]),
+            running_server(FakePullManager()) as port,
+        ):
+            status, body = request_json(
+                port,
+                "POST",
+                "/api/datasets/prepare",
+                {"dataset": "gsm8k", "force": True},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            body,
+            {
+                "ok": True,
+                "dataset": "gsm8k",
+                "path": "data/raw/gsm8k/test.jsonl",
+                "operation": "updated",
+                "sample_count": 2,
+            },
+        )
+        prepare.assert_called_once_with("gsm8k", force=True)
+
+    def test_rejects_non_boolean_force_without_preparing(self) -> None:
+        """字符串等真值不能静默触发破坏性缓存更新。"""
+        with (
+            patch("evalhub.server.prepare_dataset") as prepare,
+            running_server(FakePullManager()) as port,
+        ):
+            status, body = request_json(
+                port,
+                "POST",
+                "/api/datasets/prepare",
+                {"dataset": "gsm8k", "force": "true"},
+            )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(body, {"ok": False, "error": "force must be a boolean"})
+        prepare.assert_not_called()
+
+
 if __name__ == "__main__":
     # 支持直接运行该文件，快速验证本地静态资源目录约束。
     unittest.main()

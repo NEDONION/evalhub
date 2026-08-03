@@ -3,9 +3,11 @@
 import csv
 import json
 import re
+import shutil
 import tarfile
 from collections.abc import Iterable
 from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.request import urlretrieve
 
 from evalhub.datasets.catalog import DatasetSpec, get_dataset_spec
@@ -73,12 +75,15 @@ MMLU_SUBJECTS = [
 ]
 
 
-def prepare_dataset(name: str, *, root: Path | str = ".") -> Path:
+def prepare_dataset(
+    name: str, *, root: Path | str = ".", force: bool = False
+) -> Path:
     """下载并缓存指定公开数据集，返回可供加载的本地路径。
 
     Args:
         name: 受支持的数据集稳定名称。
         root: 数据缓存相对的项目根目录或替代测试目录。
+        force: 是否重新下载并在校验后替换已有缓存。
 
     Returns:
         GSM8K 文件路径或 MMLU 测试集目录。
@@ -90,10 +95,10 @@ def prepare_dataset(name: str, *, root: Path | str = ".") -> Path:
     spec = get_dataset_spec(name)
     root_path = Path(root)
     if name == "gsm8k":
-        return _prepare_gsm8k(spec, root_path)
+        return _prepare_gsm8k(spec, root_path, force=force)
     # MMLU 使用归档下载与安全解压流程，不能复用单文件准备逻辑。
     if name == "mmlu":
-        return _prepare_mmlu(spec, root_path)
+        return _prepare_mmlu(spec, root_path, force=force)
     raise KeyError(f"unsupported dataset: {name}")
 
 
@@ -130,17 +135,31 @@ def load_samples(
     raise KeyError(f"unsupported dataset: {name}")
 
 
-def _prepare_gsm8k(spec: DatasetSpec, root: Path) -> Path:
+def _prepare_gsm8k(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
     """幂等下载 GSM8K JSONL 测试文件并返回本地路径。"""
     # 先创建父目录；已存在的文件视为可复用缓存，不重复触发网络请求。
     local_path = root / spec.local_path
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    if not local_path.exists():
+    if local_path.exists() and not force:
+        return local_path
+    if not force:
         urlretrieve(spec.source_url, local_path)
+        return local_path
+
+    with NamedTemporaryFile(
+        prefix=".evalhub-", suffix=".jsonl", dir=local_path.parent, delete=False
+    ) as temporary:
+        candidate = Path(temporary.name)
+    try:
+        urlretrieve(spec.source_url, candidate)
+        _validate_gsm8k_cache(candidate)
+        candidate.replace(local_path)
+    finally:
+        candidate.unlink(missing_ok=True)
     return local_path
 
 
-def _prepare_mmlu(spec: DatasetSpec, root: Path) -> Path:
+def _prepare_mmlu(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
     """幂等下载并安全解压 MMLU 官方归档。
 
     Raises:
@@ -148,18 +167,88 @@ def _prepare_mmlu(spec: DatasetSpec, root: Path) -> Path:
     """
     # 任一测试 CSV 已存在即可判定归档完成，避免每次启动重复扫描和解压。
     local_dir = root / spec.local_path
-    if local_dir.exists() and any(local_dir.glob("*_test.csv")):
+    if local_dir.exists() and any(local_dir.glob("*_test.csv")) and not force:
         return local_dir
 
     # 归档使用独立缓存路径，下载中断后可由调用方删除并重新准备。
     archive_path = root / "data/raw/mmlu/data.tar"
     archive_path.parent.mkdir(parents=True, exist_ok=True)
+    if force:
+        return _refresh_mmlu(spec, archive_path.parent, local_dir)
     if not archive_path.exists():
         urlretrieve(spec.source_url, archive_path)
 
     # 解压前逐成员验证目标路径，阻止恶意归档利用 ``..`` 路径越界写入。
     with tarfile.open(archive_path) as archive:
         _safe_extract(archive, root / "data/raw/mmlu")
+    return local_dir
+
+
+def _validate_gsm8k_cache(path: Path) -> None:
+    """完整解析候选 GSM8K 文件，拒绝空文件和缺少官方答案的记录。"""
+    count = 0
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            for line in file:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                question = row.get("question")
+                answer = row.get("answer")
+                if not isinstance(question, str) or not question.strip():
+                    raise ValueError("GSM8K row is missing a question")
+                if not isinstance(answer, str):
+                    raise ValueError("GSM8K row is missing an answer")
+                _extract_gsm8k_answer(answer)
+                count += 1
+    except (json.JSONDecodeError, OSError, TypeError) as exc:
+        raise ValueError(f"invalid GSM8K cache: {exc}") from exc
+    if count == 0:
+        raise ValueError("invalid GSM8K cache: no samples")
+
+
+def _refresh_mmlu(spec: DatasetSpec, mmlu_root: Path, local_dir: Path) -> Path:
+    """验证候选 MMLU 归档并在同一文件系统中交换目录与归档。"""
+    archive_path = mmlu_root / "data.tar"
+    target_data = mmlu_root / "data"
+    with TemporaryDirectory(prefix=".evalhub-", dir=mmlu_root) as temporary:
+        workspace = Path(temporary)
+        candidate_archive = workspace / "data.tar"
+        extract_root = workspace / "extracted"
+        extract_root.mkdir()
+        urlretrieve(spec.source_url, candidate_archive)
+        with tarfile.open(candidate_archive) as archive:
+            _safe_extract(archive, extract_root)
+
+        candidate_data = extract_root / "data"
+        candidate_test = candidate_data / "test"
+        csv_files = list(candidate_test.glob("*_test.csv"))
+        if not csv_files or not all(path.stat().st_size > 0 for path in csv_files):
+            raise ValueError("invalid MMLU cache: test CSV files are missing or empty")
+
+        backup_data = workspace / "old-data"
+        backup_archive = workspace / "old-data.tar"
+        data_installed = False
+        archive_installed = False
+        try:
+            if target_data.exists():
+                target_data.replace(backup_data)
+            if archive_path.exists():
+                archive_path.replace(backup_archive)
+            candidate_data.replace(target_data)
+            data_installed = True
+            candidate_archive.replace(archive_path)
+            archive_installed = True
+        except Exception:
+            if data_installed and target_data.exists():
+                shutil.rmtree(target_data)
+            if archive_installed:
+                archive_path.unlink(missing_ok=True)
+            if backup_data.exists():
+                backup_data.replace(target_data)
+            if backup_archive.exists():
+                backup_archive.replace(archive_path)
+            raise
     return local_dir
 
 
@@ -177,10 +266,14 @@ def _safe_extract(archive: tarfile.TarFile, destination: Path) -> None:
     destination = destination.resolve()
     for member in archive.getmembers():
         member_path = (destination / member.name).resolve()
-        if not str(member_path).startswith(str(destination)):
+        if not member_path.is_relative_to(destination):
             raise RuntimeError(f"unsafe archive member path: {member.name}")
-    # 只有全部成员通过检查后才写入磁盘，避免留下部分解压产物。
-    archive.extractall(destination)
+    # 只有全部成员通过检查后才写入磁盘；新版本显式指定过滤策略以消除默认值迁移告警。
+    try:
+        archive.extractall(destination, filter="fully_trusted")
+    except TypeError:
+        # Python 3.11 尚不支持 ``filter``，前面的逐成员路径校验仍提供相同越界保护。
+        archive.extractall(destination)
 
 
 def _load_gsm8k(root: Path) -> Iterable[EvaluationSample]:

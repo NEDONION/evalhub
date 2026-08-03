@@ -117,10 +117,29 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/datasets/prepare":
             payload = self._read_json()
             dataset = str(payload.get("dataset", "gsm8k"))
+            force = payload.get("force", False)
+            if not isinstance(force, bool):
+                self._json({"ok": False, "error": "force must be a boolean"}, status=400)
+                return
             try:
                 # 下载和缓存由数据集层执行，响应只暴露状态、名称和最终本地路径。
-                path = prepare_dataset(dataset)
-                self._json({"ok": True, "dataset": dataset, "path": str(path)})
+                was_prepared = _dataset_is_prepared(dataset)
+                path = prepare_dataset(dataset, force=force)
+                samples = load_samples(
+                    dataset,
+                    limit=100000,
+                    subject="abstract_algebra" if dataset == "mmlu" else None,
+                )
+                operation = "updated" if force and was_prepared else "cached"
+                self._json(
+                    {
+                        "ok": True,
+                        "dataset": dataset,
+                        "path": str(path),
+                        "operation": operation,
+                        "sample_count": len(samples),
+                    }
+                )
             except Exception as exc:
                 # HTTP 边界把准备阶段的可诊断异常转换为 JSON，避免本地控制台连接中断。
                 self._json({"ok": False, "error": str(exc)}, status=500)
@@ -263,6 +282,13 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     finally:
         # 无论正常中断还是服务异常都关闭监听套接字，避免端口残留占用。
         server.server_close()
+
+
+def _dataset_is_prepared(dataset: str) -> bool:
+    """按目录规格判断数据集是否已有可更新的本地缓存。"""
+    spec = dataset_catalog()[dataset]
+    path = Path(spec.local_path)
+    return path.exists() and (path.is_file() or any(path.glob("*")))
 
 
 def _first(query: dict[str, list[str]], key: str, default: str) -> str:
