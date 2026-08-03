@@ -85,6 +85,9 @@ cd /Users/nedonion/PycharmProjects/evalhub
 
 `--adapter oracle` 只用于验证 EvalHub 管线是否正常，不代表真实模型评测。
 
+Ollama 安装和故障排查见：[docs/OLLAMA.md](docs/OLLAMA.md)。
+Codex 对话后的文档沉淀流程见：[docs/CODEX_WORKFLOW.md](docs/CODEX_WORKFLOW.md)。
+
 ## 本地前后端一键启动
 
 ```bash
@@ -114,6 +117,9 @@ evalhub/
 │   ├── ARCHITECTURE.md
 │   ├── API.md
 │   ├── DATA_MODEL.md
+│   ├── LOCAL_RUN.md
+│   ├── OLLAMA.md
+│   ├── CODEX_WORKFLOW.md
 │   └── ROADMAP.md
 ├── examples/
 │   ├── benchmarks/

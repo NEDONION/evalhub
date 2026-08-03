@@ -1,0 +1,60 @@
+# Codex 对话沉淀工作流
+
+## 目标
+
+每次和 Codex 完成一次有效开发对话后，应该把产出及时沉淀到项目文档或 spec 中，避免需求、决策、运行方式和后续任务只留在聊天记录里。
+
+## 本仓库沉淀位置
+
+建议按内容类型写入：
+
+| 内容 | 文件 |
+| --- | --- |
+| 产品定位、功能范围 | `docs/PRD.md` |
+| 架构、模块职责、扩展原则 | `docs/ARCHITECTURE.md` |
+| API 设计 | `docs/API.md` |
+| 数据模型 | `docs/DATA_MODEL.md` |
+| 本地运行、真实数据、模型服务 | `docs/LOCAL_RUN.md` |
+| Ollama 安装与故障排查 | `docs/OLLAMA.md` |
+| 阶段计划与 backlog | `docs/ROADMAP.md` |
+
+## 每轮对话结束 Checklist
+
+Codex 完成一次功能修改后，至少检查：
+
+- 是否新增或修改了运行方式。
+- 是否新增了外部依赖或本地服务。
+- 是否新增了 API、命令、配置项。
+- 是否改变了产品范围或 MVP 边界。
+- 是否产生了后续必须做的任务。
+
+如果有变化，需要同步更新对应文档。
+
+## 推荐沉淀格式
+
+每次沉淀建议包含：
+
+```markdown
+## YYYY-MM-DD 变更记录
+
+- 背景：
+- 变更：
+- 影响：
+- 验证：
+- 后续：
+```
+
+## Superpowers 插件使用建议
+
+已安装 `Superpowers` 插件后，可以把每轮对话的最终总结作为项目记忆或 spec 条目沉淀。建议记录：
+
+- 当前项目目标：企业级 LLM Evaluation Platform。
+- 当前工程路径：`/Users/nedonion/PycharmProjects/evalhub`。
+- 当前运行入口：`./scripts/start_local.sh`。
+- 当前真实数据集：`gsm8k`、`mmlu`。
+- 当前本地模型方式：Ollama adapter。
+- 下一阶段：FastAPI 服务化、PostgreSQL Registry、异步 Worker、LLM-as-a-Judge。
+
+## 暂不自动化的原因
+
+当前仓库还没有接入可执行的 Codex lifecycle hook。短期先使用“对话结束时更新 docs”的显式流程；后续如果插件暴露了可写入 spec 或项目记忆的工具，再把这个 checklist 自动化。

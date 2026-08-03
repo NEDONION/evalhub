@@ -38,6 +38,12 @@ ollama pull qwen2.5:0.5b
 
 如果你已经有更大的本地模型，可以把 `--model` 换成对应模型名。
 
+完整安装、PATH 配置、API 验证和故障排查见：
+
+```text
+docs/OLLAMA.md
+```
+
 ## CLI 试跑
 
 GSM8K：
