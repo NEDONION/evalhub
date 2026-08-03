@@ -70,6 +70,10 @@ body {
   border-top: 1px solid var(--border);
 }
 
+.dataset-grid {
+  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 1fr) 90px 100px 100px;
+}
+
 @media (min-width: 640px) {
   .readiness-rail > * + * {
     border-top: 0;

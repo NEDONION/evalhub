@@ -32,6 +32,19 @@ const datasetFixture = {
   sample_count: 1319,
 };
 
+const mmluFixture = {
+  name: "mmlu" as const,
+  display_name: "MMLU 测试集",
+  task_type: "multiple_choice",
+  evaluator_type: "choice_letter",
+  homepage: "https://github.com/hendrycks/test",
+  source_url: "https://example.com/mmlu.tar",
+  local_path: "data/raw/mmlu/data/test",
+  description: "多学科多选题数据集",
+  prepared: false,
+  sample_count: null,
+};
+
 const ollamaFixture = {
   installed: true,
   running: true,
@@ -54,7 +67,7 @@ const ollamaFixture = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
-  vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture] });
+  vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
   vi.mocked(getOllamaStatus).mockResolvedValue(ollamaFixture);
   vi.mocked(prepareDataset).mockResolvedValue({ ok: true, dataset: "gsm8k", path: datasetFixture.local_path });
   vi.mocked(runEvaluation).mockReset();
@@ -88,5 +101,54 @@ describe("EvalHub console", () => {
       expect(getDatasets).toHaveBeenCalledTimes(2);
       expect(getOllamaStatus).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("shows contextual fields for MMLU and custom sample runs", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const datasetSelect = await screen.findByLabelText("数据集");
+    expect(screen.queryByLabelText("MMLU 学科")).not.toBeInTheDocument();
+
+    await user.selectOptions(datasetSelect, "mmlu");
+    expect(screen.getByLabelText("MMLU 学科")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("radio", { name: "自定义" }));
+    expect(screen.getByLabelText("自定义样本数量")).toBeInTheDocument();
+  });
+
+  it("blocks an invalid custom sample count before calling the API", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByLabelText("数据集");
+    await user.click(screen.getByRole("radio", { name: "自定义" }));
+    const limit = screen.getByLabelText("自定义样本数量");
+    await user.clear(limit);
+    await user.type(limit, "0");
+    expect(limit).toHaveValue(0);
+    await user.click(screen.getByRole("button", { name: "发起评测" }));
+
+    expect(screen.getByText("样本数量必须是大于 0 的整数")).toBeInTheDocument();
+    expect(runEvaluation).not.toHaveBeenCalled();
+  });
+
+  it("shows real dataset sources and prepares an uncached dataset", async () => {
+    const user = userEvent.setup();
+    vi.mocked(prepareDataset).mockResolvedValue({
+      ok: true,
+      dataset: "mmlu",
+      path: mmluFixture.local_path,
+    });
+    render(<App />);
+
+    expect(await screen.findByText("已缓存")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看 GSM8K 测试集数据来源" })).toHaveAttribute(
+      "href",
+      datasetFixture.homepage,
+    );
+
+    await user.click(screen.getByRole("button", { name: "缓存 MMLU 测试集" }));
+    expect(prepareDataset).toHaveBeenCalledWith("mmlu");
   });
 });

@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 
 import { Header } from "./components/dashboard/Header";
+import { DatasetTable } from "./components/dashboard/DatasetTable";
+import { EvaluationForm } from "./components/dashboard/EvaluationForm";
 import { MetricStrip } from "./components/dashboard/MetricStrip";
 import { OllamaPanel } from "./components/dashboard/OllamaPanel";
 import { useEvalHub } from "./hooks/useEvalHub";
@@ -10,8 +12,8 @@ const DEFAULT_MODEL = "qwen2.5:0.5b";
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 
 export default function App() {
-  const [model] = useState(DEFAULT_MODEL);
-  const [baseUrl] = useState(DEFAULT_BASE_URL);
+  const [model, setModel] = useState(DEFAULT_MODEL);
+  const [baseUrl, setBaseUrl] = useState(DEFAULT_BASE_URL);
   const dashboard = useEvalHub(model, baseUrl);
 
   const ollamaState = useMemo(() => {
@@ -50,6 +52,24 @@ export default function App() {
             latestScore={dashboard.result ? formatScore(dashboard.result.average_score) : "—"}
           />
           <OllamaPanel status={dashboard.ollama} loading={dashboard.refreshing} error={dashboard.ollamaError} />
+          <EvaluationForm
+            datasets={dashboard.datasets}
+            modelOptions={dashboard.ollama?.model_options || []}
+            model={model}
+            baseUrl={baseUrl}
+            running={dashboard.runningEvaluation}
+            preparing={Boolean(dashboard.preparingDataset)}
+            onModelChange={setModel}
+            onBaseUrlCommit={setBaseUrl}
+            onPrepare={(dataset) => void dashboard.prepare(dataset)}
+            onSubmit={(request) => void dashboard.run(request)}
+          />
+          <DatasetTable
+            datasets={dashboard.datasets}
+            preparingDataset={dashboard.preparingDataset}
+            error={dashboard.datasetError}
+            onPrepare={(dataset) => void dashboard.prepare(dataset)}
+          />
         </div>
       </main>
     </div>
