@@ -113,6 +113,35 @@ PYTHONPATH=src .venv/bin/python -m evalhub.cli run-example
 - `gsm8k`：OpenAI Grade School Math，官方 GitHub `test.jsonl`。
 - `mmlu`：Hendrycks MMLU，官方 `data.tar`，默认先跑 `abstract_algebra` 科目。
 
+```mermaid
+flowchart TD
+    Start([发起评测]) --> Input[选择数据集、模型与样本范围]
+    Input --> Limit{样本范围}
+    Limit -->|全部 all| All[limit = None]
+    Limit -->|快速 quick| Quick[limit = 5]
+    Limit -->|自定义 custom| Custom[limit = 用户输入]
+    All --> Prepare
+    Quick --> Prepare
+    Custom --> Prepare
+    Prepare[准备数据集] --> Prepared{数据可用?}
+    Prepared -->|否| DataError[返回下载或读取错误]
+    Prepared -->|是| Load[加载并标准化 EvaluationSample]
+    Load --> Records[创建 Model / Dataset / Benchmark / Job 记录]
+    Records --> Running[Job 标记为 running]
+    Running --> Loop[逐样本执行]
+    Loop --> Infer[Model Adapter 调用 Ollama]
+    Infer --> Score[Evaluator 对照 reference 打分]
+    Score --> SampleResult[生成 EvaluationSampleResult]
+    SampleResult --> More{还有样本?}
+    More -->|是| Loop
+    More -->|否| Aggregate[聚合 EvaluationReport]
+    Aggregate --> Success[Job 标记为 success]
+    Success --> Output[CLI JSON 或 Web 结果面板]
+    Infer -->|服务或推理异常| Failed[Job 标记为 failed]
+    Score -->|评分异常| Failed
+    Failed --> Error[返回错误信息]
+```
+
 查看支持的数据集：
 
 ```bash
@@ -173,6 +202,37 @@ cd /Users/nedonion/PycharmProjects/evalhub
 ./scripts/start_local.sh
 ```
 
+```mermaid
+sequenceDiagram
+    actor Dev as 开发者
+    participant Script as start_local.sh
+    participant API as Ollama API
+    participant Process as Ollama Process
+    participant Server as EvalHub Server
+    participant Browser as 浏览器
+
+    Dev->>Script: ./scripts/start_local.sh
+    Script->>API: GET /api/tags
+    alt Ollama 已运行
+        API-->>Script: 模型列表
+    else 已安装但未运行
+        Script->>Process: ollama serve
+        Process-->>Script: 后台进程 PID
+        Script->>API: 再次检查 /api/tags
+    else 未安装
+        Script-->>Dev: 输出安装提示
+    end
+    Script->>Server: run_evalhub.py serve
+    Server-->>Dev: http://127.0.0.1:8000
+    Dev->>Browser: 打开本地控制台
+    Browser->>Server: GET /api/health
+    Browser->>Server: GET /api/datasets
+    Browser->>Server: GET /api/ollama/status
+    Server->>API: GET /api/tags
+    API-->>Server: 服务和模型状态
+    Server-->>Browser: 中文状态面板
+```
+
 打开：
 
 ```text
@@ -186,6 +246,8 @@ http://127.0.0.1:8000
 - Ollama 状态 API：`/api/ollama/status`
 
 如果检测到 Ollama 已安装但未运行，脚本会尝试自动启动 `ollama serve`，日志写入 `.runtime/ollama.log`。不需要 npm、React 构建或 FastAPI 依赖。
+
+Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪；数据集下载、Ollama 推理或 Evaluator 失败时 API 返回错误，Runner 将 Job 状态更新为 `failed`。
 
 ## 目录结构
 
