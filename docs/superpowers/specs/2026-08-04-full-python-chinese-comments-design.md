@@ -7,9 +7,9 @@
 现有 Python 代码，并在验证通过后推送到远端 `main`。
 
 当前工作区共有 36 个 Python 文件、约 1,674 行代码，覆盖领域模型、评测引擎、适配器、数据集、
-Registry、CLI、HTTP 服务、配置、入口脚本和测试。执行基线包含 `src/evalhub/ollama.py`、
-`src/evalhub/server.py`、`tests/test_ollama_status.py` 与新增的 `tests/test_server_frontend.py`；用户已
-授权将现有 Python 工作区修改与注释一起提交。
+Registry、CLI、HTTP 服务、配置、入口脚本和测试。执行基线已包含提交 `89d9616` 中的
+`src/evalhub/server.py` 与 `tests/test_server_frontend.py`；`src/evalhub/ollama.py` 和
+`tests/test_ollama_status.py` 仍有未提交修改，用户已授权将现有 Python 工作区修改与注释一起提交。
 
 ## 目标
 
@@ -84,8 +84,8 @@ Markdown 与配置文件不纳入本次注释改造；除本设计、实现计�
 
 ## 用户现有修改
 
-- 先只提交用户已授权纳入的 `src/evalhub/ollama.py`、`src/evalhub/server.py`、
-  `tests/test_ollama_status.py` 与 `tests/test_server_frontend.py` 当前内容，建立可追踪的实现基线。
+- 先只提交用户已授权且仍未提交的 `src/evalhub/ollama.py` 与 `tests/test_ollama_status.py` 当前内容，
+  与已落库的服务端和前端目录测试共同形成可追踪的实现基线。
 - 不暂存或提交其他现有的前端、脚本、文档或工作区修改。
 - 后续在隔离工作区基于该基线补充全量注释，避免和其他进行中的工作相互覆盖。
 
