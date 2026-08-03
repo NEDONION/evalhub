@@ -21,3 +21,4 @@ data/
 artifacts/
 reports/
 .runtime/
+.worktrees/
