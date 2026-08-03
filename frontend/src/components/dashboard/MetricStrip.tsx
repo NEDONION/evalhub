@@ -48,7 +48,7 @@ export function MetricStrip({ health, ollamaState, datasetCount, preparedCount, 
     ollamaState === "ready" ? "已就绪" : ollamaState === "warning" ? "需处理" : ollamaState === "offline" ? "不可用" : "检测中";
 
   return (
-    <section aria-label="评测就绪轨道" className="readiness-rail grid overflow-hidden rounded-lg border border-border bg-white sm:grid-cols-2 lg:grid-cols-4">
+    <section aria-label="评测就绪轨道" className="readiness-rail grid grid-cols-2 overflow-hidden rounded-lg border border-border bg-white lg:grid-cols-4">
       <RailItem
         icon={Activity}
         label="EvalHub 服务"

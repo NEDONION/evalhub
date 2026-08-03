@@ -61,7 +61,7 @@ export function DatasetTable({ datasets, preparingDataset, error, onPrepare }: D
           datasets.map((dataset) => {
             const preparing = preparingDataset === dataset.name;
             return (
-              <div key={dataset.name} role="row" className="dataset-grid gap-4 border-b border-border px-5 py-4 last:border-b-0 md:grid md:items-center sm:px-6">
+              <div key={dataset.name} role="row" className="dataset-grid space-y-3 border-b border-border px-5 py-4 last:border-b-0 md:grid md:items-center md:gap-4 md:space-y-0 sm:px-6">
                 <div role="cell" className="min-w-0">
                   <div className="flex items-center gap-2">
                     <strong className="truncate text-sm font-semibold text-ink">{dataset.display_name}</strong>
