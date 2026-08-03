@@ -20,6 +20,26 @@ export interface ModelOption {
   label: string;
   description: string;
   installed: boolean;
+  size_bytes: number | null;
+  size_kind: "actual" | "estimated" | "unknown";
+}
+
+export type PullStatus = "pending" | "pulling" | "verifying" | "success" | "failed" | "canceled";
+
+export interface OllamaPullTask {
+  model: string;
+  status: PullStatus;
+  message: string;
+  completed_bytes: number | null;
+  total_bytes: number | null;
+  speed_bytes_per_second: number | null;
+  eta_seconds: number | null;
+  error: string | null;
+}
+
+export interface OllamaPullResponse {
+  ok: true;
+  task: OllamaPullTask | null;
 }
 
 export interface OllamaStatus {
@@ -81,4 +101,6 @@ export interface PrepareDatasetResponse {
   ok: true;
   dataset: DatasetName;
   path: string;
+  operation: "cached" | "updated";
+  sample_count: number;
 }

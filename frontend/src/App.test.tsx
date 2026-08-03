@@ -59,6 +59,8 @@ const ollamaFixture = {
       label: "Qwen2.5 0.5B",
       description: "默认轻量模型",
       installed: true,
+      size_bytes: 397_000_000,
+      size_kind: "actual" as const,
     },
   ],
   message: "Ollama 已就绪。",
@@ -93,7 +95,13 @@ beforeEach(() => {
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
   vi.mocked(getOllamaStatus).mockResolvedValue(ollamaFixture);
-  vi.mocked(prepareDataset).mockResolvedValue({ ok: true, dataset: "gsm8k", path: datasetFixture.local_path });
+  vi.mocked(prepareDataset).mockResolvedValue({
+    ok: true,
+    dataset: "gsm8k",
+    path: datasetFixture.local_path,
+    operation: "cached",
+    sample_count: 1319,
+  });
   vi.mocked(runEvaluation).mockReset();
 });
 
@@ -163,6 +171,8 @@ describe("EvalHub console", () => {
       ok: true,
       dataset: "mmlu",
       path: mmluFixture.local_path,
+      operation: "cached",
+      sample_count: 100,
     });
     render(<App />);
 
