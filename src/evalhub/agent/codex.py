@@ -428,7 +428,7 @@ def _json_object(line: str) -> dict[str, object] | None:
 def _normalize_codex_event(event: dict[str, object]) -> AgentTraceEvent | None:
     """把 Codex 版本相关 JSON 对象转换为稳定且最小的外部动作事件。"""
     source_type = str(event.get("type", ""))
-    if source_type in {"thread.started", "turn.started"}:
+    if source_type == "thread.started":
         payload: dict[str, object] = {"source_type": source_type}
         thread_id = event.get("thread_id")
         if isinstance(thread_id, str):
@@ -438,6 +438,13 @@ def _normalize_codex_event(event: dict[str, object]) -> AgentTraceEvent | None:
             "actor": "codex",
             "message": "Codex 会话已启动",
             "payload": payload,
+        }
+    if source_type == "turn.started":
+        return {
+            "event_type": "agent_turn_started",
+            "actor": "codex",
+            "message": "Codex 开始处理任务",
+            "payload": {"source_type": source_type},
         }
 
     # item 事件必须同时包含对象载荷和受支持类型，未知未来字段不会泄漏进审计日志。

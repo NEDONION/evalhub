@@ -315,6 +315,7 @@ const agentEventLabels: Record<string, string> = {
   node_created: "节点已创建",
   node_started: "节点已启动",
   agent_session_started: "Agent 会话已建立",
+  agent_turn_started: "Agent 开始处理",
   sample_started: "开始样本",
   tool_started: "调用工具",
   tool_finished: "工具完成",

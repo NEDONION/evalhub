@@ -36,6 +36,17 @@ const initialDetail: EvaluationNodeDetail = {
   events: [
     {
       id: 1,
+      event_type: "agent_turn_started",
+      from_status: null,
+      to_status: null,
+      attempt: 1,
+      actor: "codex",
+      message: "Codex 开始处理任务",
+      payload: { source_type: "turn.started" },
+      created_at: "2026-08-04T02:00:01+00:00",
+    },
+    {
+      id: 2,
       event_type: "sample_started",
       from_status: null,
       to_status: null,
@@ -54,7 +65,7 @@ const refreshedDetail: EvaluationNodeDetail = {
   events: [
     ...initialDetail.events,
     {
-      id: 2,
+      id: 3,
       event_type: "tool_finished",
       from_status: null,
       to_status: null,
@@ -65,7 +76,7 @@ const refreshedDetail: EvaluationNodeDetail = {
       created_at: "2026-08-04T02:00:03+00:00",
     },
     {
-      id: 3,
+      id: 4,
       event_type: "verifier_finished",
       from_status: null,
       to_status: null,
@@ -99,6 +110,7 @@ describe("EvaluationNodeInspector", () => {
     );
 
     expect(await screen.findByText("Agent 实时过程")).toBeInTheDocument();
+    expect(screen.getByText("Agent 开始处理")).toBeInTheDocument();
     expect(screen.getByText("Fix pricing.total_with_tax")).toBeInTheDocument();
 
     rerender(

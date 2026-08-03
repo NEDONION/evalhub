@@ -117,6 +117,7 @@ def test_codex_runner_streams_whitelisted_events_and_counts_tools(tmp_path: Path
     """Runner 应逐行输出稳定事件，并忽略未知事件中的任意原始字段。"""
     stdout = (
         '{"type":"thread.started","thread_id":"thread-1"}\n'
+        '{"type":"turn.started"}\n'
         '{"type":"item.started","item":{"id":"item-1","type":"command_execution",'
         '"command":"python -m pytest"}}\n'
         '{"type":"item.completed","item":{"id":"item-1","type":"command_execution",'
@@ -143,13 +144,14 @@ def test_codex_runner_streams_whitelisted_events_and_counts_tools(tmp_path: Path
 
     assert [item["event_type"] for item in events] == [
         "agent_session_started",
+        "agent_turn_started",
         "tool_started",
         "tool_finished",
         "agent_message",
     ]
-    assert result.event_count == 5
+    assert result.event_count == 6
     assert result.tool_call_count == 1
-    assert events[2]["payload"]["output"] == "1 passed"
+    assert events[3]["payload"]["output"] == "1 passed"
     assert all("secret" not in str(item) for item in events)
 
 
