@@ -49,6 +49,7 @@
 ### Task 1: Vite React TypeScript Foundation
 
 **Files:**
+- Modify: `.gitignore`
 - Create: `frontend/package.json`
 - Create: `frontend/package-lock.json`
 - Create: `frontend/tsconfig.json`
@@ -71,6 +72,8 @@
 - Produces: Vite proxy `/api -> http://127.0.0.1:8000`
 
 - [ ] **Step 1: Create the package manifest and install the approved dependencies**
+
+Add `node_modules/` to `.gitignore` so frontend dependencies never enter version control.
 
 Create `frontend/package.json` with scripts:
 
@@ -153,7 +156,7 @@ Expected: utility test PASS, typecheck exits 0, and `frontend/dist/index.html` i
 - [ ] **Step 6: Commit the foundation**
 
 ```bash
-git add frontend/package.json frontend/package-lock.json frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json frontend/vite.config.ts frontend/index.html frontend/src frontend/app.js frontend/styles.css
+git add .gitignore frontend/package.json frontend/package-lock.json frontend/tsconfig.json frontend/tsconfig.app.json frontend/tsconfig.node.json frontend/vite.config.ts frontend/index.html frontend/src frontend/app.js frontend/styles.css
 git commit -m "build: scaffold React TypeScript frontend"
 ```
 
