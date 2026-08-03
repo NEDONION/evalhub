@@ -1,15 +1,16 @@
 import { chromium } from "playwright";
 
 const baseUrl = process.env.EVALHUB_QA_URL || "http://127.0.0.1:8001";
-const executablePath =
-  process.env.EVALHUB_CHROME_PATH ||
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const chromePath = process.env.EVALHUB_CHROME_PATH;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-const browser = await chromium.launch({ headless: true, executablePath });
+const browser = await chromium.launch({
+  headless: true,
+  ...(chromePath ? { executablePath: chromePath } : { channel: "chrome" }),
+});
 const context = await browser.newContext({
   viewport: { width: 1440, height: 1000 },
   deviceScaleFactor: 1,
@@ -41,6 +42,12 @@ try {
   assert(
     desktopLayout.scrollWidth <= desktopLayout.viewportWidth,
     `桌面端横向溢出：${desktopLayout.scrollWidth} > ${desktopLayout.viewportWidth}`,
+  );
+  assert(desktopLayout.bodyBackground === "rgb(247, 249, 252)", "页面没有使用约定的蓝白底色");
+  assert(
+    (await page.getByRole("button", { name: "发起评测" }).evaluate((element) => getComputedStyle(element).backgroundColor)) ===
+      "rgb(37, 99, 235)",
+    "主操作没有使用约定的蓝色",
   );
   await page.screenshot({ path: "/tmp/evalhub-desktop.png", fullPage: true });
 
