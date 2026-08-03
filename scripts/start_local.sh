@@ -8,6 +8,7 @@ HOST="${EVALHUB_HOST:-127.0.0.1}"
 PORT="${EVALHUB_PORT:-8000}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_PID=""
+OLLAMA_LOG=".runtime/ollama.log"
 
 find_ollama() {
   if command -v ollama >/dev/null 2>&1; then
@@ -41,14 +42,18 @@ if ollama_running; then
 else
   if OLLAMA_BIN="$(find_ollama)"; then
     mkdir -p .runtime
+    if ! : >"${OLLAMA_LOG}" 2>/dev/null; then
+      OLLAMA_LOG="/tmp/evalhub-ollama.log"
+      : >"${OLLAMA_LOG}"
+    fi
     echo "Starting Ollama at ${OLLAMA_BASE_URL}"
-    "${OLLAMA_BIN}" serve >.runtime/ollama.log 2>&1 &
+    "${OLLAMA_BIN}" serve >"${OLLAMA_LOG}" 2>&1 &
     OLLAMA_PID="$!"
     sleep 2
     if ollama_running; then
-      echo "Ollama started. Logs: .runtime/ollama.log"
+      echo "Ollama started. Logs: ${OLLAMA_LOG}"
     else
-      echo "Ollama did not become ready yet. Logs: .runtime/ollama.log"
+      echo "Ollama did not become ready yet. Logs: ${OLLAMA_LOG}"
     fi
   else
     echo "Ollama is not installed. See docs/OLLAMA.md"

@@ -37,6 +37,45 @@ const adapterLabels = {
   oracle: "Oracle 管线自检",
 };
 
+const fallbackModelOptions = [
+  {
+    name: "qwen2.5:0.5b",
+    label: "Qwen2.5 0.5B",
+    description: "默认轻量模型，适合快速验证中文和数学任务。",
+    installed: false,
+  },
+  {
+    name: "qwen2.5:1.5b",
+    label: "Qwen2.5 1.5B",
+    description: "轻量中文能力更好，适合本地评测入门。",
+    installed: false,
+  },
+  {
+    name: "llama3.2:1b",
+    label: "Llama 3.2 1B",
+    description: "轻量英文通用模型，适合低资源机器试跑。",
+    installed: false,
+  },
+  {
+    name: "llama3.2:3b",
+    label: "Llama 3.2 3B",
+    description: "通用能力更强，本地运行成本中等。",
+    installed: false,
+  },
+  {
+    name: "deepseek-r1:1.5b",
+    label: "DeepSeek R1 1.5B",
+    description: "轻量推理模型，适合观察推理题表现。",
+    installed: false,
+  },
+  {
+    name: "phi3:mini",
+    label: "Phi-3 Mini",
+    description: "小型通用模型，适合快速本地实验。",
+    installed: false,
+  },
+];
+
 function setOutput(value) {
   outputEl.textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
@@ -92,6 +131,7 @@ async function refreshOllama() {
 }
 
 function renderOllama(status) {
+  renderModelOptions(status.model_options || fallbackModelOptions, status.model);
   ollamaCommandEl.textContent = status.command || "未检测到";
   ollamaBaseUrlEl.textContent = status.base_url;
   ollamaModelEl.textContent = status.model;
@@ -126,6 +166,26 @@ function renderOllama(status) {
   ollamaStatusEl.textContent = "已就绪";
   ollamaStatusEl.className = "status ok";
   ollamaMessageEl.className = "notice ok";
+}
+
+function renderModelOptions(options, selectedModel) {
+  const previousValue = modelInputEl.value || selectedModel || "qwen2.5:0.5b";
+  modelInputEl.innerHTML = "";
+
+  for (const option of options) {
+    const optionEl = document.createElement("option");
+    optionEl.value = option.name;
+    optionEl.textContent = `${option.label || option.name} · ${option.installed ? "已安装" : "未下载"} · ${option.name}`;
+    optionEl.title = option.description || "";
+    modelInputEl.appendChild(optionEl);
+  }
+
+  const hasPrevious = options.some((option) => option.name === previousValue);
+  if (hasPrevious) {
+    modelInputEl.value = previousValue;
+  } else if (options.length > 0) {
+    modelInputEl.value = options[0].name;
+  }
 }
 
 function renderDatasets(datasets) {
