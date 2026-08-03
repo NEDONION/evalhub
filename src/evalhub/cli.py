@@ -1,3 +1,5 @@
+"""实现 EvalHub 命令行入口、示例评测、真实 Benchmark 和本地服务分派。"""
+
 import argparse
 import json
 
@@ -17,6 +19,12 @@ from evalhub.registry import InMemoryRegistry
 
 
 def run_example() -> int:
+    """运行无需外部模型和数据下载的确定性精确匹配示例。
+
+    Returns:
+        命令成功完成时返回进程状态码 0。
+    """
+    # 示例使用独立内存 Registry 和两条固定样本，确保首次运行可快速验证完整管线。
     registry = InMemoryRegistry()
     samples = [
         EvaluationSample(id="sample_1", input="What is 2 + 2?", reference="4"),
@@ -27,6 +35,7 @@ def run_example() -> int:
         ),
     ]
 
+    # 注册模型和数据集记录，使示例与真实执行共享同一套领域关联关系。
     model = registry.models.add(
         ModelRecord(name="static-demo", version="v1", type=ModelType.API)
     )
@@ -40,6 +49,7 @@ def run_example() -> int:
             sample_count=len(samples),
         )
     )
+    # Benchmark 绑定数据集与精确匹配指标，并使用确定性温度配置。
     benchmark = registry.benchmarks.add(
         BenchmarkRecord(
             name="gsm8k-mini",
@@ -50,14 +60,17 @@ def run_example() -> int:
     )
     job = registry.jobs.add(EvaluationJob(model_id=model.id, benchmark_id=benchmark.id))
 
+    # 静态适配器直接返回参考答案，用于验证执行器、评测器和报告聚合是否贯通。
     adapter = StaticMappingAdapter({sample.input: sample.reference for sample in samples})
     evaluator = default_evaluator_registry().create(benchmark.evaluator_type)
     runner = EvaluationRunner(adapter, evaluator)
 
+    # 执行后把样本结果和任务终态写回 Registry，模拟真实持久化调用顺序。
     results, report = runner.run(job=job, benchmark=benchmark, samples=samples)
     registry.results.add_many(results)
     registry.jobs.update(job)
 
+    # 以 JSON 输出关键报告字段，方便终端阅读和自动化脚本解析。
     print(
         json.dumps(
             {
@@ -78,6 +91,12 @@ def run_example() -> int:
 
 
 def list_datasets() -> int:
+    """以 JSON 列出当前目录注册的全部公开 Benchmark 数据集。
+
+    Returns:
+        列表成功输出时返回进程状态码 0。
+    """
+    # 输出只包含用户选择与准备数据所需字段，不泄漏内部实现对象。
     rows = []
     for spec in dataset_catalog().values():
         rows.append(
@@ -90,11 +109,21 @@ def list_datasets() -> int:
                 "local_path": spec.local_path,
             }
         )
+    # 保留中文展示名称，缩进输出便于人在终端直接阅读。
     print(json.dumps(rows, ensure_ascii=False, indent=2))
     return 0
 
 
 def prepare_dataset_command(dataset: str) -> int:
+    """准备指定数据集并输出最终本地路径。
+
+    Args:
+        dataset: 数据集目录中注册的稳定名称。
+
+    Returns:
+        数据准备成功时返回进程状态码 0。
+    """
+    # 下载与缓存逻辑由数据集层负责，命令层只转换结果为用户可读 JSON。
     path = prepare_dataset(dataset)
     print(json.dumps({"dataset": dataset, "path": str(path)}, ensure_ascii=False, indent=2))
     return 0
@@ -109,8 +138,27 @@ def run_real_benchmark(
     limit: int | None,
     subject: str,
 ) -> dict[str, object]:
+    """准备真实数据集并使用指定模型适配器执行同步评测。
+
+    Args:
+        dataset: 数据集目录中的稳定名称。
+        adapter_type: ``ollama`` 或仅用于管线校验的 ``oracle``。
+        model: 记录和模型适配器使用的模型标签。
+        base_url: Ollama 本地服务根地址。
+        limit: 最多执行的样本数；为 ``None`` 时执行完整数据集。
+        subject: MMLU 学科名称，其他数据集会忽略该值。
+
+    Returns:
+        包含任务状态、汇总指标和最多五条失败示例的 JSON 兼容字典。
+
+    Raises:
+        RuntimeError: 数据集没有加载到任何有效样本。
+        ValueError: 模型适配器类型不受支持。
+    """
+    # 规格提供评测器类型和本地路径；准备步骤保证随后加载时缓存已经存在。
     spec = get_dataset_spec(dataset)
     prepare_dataset(dataset)
+    # 只有 MMLU 使用学科筛选，其他数据集显式传入 ``None`` 避免无效参数生效。
     samples = load_samples(
         dataset,
         limit=limit,
@@ -119,8 +167,10 @@ def run_real_benchmark(
     if not samples:
         raise RuntimeError(f"no samples loaded for dataset: {dataset}")
 
+    # 每次命令创建独立 Registry，避免本地重复试跑共享上一轮的临时状态。
     registry = InMemoryRegistry()
     model_record = registry.models.add(ModelRecord(name=model, version="local", type=ModelType.API))
+    # 注册数据集快照记录，为任务报告保留样本规模、来源路径与公开归属。
     dataset_record = registry.datasets.add(
         DatasetRecord(
             name=spec.name,
@@ -131,6 +181,7 @@ def run_real_benchmark(
             sample_count=len(samples),
         )
     )
+    # Benchmark 从目录选择匹配的评测器，并配置本地模型的确定性生成选项。
     benchmark = registry.benchmarks.add(
         BenchmarkRecord(
             name=spec.display_name,
@@ -141,6 +192,7 @@ def run_real_benchmark(
     )
     job = registry.jobs.add(EvaluationJob(model_id=model_record.id, benchmark_id=benchmark.id))
 
+    # Ollama 执行真实推理，oracle 直接回放参考答案，只用于验证 EvalHub 自身管线。
     if adapter_type == "ollama":
         adapter = OllamaAdapter(model=model, base_url=base_url)
     elif adapter_type == "oracle":
@@ -148,10 +200,12 @@ def run_real_benchmark(
     else:
         raise ValueError("adapter must be one of: ollama, oracle")
 
+    # 评测器由 Benchmark 类型动态创建，Runner 只负责统一编排与状态转换。
     evaluator = default_evaluator_registry().create(benchmark.evaluator_type)
     runner = EvaluationRunner(adapter, evaluator)
     results, report = runner.run(job=job, benchmark=benchmark, samples=samples)
 
+    # 报告只携带前五条失败示例并截断长文本，控制 CLI 与 HTTP 响应体积。
     failed_examples = [
         {
             "sample_id": result.sample_id,
@@ -165,6 +219,7 @@ def run_real_benchmark(
         if result.score < 1.0
     ][:5]
 
+    # 返回值保持 JSON 兼容，供 CLI 输出和本地 HTTP 服务复用同一业务入口。
     return {
         "job_id": report.job_id,
         "status": job.status,
@@ -182,6 +237,12 @@ def run_real_benchmark(
 
 
 def run_benchmark_command(args: argparse.Namespace) -> int:
+    """把 argparse 参数转换为真实 Benchmark 调用并输出 JSON。
+
+    Returns:
+        评测成功并完成输出时返回进程状态码 0。
+    """
+    # 显式映射参数字段，避免 Namespace 中新增选项被无意传入业务函数。
     result = run_real_benchmark(
         dataset=args.dataset,
         adapter_type=args.adapter,
@@ -195,6 +256,16 @@ def run_benchmark_command(args: argparse.Namespace) -> int:
 
 
 def serve_command(host: str, port: int) -> int:
+    """延迟导入并启动本地前后端一体化 HTTP 服务。
+
+    Args:
+        host: HTTP 服务器监听地址。
+        port: HTTP 服务器监听端口。
+
+    Returns:
+        服务正常停止后返回进程状态码 0。
+    """
+    # 延迟导入避免纯 CLI 命令承担 HTTP 服务模块的加载成本和副作用。
     from evalhub.server import serve
 
     serve(host=host, port=port)
@@ -202,18 +273,27 @@ def serve_command(host: str, port: int) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """构建包含示例、数据集、评测和服务命令的参数解析器。
+
+    Returns:
+        已注册全部子命令、选项、默认值和约束的解析器。
+    """
+    # 必选子命令防止空调用静默成功，并让 argparse 自动生成统一帮助信息。
     parser = argparse.ArgumentParser(prog="evalhub")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("run-example", help="Run a deterministic exact-match evaluation.")
 
+    # 列表命令没有额外参数，直接展示目录中当前支持的数据集。
     subparsers.add_parser("list-datasets", help="List supported real benchmark datasets.")
 
+    # 准备命令使用目录键作为 choices，在解析阶段阻止未知数据集进入下载逻辑。
     prepare_parser = subparsers.add_parser(
         "prepare-dataset",
         help="Download and cache a real public benchmark dataset locally.",
     )
     prepare_parser.add_argument("dataset", choices=sorted(dataset_catalog()))
 
+    # 评测命令集中声明数据、适配器、模型连接和采样范围，默认值支持最小本地试跑。
     run_parser = subparsers.add_parser(
         "run-benchmark",
         help="Run a local evaluation on a real public benchmark dataset.",
@@ -225,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--limit", type=int, default=None)
     run_parser.add_argument("--subject", default="abstract_algebra")
 
+    # 服务命令默认只监听本机回环地址，避免开发控制台意外暴露到外部网络。
     serve_parser = subparsers.add_parser(
         "serve",
         help="Start the local frontend and backend in one process.",
@@ -235,6 +316,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """解析命令行并把请求分派给对应命令处理函数。
+
+    Returns:
+        被选中命令返回的进程状态码。
+
+    Raises:
+        ValueError: 解析结果包含未实现的命令名称。
+    """
+    # 所有命令共享同一解析入口，子命令处理函数只接收完成验证的参数。
     args = build_parser().parse_args()
     if args.command == "run-example":
         return run_example()
@@ -242,6 +332,7 @@ def main() -> int:
         return list_datasets()
     if args.command == "prepare-dataset":
         return prepare_dataset_command(args.dataset)
+    # 带复杂参数的评测和服务命令分别传递完整 Namespace 或明确监听配置。
     if args.command == "run-benchmark":
         return run_benchmark_command(args)
     if args.command == "serve":
@@ -250,4 +341,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # 把命令返回码交给解释器，使 shell 和自动化任务能准确识别执行状态。
     raise SystemExit(main())
