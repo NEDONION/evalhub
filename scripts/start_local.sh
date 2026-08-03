@@ -9,6 +9,19 @@ PORT="${EVALHUB_PORT:-8000}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_PID=""
 
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm is required to build the React frontend. Install Node.js 20+ first."
+  exit 1
+fi
+
+if [ ! -d "frontend/node_modules" ]; then
+  echo "Frontend dependencies are not installed. Run: npm --prefix frontend install"
+  exit 1
+fi
+
+echo "Building React frontend..."
+npm --prefix frontend run build
+
 find_ollama() {
   if command -v ollama >/dev/null 2>&1; then
     command -v ollama

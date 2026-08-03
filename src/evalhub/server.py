@@ -8,12 +8,22 @@ from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
 from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
 
 
+def frontend_directory(project_root: Path) -> Path:
+    directory = project_root / "frontend" / "dist"
+    if not (directory / "index.html").is_file():
+        raise FileNotFoundError(
+            "React frontend build not found. Run: npm --prefix frontend run build"
+        )
+    return directory
+
+
 class EvalHubRequestHandler(SimpleHTTPRequestHandler):
     server_version = "EvalHubLocal/0.1"
 
     def __init__(self, *args, directory: str | None = None, **kwargs) -> None:
         root = Path(__file__).resolve().parents[2]
-        super().__init__(*args, directory=directory or str(root / "frontend"), **kwargs)
+        static_directory = Path(directory) if directory else frontend_directory(root)
+        super().__init__(*args, directory=str(static_directory), **kwargs)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
