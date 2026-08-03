@@ -1,6 +1,7 @@
-import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
+import { Play, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
+import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type { AdapterType, Dataset, DatasetName, EvaluationRequest, ModelOption, SampleMode } from "../../types";
 import { Button } from "../ui/Button";
@@ -16,7 +17,7 @@ interface EvaluationFormProps {
   preparing: boolean;
   onModelChange: (model: string) => void;
   onBaseUrlCommit: (baseUrl: string) => void;
-  onPrepare: (dataset: DatasetName) => void;
+  onManageAssets: () => void;
   onSubmit: (request: EvaluationRequest) => void;
 }
 
@@ -38,7 +39,7 @@ export function EvaluationForm({
   preparing,
   onModelChange,
   onBaseUrlCommit,
-  onPrepare,
+  onManageAssets,
   onSubmit,
 }: EvaluationFormProps) {
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
@@ -64,7 +65,9 @@ export function EvaluationForm({
   const availableModels =
     modelOptions.length > 0
       ? modelOptions
-      : [{ name: model, label: model, description: "当前模型", installed: false }];
+      : [{ name: model, label: model, description: "当前模型", installed: false, size_bytes: null, size_kind: "unknown" as const }];
+  const selectedModelOption = availableModels.find((option) => option.name === model);
+  const missingOllamaModel = adapter === "ollama" && !selectedModelOption?.installed;
 
   const values: EvaluationFormValues = {
     dataset,
@@ -79,6 +82,7 @@ export function EvaluationForm({
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const nextErrors = validateEvaluation(values);
+    if (missingOllamaModel) nextErrors.model = "先下载模型或选择已安装模型";
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     onBaseUrlCommit(baseUrlDraft);
@@ -152,10 +156,18 @@ export function EvaluationForm({
               <select id="model" className={controlClass} value={model} onChange={(event) => onModelChange(event.target.value)}>
                 {availableModels.map((option) => (
                   <option key={option.name} value={option.name}>
-                    {option.label} · {option.installed ? "已安装" : "未下载"}
+                    {option.label} · {formatBytes(option.size_bytes)} · {option.installed ? "已安装" : "未下载"}
                   </option>
                 ))}
               </select>
+              {missingOllamaModel ? (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
+                  <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
+                    前往资产管理
+                  </Button>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -228,12 +240,8 @@ export function EvaluationForm({
                   ? "固定运行 5 条样本，适合验证链路是否正常。"
                   : `将运行前 ${limit || "—"} 条样本。`}
             </div>
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button variant="secondary" onClick={() => onPrepare(dataset)} disabled={preparing || running}>
-                <DatabaseZap className="h-4 w-4" aria-hidden="true" />
-                {preparing ? "正在缓存" : "缓存当前数据集"}
-              </Button>
-              <Button type="submit" disabled={running || preparing}>
+            <div className="flex justify-end">
+              <Button type="submit" disabled={running || preparing || missingOllamaModel}>
                 <Play className="h-4 w-4" aria-hidden="true" />
                 {running ? "正在评测" : "发起评测"}
               </Button>

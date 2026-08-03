@@ -1,4 +1,4 @@
-import { Download, ExternalLink, FolderCheck } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, FolderCheck, RefreshCw } from "lucide-react";
 
 import type { Dataset, DatasetName } from "../../types";
 import { Badge } from "../ui/Badge";
@@ -9,7 +9,8 @@ interface DatasetTableProps {
   datasets: Dataset[];
   preparingDataset: DatasetName | null;
   error: string | null;
-  onPrepare: (dataset: DatasetName) => void;
+  notice: string | null;
+  onPrepare: (dataset: DatasetName, force: boolean) => void;
 }
 
 const taskLabels: Record<string, string> = {
@@ -23,7 +24,7 @@ const metricLabels: Record<string, string> = {
   exact_match: "精确匹配",
 };
 
-export function DatasetTable({ datasets, preparingDataset, error, onPrepare }: DatasetTableProps) {
+export function DatasetTable({ datasets, preparingDataset, error, notice, onPrepare }: DatasetTableProps) {
   return (
     <Panel aria-labelledby="datasets-title" className="overflow-hidden">
       <div className="flex flex-col gap-3 border-b border-border px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
@@ -43,6 +44,13 @@ export function DatasetTable({ datasets, preparingDataset, error, onPrepare }: D
       {error ? (
         <div role="alert" className="border-b border-red-100 bg-red-50 px-5 py-3 text-sm text-red-700 sm:px-6">
           {error}
+        </div>
+      ) : null}
+
+      {notice ? (
+        <div role="status" className="flex items-center gap-2 border-b border-emerald-100 bg-emerald-50 px-5 py-3 text-sm text-emerald-700 sm:px-6">
+          <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+          {notice}
         </div>
       ) : null}
 
@@ -95,12 +103,16 @@ export function DatasetTable({ datasets, preparingDataset, error, onPrepare }: D
                   <Button
                     variant="secondary"
                     size="sm"
-                    onClick={() => onPrepare(dataset.name)}
+                    onClick={() => onPrepare(dataset.name, dataset.prepared)}
                     disabled={Boolean(preparingDataset)}
-                    aria-label={`${dataset.prepared ? "重新缓存" : "缓存"} ${dataset.display_name}`}
+                    aria-label={`${dataset.prepared ? "更新" : "缓存"} ${dataset.display_name}`}
                   >
-                    <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                    {preparing ? "缓存中" : dataset.prepared ? "更新" : "缓存"}
+                    {dataset.prepared ? (
+                      <RefreshCw className={preparing ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} aria-hidden="true" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                    )}
+                    {preparing ? (dataset.prepared ? "更新中" : "缓存中") : dataset.prepared ? "更新" : "缓存"}
                   </Button>
                 </div>
               </div>

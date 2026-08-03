@@ -4,6 +4,7 @@ import type {
   EvaluationRequest,
   EvaluationResult,
   HealthResponse,
+  OllamaPullResponse,
   OllamaStatus,
   PrepareDatasetResponse,
 } from "../types";
@@ -58,10 +59,29 @@ export function getOllamaStatus(model: string, baseUrl: string): Promise<OllamaS
   return fetchJson<OllamaStatus>(`/api/ollama/status?${query.toString()}`);
 }
 
-export function prepareDataset(dataset: DatasetName): Promise<PrepareDatasetResponse> {
+export function startModelPull(model: string, baseUrl: string): Promise<OllamaPullResponse> {
+  return fetchJson<OllamaPullResponse>("/api/ollama/pulls", {
+    method: "POST",
+    body: JSON.stringify({ model, base_url: baseUrl }),
+  });
+}
+
+export function getModelPull(model: string): Promise<OllamaPullResponse> {
+  const query = new URLSearchParams({ model });
+  return fetchJson<OllamaPullResponse>(`/api/ollama/pulls?${query.toString()}`);
+}
+
+export function cancelModelPull(model: string): Promise<OllamaPullResponse> {
+  const query = new URLSearchParams({ model });
+  return fetchJson<OllamaPullResponse>(`/api/ollama/pulls?${query.toString()}`, {
+    method: "DELETE",
+  });
+}
+
+export function prepareDataset(dataset: DatasetName, force = false): Promise<PrepareDatasetResponse> {
   return fetchJson<PrepareDatasetResponse>("/api/datasets/prepare", {
     method: "POST",
-    body: JSON.stringify({ dataset }),
+    body: JSON.stringify({ dataset, force }),
   });
 }
 

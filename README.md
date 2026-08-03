@@ -2,7 +2,7 @@
 
 EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。它的目标不是做简单 CRUD 后台，而是把 Model Registry、Dataset Registry、Benchmark Registry、Evaluator Plugin、Evaluation Engine、Result Store、Report、Leaderboard 和 Release Gate 串成一条可追踪、可复现、可扩展的评测链路。
 
-当前仓库先落地 Python 后端核心骨架和一个本地 Web 控制台，保证真实公开 Benchmark 可以下载到本地、用本地模型服务试跑，并产出样本级结果和聚合分数。后续再接入 FastAPI、PostgreSQL、Celery、RabbitMQ、MinIO 和 React Console。
+当前仓库先落地 Python 后端核心骨架和一个 React 本地 Web 控制台，保证真实公开 Benchmark 可以下载到本地、用本地模型服务试跑，并产出样本级结果和聚合分数。后续再接入 FastAPI、PostgreSQL、Celery、RabbitMQ 和 MinIO。
 
 ## 当前能力
 
@@ -12,8 +12,9 @@ EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。
 - Evaluation Runner：按样本执行推理、打分、聚合报告。
 - 内存 Registry：用于 MVP、单元测试和后续数据库 Repository 的接口参考。
 - 真实数据集：支持下载并本地缓存 `GSM8K test` 和 `MMLU test`。
-- 本地模型：支持调用 Ollama 本地模型服务。
-- 本地控制台：一个 Python 进程同时提供前端页面和后端 API。
+- 本地模型：支持调用 Ollama 本地模型服务，并在页面内选择、下载、观察进度或取消推荐模型。
+- 本地控制台：用侧边栏区分概览、发起评测、资产管理和评测结果；一个 Python 进程同时提供构建后的前端页面和后端 API。
+- 数据集资产：已缓存 Benchmark 可从页面强制更新，下载完成后反馈实际样本数。
 
 ## 30 秒理解 EvalHub
 
@@ -86,7 +87,7 @@ flowchart TB
     Ollama -->|"模型输出"| Adapter
 ```
 
-当前 MVP 是单机、同步、零前端构建依赖的实现。Web 与 CLI 复用同一条 Python 评测核心链路。
+当前 MVP 是单机实现。Web 与 CLI 复用同一条 Python 评测核心链路；运行已构建页面只需要 Python，修改 React 前端时需要 Node.js 20+。
 
 `data/` 和 Ollama 都在本机；本图只展示当前实现，不把规划中的组件混入其中。
 
@@ -258,11 +259,19 @@ http://127.0.0.1:8000
 
 这个命令会启动一个本地 Python 服务，同时提供：
 
-- 前端页面：`frontend/index.html`
+- 前端页面：`frontend/dist/index.html`
 - 后端 API：`/api/health`、`/api/datasets`、`/api/datasets/prepare`、`/api/evaluations/run`
 - Ollama 状态 API：`/api/ollama/status`
+- Ollama 下载 API：`/api/ollama/pulls`
 
-如果检测到 Ollama 已安装但未运行，脚本会尝试自动启动 `ollama serve`，日志写入 `.runtime/ollama.log`。不需要 npm、React 构建或 FastAPI 依赖。
+如果检测到 Ollama 已安装但未运行，脚本会尝试自动启动 `ollama serve`，日志写入 `.runtime/ollama.log`。启动脚本会先构建 React 前端，因此首次使用需要在 `frontend/` 安装 npm 依赖。
+
+控制台按任务分为四个目录：
+
+- **概览**：服务、Ollama、数据集和最近得分的就绪状态。
+- **发起评测**：Benchmark、模型适配器和样本范围配置。未下载模型不能发起 Ollama 评测。
+- **资产管理**：查看模型大小和预计下载耗时，选择下载或暂不下载；下载中展示字节进度、速度、剩余时间和取消操作。这里也可以缓存或强制更新数据集。
+- **评测结果**：集中查看运行状态、聚合指标和失败样本。
 
 Ollama 未安装时 EvalHub Server 仍会启动，UI 会显示未就绪。数据集准备或加载失败时 API 返回错误，此时尚未创建 Job；进入 `runner.run()` 后的 Ollama 推理或 Evaluator 异常则会将 Job 状态更新为 `failed`。
 

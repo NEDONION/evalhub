@@ -61,6 +61,42 @@ class OllamaStatusTest(unittest.TestCase):
         self.assertEqual(option_by_name["llama3.2:1b"]["installed"], False)
         self.assertIn("轻量", option_by_name["llama3.2:1b"]["description"])
 
+    def test_installed_model_size_overrides_catalog_estimate(self) -> None:
+        """已安装模型必须展示 Ollama 返回的真实磁盘大小。"""
+        from evalhub.ollama import get_ollama_status
+
+        response = _Response(
+            b'{"models":[{"name":"qwen2.5:1.5b","size":987654321}]}'
+        )
+        with (
+            patch("evalhub.ollama.find_ollama_command", return_value="/usr/local/bin/ollama"),
+            patch("evalhub.ollama.urlopen", return_value=response),
+        ):
+            status = get_ollama_status(model="qwen2.5:1.5b")
+
+        option = next(
+            item for item in status["model_options"] if item["name"] == "qwen2.5:1.5b"
+        )
+        self.assertEqual(option["size_bytes"], 987654321)
+        self.assertEqual(option["size_kind"], "actual")
+
+    def test_uninstalled_recommended_model_exposes_estimated_size(self) -> None:
+        """未下载的推荐模型必须提供明确标注的预估大小。"""
+        from evalhub.ollama import get_ollama_status
+
+        response = _Response(b'{"models":[]}')
+        with (
+            patch("evalhub.ollama.find_ollama_command", return_value="/usr/local/bin/ollama"),
+            patch("evalhub.ollama.urlopen", return_value=response),
+        ):
+            status = get_ollama_status(model="qwen2.5:1.5b")
+
+        option = next(
+            item for item in status["model_options"] if item["name"] == "qwen2.5:1.5b"
+        )
+        self.assertEqual(option["size_bytes"], 986_000_000)
+        self.assertEqual(option["size_kind"], "estimated")
+
     def test_status_reports_not_running_when_api_unreachable(self) -> None:
         """命令存在但标签接口不可达时应报告已安装且服务未运行。"""
         from evalhub.ollama import get_ollama_status

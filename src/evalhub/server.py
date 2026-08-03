@@ -8,6 +8,9 @@ from urllib.parse import parse_qs, urlparse
 from evalhub.cli import run_real_benchmark
 from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
 from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
+from evalhub.ollama_pull import OllamaPullManager
+
+OLLAMA_PULL_MANAGER = OllamaPullManager()
 
 
 def frontend_directory(project_root: Path) -> Path:
@@ -74,6 +77,14 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             base_url = _first(query, "base_url", DEFAULT_OLLAMA_BASE_URL)
             self._json(get_ollama_status(model=model, base_url=base_url))
             return
+        if parsed.path == "/api/ollama/pulls":
+            query = parse_qs(parsed.query)
+            model = _first(query, "model", "").strip()
+            if not model:
+                self._json({"ok": False, "error": "model is required"}, status=400)
+                return
+            self._json({"ok": True, "task": OLLAMA_PULL_MANAGER.get(model)})
+            return
         # 根路径映射到 Vite 构建入口，其他路径继续使用标准静态文件处理逻辑。
         if parsed.path == "/":
             self.path = "/index.html"
@@ -83,13 +94,52 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         """处理数据集准备和同步评测两个本地写操作 API。"""
         # 路径先于正文解析，未知端点无需读取可能很大的请求负载。
         parsed = urlparse(self.path)
+        if parsed.path == "/api/ollama/pulls":
+            payload = self._read_json()
+            model = payload.get("model")
+            base_url = payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)
+            if not isinstance(model, str) or not model.strip():
+                self._json({"ok": False, "error": "model is required"}, status=400)
+                return
+            if not isinstance(base_url, str) or not base_url.strip():
+                self._json({"ok": False, "error": "base_url must be a string"}, status=400)
+                return
+            try:
+                task = OLLAMA_PULL_MANAGER.start(model.strip(), base_url.strip())
+            except ValueError as exc:
+                self._json({"ok": False, "error": str(exc)}, status=400)
+            except Exception as exc:
+                self._json({"ok": False, "error": str(exc)}, status=500)
+            else:
+                self._json({"ok": True, "task": task}, status=202)
+            return
+
         if parsed.path == "/api/datasets/prepare":
             payload = self._read_json()
             dataset = str(payload.get("dataset", "gsm8k"))
+            force = payload.get("force", False)
+            if not isinstance(force, bool):
+                self._json({"ok": False, "error": "force must be a boolean"}, status=400)
+                return
             try:
                 # 下载和缓存由数据集层执行，响应只暴露状态、名称和最终本地路径。
-                path = prepare_dataset(dataset)
-                self._json({"ok": True, "dataset": dataset, "path": str(path)})
+                was_prepared = _dataset_is_prepared(dataset)
+                path = prepare_dataset(dataset, force=force)
+                samples = load_samples(
+                    dataset,
+                    limit=100000,
+                    subject="abstract_algebra" if dataset == "mmlu" else None,
+                )
+                operation = "updated" if force and was_prepared else "cached"
+                self._json(
+                    {
+                        "ok": True,
+                        "dataset": dataset,
+                        "path": str(path),
+                        "operation": operation,
+                        "sample_count": len(samples),
+                    }
+                )
             except Exception as exc:
                 # HTTP 边界把准备阶段的可诊断异常转换为 JSON，避免本地控制台连接中断。
                 self._json({"ok": False, "error": str(exc)}, status=500)
@@ -117,6 +167,23 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
 
         # 所有未注册 POST 路径返回结构化 404，避免落入静态文件处理器。
         self._json({"ok": False, "error": "not found"}, status=404)
+
+    def do_DELETE(self) -> None:
+        """取消仍在进行的本地模型下载任务。"""
+        parsed = urlparse(self.path)
+        if parsed.path != "/api/ollama/pulls":
+            self._json({"ok": False, "error": "not found"}, status=404)
+            return
+        query = parse_qs(parsed.query)
+        model = _first(query, "model", "").strip()
+        if not model:
+            self._json({"ok": False, "error": "model is required"}, status=400)
+            return
+        task = OLLAMA_PULL_MANAGER.cancel(model)
+        if task is None:
+            self._json({"ok": False, "error": "pull task not found"}, status=404)
+            return
+        self._json({"ok": True, "task": task})
 
     def _dataset_status(self) -> dict[str, object]:
         """汇总数据集元数据、本地准备状态和可读取样本数。"""
@@ -215,6 +282,13 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     finally:
         # 无论正常中断还是服务异常都关闭监听套接字，避免端口残留占用。
         server.server_close()
+
+
+def _dataset_is_prepared(dataset: str) -> bool:
+    """按目录规格判断数据集是否已有可更新的本地缓存。"""
+    spec = dataset_catalog()[dataset]
+    path = Path(spec.local_path)
+    return path.exists() and (path.is_file() or any(path.glob("*")))
 
 
 def _first(query: dict[str, list[str]], key: str, default: str) -> str:

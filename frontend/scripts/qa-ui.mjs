@@ -25,10 +25,13 @@ page.on("console", (message) => {
 try {
   const response = await page.goto(baseUrl, { waitUntil: "networkidle" });
   assert(response?.ok(), `页面加载失败：${response?.status() ?? "无响应"}`);
-  await page.getByRole("heading", { name: "模型评测工作台" }).waitFor();
-  await page.getByRole("heading", { name: "数据集资产" }).waitFor();
+  await page.getByRole("heading", { level: 1, name: "工作台概览" }).waitFor();
 
-  assert((await page.locator("aside").count()) === 0, "页面仍包含侧边栏");
+  assert((await page.locator("aside").count()) === 1, "页面缺少工作区侧边栏");
+  assert(
+    (await page.getByRole("button", { name: "打开概览页面" }).getAttribute("aria-current")) === "page",
+    "概览目录没有活动状态",
+  );
   assert(
     (await page.locator('a:not([href]), a[href=""], a[href="#"]').count()) === 0,
     "页面包含无有效入口的链接",
@@ -44,13 +47,12 @@ try {
     `桌面端横向溢出：${desktopLayout.scrollWidth} > ${desktopLayout.viewportWidth}`,
   );
   assert(desktopLayout.bodyBackground === "rgb(247, 249, 252)", "页面没有使用约定的蓝白底色");
-  assert(
-    (await page.getByRole("button", { name: "发起评测" }).evaluate((element) => getComputedStyle(element).backgroundColor)) ===
-      "rgb(37, 99, 235)",
-    "主操作没有使用约定的蓝色",
-  );
   await page.screenshot({ path: "/tmp/evalhub-desktop.png", fullPage: true });
 
+  await page.getByRole("button", { name: "打开资产管理页面" }).click();
+  await page.getByRole("heading", { name: "数据集资产" }).waitFor();
+  await page.getByRole("button", { name: "打开发起评测页面" }).click();
+  await page.getByRole("heading", { level: 1, name: "发起评测" }).waitFor();
   await page.getByLabel("数据集", { exact: true }).selectOption("mmlu");
   await page.getByLabel("MMLU 学科").waitFor();
   await page.getByLabel("数据集", { exact: true }).selectOption("gsm8k");
@@ -58,12 +60,12 @@ try {
 
   await page.getByText("自定义", { exact: true }).click();
   await page.getByLabel("自定义样本数量").fill("0");
-  await page.getByRole("button", { name: "发起评测" }).click();
+  await page.getByRole("button", { name: "发起评测", exact: true }).click();
   await page.getByText("样本数量必须是大于 0 的整数", { exact: true }).waitFor();
 
   await page.getByLabel("模型适配器").selectOption("oracle");
   await page.getByText("快速试跑", { exact: true }).click();
-  await page.getByRole("button", { name: "发起评测" }).click();
+  await page.getByRole("button", { name: "发起评测", exact: true }).click();
   const resultPanel = page.getByRole("region", { name: "评测结果" });
   await resultPanel.getByTitle("已完成").waitFor({ timeout: 30_000 });
   await resultPanel.getByText("5 / 5", { exact: true }).waitFor();
@@ -76,7 +78,7 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload({ waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "模型评测工作台" }).waitFor();
+  await page.getByRole("heading", { level: 1, name: "工作台概览" }).waitFor();
   const mobileLayout = await page.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
     scrollWidth: document.documentElement.scrollWidth,
@@ -95,7 +97,7 @@ try {
         baseUrl,
         checks: [
           "蓝白工作台加载",
-          "无侧边栏与死链接",
+          "侧边栏目录与活动状态",
           "MMLU 条件字段",
           "自定义样本校验",
           "Oracle 快速评测 5/5",
