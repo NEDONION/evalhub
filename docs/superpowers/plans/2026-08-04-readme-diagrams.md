@@ -96,8 +96,8 @@ flowchart TB
     Loader -->|返回 samples| Workflow
     Workflow -->|创建 Model / Dataset / Benchmark / Job| Registry
     Workflow -->|create evaluator| Eval
-    Eval -->|Evaluator 实例注入| Runner
-    Workflow -->|注入 adapter、job、benchmark、samples| Runner
+    Eval -->|返回 Evaluator| Workflow
+    Workflow -->|注入 adapter、evaluator、job、benchmark、samples| Runner
     Runner --> Adapter
     Adapter -->|POST /api/generate| Ollama
     Ollama -->|模型输出| Adapter
