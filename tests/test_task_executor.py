@@ -1,7 +1,7 @@
 """验证隔离评测执行器的子进程消息与异常退出处理。"""
 
 from dataclasses import asdict, replace
-from queue import Empty
+from queue import Empty, Queue
 from threading import Event, Thread
 from typing import cast
 
@@ -81,8 +81,17 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
     observed: dict[str, object] = {}
 
     def fake_agent_benchmark(**kwargs: object) -> dict[str, object]:
-        """记录 Agent benchmark 参数并返回最小公共结果。"""
+        """记录 Agent 参数，通过公开回调发送事件并返回最小公共结果。"""
         observed.update(kwargs)
+        on_trace = kwargs["on_trace"]
+        on_trace(
+            {
+                "event_type": "sample_started",
+                "actor": "benchmark",
+                "message": "Fix pricing.total_with_tax",
+                "payload": {"sample_id": "pricing_total"},
+            }
+        )
         return {
             "job_id": kwargs["job_id"],
             "evaluation_type": "agent",
@@ -95,7 +104,42 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
     assert observed["job_id"] == "job_agent"
     assert observed["limit"] == 3
     assert observed["model"] == "local-test"
+    assert event_queue.events[-2] == {
+        "type": "trace_event",
+        "event": {
+            "event_type": "sample_started",
+            "actor": "benchmark",
+            "message": "Fix pricing.total_with_tax",
+            "payload": {"sample_id": "pricing_total"},
+        },
+    }
     assert event_queue.events[-1]["result"]["evaluation_type"] == "agent"
+
+
+def test_executor_forwards_trace_event_to_parent_callback() -> None:
+    """父进程读取 trace_event 时应把完整白名单事件交给任务服务。"""
+    event_queue: Queue[dict[str, object]] = Queue()
+    event = {
+        "event_type": "workspace_changed",
+        "actor": "benchmark",
+        "message": "无受控文件变化",
+        "payload": {"sample_id": "pricing_total", "changed_files": []},
+    }
+    event_queue.put({"type": "trace_event", "event": event})
+    observed: list[dict[str, object]] = []
+
+    result, error = SubprocessEvaluationExecutor._read_event(
+        event_queue,
+        result=None,
+        error_message=None,
+        on_progress=lambda completed, total: None,
+        on_sample_result=None,
+        on_trace=observed.append,
+    )
+
+    assert result is None
+    assert error is None
+    assert observed == [event]
 
 
 def test_evaluation_process_serializes_sample_result_events(

@@ -10,6 +10,7 @@ from threading import Event
 from time import monotonic
 from typing import Protocol
 
+from evalhub.agent.codex import AgentTraceEvent, TraceCallback
 from evalhub.benchmarks.coding_mini import run_codex_agent_benchmark
 from evalhub.cli import run_real_benchmark
 from evalhub.domain import EvaluationSampleResult
@@ -75,6 +76,10 @@ def _evaluation_process(
             }
         )
 
+    def report_trace(event: AgentTraceEvent) -> None:
+        """把标准化 Agent 外部动作转换为跨进程 Trace 事件。"""
+        event_queue.put({"type": "trace_event", "event": event})
+
     try:
         # 两类评测的 quick 规模不同；显式分派避免把 Agent 语义塞进模型 Runner。
         if request.sample_mode == "all":
@@ -92,6 +97,7 @@ def _evaluation_process(
                 base_url=request.base_url,
                 limit=limit,
                 on_progress=report_progress,
+                on_trace=report_trace,
             )
         else:
             result = run_real_benchmark(
@@ -141,6 +147,7 @@ class SubprocessEvaluationExecutor:
         cancel_event: Event,
         skip_sample_ids: set[str] | frozenset[str] = frozenset(),
         on_sample_result: Callable[[dict[str, object], int, int], None] | None = None,
+        on_trace: TraceCallback | None = None,
     ) -> dict[str, object]:
         """运行一个评测子进程直到成功、失败或收到取消信号。
 
@@ -175,6 +182,7 @@ class SubprocessEvaluationExecutor:
                     error_message=error_message,
                     on_progress=on_progress,
                     on_sample_result=on_sample_result,
+                    on_trace=on_trace,
                 )
                 if error_message is not None or result is not None:
                     break
@@ -210,6 +218,7 @@ class SubprocessEvaluationExecutor:
         error_message: str | None,
         on_progress: Callable[[int, int], None],
         on_sample_result: Callable[[dict[str, object], int, int], None] | None,
+        on_trace: TraceCallback | None,
     ) -> tuple[dict[str, object] | None, str | None]:
         """读取一个子进程事件并更新进度或终态暂存值。"""
         try:
@@ -225,6 +234,8 @@ class SubprocessEvaluationExecutor:
                 int(message["completed"]),
                 int(message["total"]),
             )
+        elif event_type == "trace_event" and on_trace is not None:
+            on_trace(dict(message["event"]))
         elif event_type == "result":
             result = message["result"]
         elif event_type == "error":
