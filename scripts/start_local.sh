@@ -68,5 +68,6 @@ else
   fi
 fi
 
+"$PYTHON" scripts/stop_existing_evalhub.py --host "$HOST" --port "$PORT"
 echo "Starting EvalHub at http://${HOST}:${PORT}"
 "$PYTHON" run_evalhub.py serve --host "$HOST" --port "$PORT"

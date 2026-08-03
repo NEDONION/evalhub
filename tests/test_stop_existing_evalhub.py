@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -102,3 +104,50 @@ class StopExistingEvalHubTests(unittest.TestCase):
         finally:
             process.terminate()
             process.wait(timeout=2)
+
+
+class LauncherIntegrationTests(unittest.TestCase):
+    def test_launcher_stops_existing_evalhub_before_starting(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            fake_bin = temporary / "bin"
+            fake_bin.mkdir()
+            call_log = temporary / "python-calls.log"
+
+            for command in ("npm", "curl"):
+                executable = fake_bin / command
+                executable.write_text("#!/bin/sh\nexit 0\n")
+                executable.chmod(0o755)
+
+            fake_python = fake_bin / "python"
+            fake_python.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$*" >> "$EVALHUB_CALL_LOG"\n'
+            )
+            fake_python.chmod(0o755)
+
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "EVALHUB_CALL_LOG": str(call_log),
+                    "PATH": f"{fake_bin}{os.pathsep}{environment['PATH']}",
+                    "PYTHON": str(fake_python),
+                }
+            )
+
+            result = subprocess.run(
+                [str(ROOT / "scripts" / "start_local.sh")],
+                cwd=ROOT,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                call_log.read_text().splitlines(),
+                [
+                    'scripts/stop_existing_evalhub.py --host 127.0.0.1 --port 8000',
+                    'run_evalhub.py serve --host 127.0.0.1 --port 8000',
+                ],
+            )
