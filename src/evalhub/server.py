@@ -5,6 +5,7 @@ from urllib.parse import parse_qs, urlparse
 
 from evalhub.cli import run_real_benchmark
 from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
+from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
 
 
 class EvalHubRequestHandler(SimpleHTTPRequestHandler):
@@ -21,6 +22,12 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             return
         if parsed.path == "/api/datasets":
             self._json(self._dataset_status())
+            return
+        if parsed.path == "/api/ollama/status":
+            query = parse_qs(parsed.query)
+            model = _first(query, "model", DEFAULT_OLLAMA_MODEL)
+            base_url = _first(query, "base_url", DEFAULT_OLLAMA_BASE_URL)
+            self._json(get_ollama_status(model=model, base_url=base_url))
             return
         if parsed.path == "/":
             self.path = "/index.html"
@@ -41,12 +48,13 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/evaluations/run":
             payload = self._read_json()
             try:
+                limit = _parse_limit(payload)
                 result = run_real_benchmark(
                     dataset=str(payload.get("dataset", "gsm8k")),
                     adapter_type=str(payload.get("adapter", "ollama")),
                     model=str(payload.get("model", "qwen2.5:0.5b")),
                     base_url=str(payload.get("base_url", "http://127.0.0.1:11434")),
-                    limit=int(payload.get("limit", 5)),
+                    limit=limit,
                     subject=str(payload.get("subject", "abstract_algebra")),
                 )
                 self._json({"ok": True, "result": result})
@@ -117,3 +125,23 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
         print("\nEvalHub local console stopped.")
     finally:
         server.server_close()
+
+
+def _first(query: dict[str, list[str]], key: str, default: str) -> str:
+    values = query.get(key)
+    if not values:
+        return default
+    return values[0] or default
+
+
+def _parse_limit(payload: dict[str, object]) -> int | None:
+    sample_mode = str(payload.get("sample_mode", "custom"))
+    if sample_mode == "all":
+        return None
+    if sample_mode == "quick":
+        return 5
+
+    raw_limit = payload.get("limit")
+    if raw_limit in (None, ""):
+        return None
+    return int(raw_limit)

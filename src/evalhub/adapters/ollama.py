@@ -1,5 +1,5 @@
 import json
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from evalhub.adapters.base import ModelAdapter
@@ -38,6 +38,18 @@ class OllamaAdapter(ModelAdapter):
         try:
             with urlopen(request, timeout=300) as response:
                 body = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.reason
+            if exc.fp is not None:
+                raw_body = exc.fp.read().decode("utf-8", errors="replace")
+                try:
+                    parsed_body = json.loads(raw_body)
+                    detail = parsed_body.get("error", raw_body)
+                except json.JSONDecodeError:
+                    detail = raw_body or exc.reason
+            raise RuntimeError(
+                f"Ollama 推理失败：HTTP {exc.code}。{detail}"
+            ) from exc
         except URLError as exc:
             raise RuntimeError(
                 f"无法连接 Ollama 服务：{self.base_url}。请先安装并启动 Ollama，"

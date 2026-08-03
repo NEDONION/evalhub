@@ -132,6 +132,12 @@ http://127.0.0.1:8000
 - 模型名称：`qwen2.5:0.5b`
 - Ollama 地址：`http://127.0.0.1:11434`
 
+`./scripts/start_local.sh` 会先检测 `http://127.0.0.1:11434/api/tags`。如果 Ollama 已安装但未启动，脚本会自动后台启动 `ollama serve`，日志写入：
+
+```text
+.runtime/ollama.log
+```
+
 ## 常见问题
 
 ### 1. `无法连接 Ollama 服务`

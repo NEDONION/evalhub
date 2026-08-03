@@ -6,9 +6,20 @@ const refreshBtn = document.querySelector("#refreshBtn");
 const prepareBtn = document.querySelector("#prepareBtn");
 const runForm = document.querySelector("#runForm");
 const serviceMetricEl = document.querySelector("#serviceMetric");
+const ollamaMetricEl = document.querySelector("#ollamaMetric");
 const datasetMetricEl = document.querySelector("#datasetMetric");
 const preparedMetricEl = document.querySelector("#preparedMetric");
 const scoreMetricEl = document.querySelector("#scoreMetric");
+const ollamaStatusEl = document.querySelector("#ollamaStatus");
+const ollamaCommandEl = document.querySelector("#ollamaCommand");
+const ollamaBaseUrlEl = document.querySelector("#ollamaBaseUrl");
+const ollamaModelEl = document.querySelector("#ollamaModel");
+const ollamaModelsEl = document.querySelector("#ollamaModels");
+const ollamaMessageEl = document.querySelector("#ollamaMessage");
+const limitFieldEl = document.querySelector("#limitField");
+const limitInputEl = document.querySelector("#limitInput");
+const modelInputEl = document.querySelector("#modelInput");
+const baseUrlInputEl = document.querySelector("#baseUrlInput");
 
 const taskTypeLabels = {
   math_reasoning: "数学推理",
@@ -43,11 +54,16 @@ async function fetchJson(url, options = {}) {
 }
 
 async function refresh() {
+  await Promise.all([refreshServiceAndDatasets(), refreshOllama()]);
+}
+
+async function refreshServiceAndDatasets() {
   try {
     await fetchJson("/api/health");
     healthEl.textContent = "服务在线";
     healthEl.className = "status ok";
     serviceMetricEl.textContent = "在线";
+
     const data = await fetchJson("/api/datasets");
     renderDatasets(data.datasets);
     datasetMetricEl.textContent = String(data.datasets.length);
@@ -58,6 +74,58 @@ async function refresh() {
     serviceMetricEl.textContent = "异常";
     setOutput(error.message);
   }
+}
+
+async function refreshOllama() {
+  const model = encodeURIComponent(modelInputEl.value || "qwen2.5:0.5b");
+  const baseUrl = encodeURIComponent(baseUrlInputEl.value || "http://127.0.0.1:11434");
+  try {
+    const status = await fetchJson(`/api/ollama/status?model=${model}&base_url=${baseUrl}`);
+    renderOllama(status);
+  } catch (error) {
+    ollamaMetricEl.textContent = "异常";
+    ollamaStatusEl.textContent = "检测失败";
+    ollamaStatusEl.className = "status error";
+    ollamaMessageEl.textContent = error.message;
+    ollamaMessageEl.className = "notice error";
+  }
+}
+
+function renderOllama(status) {
+  ollamaCommandEl.textContent = status.command || "未检测到";
+  ollamaBaseUrlEl.textContent = status.base_url;
+  ollamaModelEl.textContent = status.model;
+  ollamaModelsEl.textContent = String(status.models.length);
+  ollamaMessageEl.textContent = status.message;
+
+  if (!status.installed) {
+    ollamaMetricEl.textContent = "未安装";
+    ollamaStatusEl.textContent = "未安装";
+    ollamaStatusEl.className = "status error";
+    ollamaMessageEl.className = "notice error";
+    return;
+  }
+
+  if (!status.running) {
+    ollamaMetricEl.textContent = "未启动";
+    ollamaStatusEl.textContent = "未启动";
+    ollamaStatusEl.className = "status warning";
+    ollamaMessageEl.className = "notice warning";
+    return;
+  }
+
+  if (!status.model_present) {
+    ollamaMetricEl.textContent = "缺模型";
+    ollamaStatusEl.textContent = "模型未下载";
+    ollamaStatusEl.className = "status warning";
+    ollamaMessageEl.className = "notice warning";
+    return;
+  }
+
+  ollamaMetricEl.textContent = "已就绪";
+  ollamaStatusEl.textContent = "已就绪";
+  ollamaStatusEl.className = "status ok";
+  ollamaMessageEl.className = "notice ok";
 }
 
 function renderDatasets(datasets) {
@@ -78,6 +146,8 @@ function renderDatasets(datasets) {
         <dd>${metricLabels[dataset.evaluator_type] || dataset.evaluator_type}</dd>
         <dt>任务类型</dt>
         <dd>${taskTypeLabels[dataset.task_type] || dataset.task_type}</dd>
+        <dt>样本状态</dt>
+        <dd>${dataset.sample_count === null ? "未统计" : `${dataset.sample_count} 条`}</dd>
         <dt>本地路径</dt>
         <dd>${dataset.local_path}</dd>
         <dt>数据来源</dt>
@@ -90,14 +160,40 @@ function renderDatasets(datasets) {
 
 function formPayload() {
   const formData = new FormData(runForm);
-  return {
+  const sampleMode = formData.get("sample_mode");
+  const payload = {
     dataset: formData.get("dataset"),
     subject: formData.get("subject"),
     adapter: formData.get("adapter"),
     model: formData.get("model"),
     base_url: formData.get("base_url"),
-    limit: Number(formData.get("limit") || 5),
+    sample_mode: sampleMode,
   };
+
+  if (sampleMode === "custom") {
+    payload.limit = Number(formData.get("limit") || 20);
+  }
+
+  return payload;
+}
+
+function selectedSampleModeLabel() {
+  const checked = runForm.querySelector("input[name='sample_mode']:checked");
+  if (!checked) {
+    return "全部样本";
+  }
+  if (checked.value === "quick") {
+    return "快速试跑 5 条";
+  }
+  if (checked.value === "custom") {
+    return `自定义 ${limitInputEl.value || 20} 条`;
+  }
+  return "全部样本";
+}
+
+function syncSampleMode() {
+  const checked = runForm.querySelector("input[name='sample_mode']:checked");
+  limitFieldEl.classList.toggle("hidden", !checked || checked.value !== "custom");
 }
 
 prepareBtn.addEventListener("click", async () => {
@@ -121,7 +217,11 @@ prepareBtn.addEventListener("click", async () => {
 runForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const payload = formPayload();
-  setOutput(`正在执行 ${payload.dataset}，适配器：${adapterLabels[payload.adapter] || payload.adapter}，模型：${payload.model}。`);
+  setOutput(
+    `正在执行 ${payload.dataset}，范围：${selectedSampleModeLabel()}，适配器：${
+      adapterLabels[payload.adapter] || payload.adapter
+    }，模型：${payload.model}。`
+  );
   try {
     const result = await fetchJson("/api/evaluations/run", {
       method: "POST",
@@ -134,7 +234,17 @@ runForm.addEventListener("submit", async (event) => {
   }
 });
 
+runForm.addEventListener("change", (event) => {
+  if (event.target.name === "sample_mode") {
+    syncSampleMode();
+  }
+  if (event.target.name === "model" || event.target.name === "base_url") {
+    refreshOllama();
+  }
+});
+
 refreshBtn.addEventListener("click", refresh);
+syncSampleMode();
 refresh();
 
 function renderResult(result) {

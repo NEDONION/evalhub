@@ -106,7 +106,7 @@ def run_real_benchmark(
     adapter_type: str,
     model: str,
     base_url: str,
-    limit: int,
+    limit: int | None,
     subject: str,
 ) -> dict[str, object]:
     spec = get_dataset_spec(dataset)
@@ -222,7 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--adapter", choices=["ollama", "oracle"], default="ollama")
     run_parser.add_argument("--model", default="qwen2.5:0.5b")
     run_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
-    run_parser.add_argument("--limit", type=int, default=5)
+    run_parser.add_argument("--limit", type=int, default=None)
     run_parser.add_argument("--subject", default="abstract_algebra")
 
     serve_parser = subparsers.add_parser(

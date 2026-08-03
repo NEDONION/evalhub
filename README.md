@@ -72,6 +72,15 @@ cd /Users/nedonion/PycharmProjects/evalhub
   --limit 5
 ```
 
+不传 `--limit` 时会默认跑完整数据集：
+
+```bash
+.venv/bin/python run_evalhub.py run-benchmark \
+  --dataset gsm8k \
+  --adapter ollama \
+  --model qwen2.5:0.5b
+```
+
 使用 Ollama 本地模型跑 MMLU：
 
 ```bash
@@ -105,8 +114,9 @@ http://127.0.0.1:8000
 
 - 前端页面：`frontend/index.html`
 - 后端 API：`/api/health`、`/api/datasets`、`/api/datasets/prepare`、`/api/evaluations/run`
+- Ollama 状态 API：`/api/ollama/status`
 
-不需要 npm、React 构建或 FastAPI 依赖。
+如果检测到 Ollama 已安装但未运行，脚本会尝试自动启动 `ollama serve`，日志写入 `.runtime/ollama.log`。不需要 npm、React 构建或 FastAPI 依赖。
 
 ## 目录结构
 
