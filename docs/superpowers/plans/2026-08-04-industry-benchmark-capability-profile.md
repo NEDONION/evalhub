@@ -758,10 +758,10 @@ git commit -m "feat: add six-dimension capability workbench"
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/LOCAL_RUN.md`
-- Modify: `docs/API.md`
-- Modify: `docs/DATA_MODEL.md`
-- Modify: `docs/ARCHITECTURE.md`
+- Modify: `docs/getting-started/LOCAL_RUN.md`
+- Modify: `docs/architecture/API.md`
+- Modify: `docs/architecture/DATA_MODEL.md`
+- Modify: `docs/architecture/ARCHITECTURE.md`
 
 **Interfaces:**
 - Consumes: all completed implementation tasks.
@@ -804,6 +804,6 @@ Invoke `browser:control-in-app-browser`, open `http://127.0.0.1:8000`, run an Or
 - [ ] **Step 5: Commit documentation**
 
 ```bash
-git add README.md docs/LOCAL_RUN.md docs/API.md docs/DATA_MODEL.md docs/ARCHITECTURE.md
+git add README.md docs/getting-started/LOCAL_RUN.md docs/architecture/API.md docs/architecture/DATA_MODEL.md docs/architecture/ARCHITECTURE.md
 git commit -m "docs: document industry capability evaluation"
 ```

@@ -83,8 +83,8 @@
 
 **Files:**
 - Modify: `README.md`
-- Modify: `docs/LOCAL_RUN.md`
-- Modify: `docs/OLLAMA.md`
+- Modify: `docs/getting-started/LOCAL_RUN.md`
+- Modify: `docs/getting-started/OLLAMA.md`
 
 **Verification:**
 - Run: `PYTHONPATH=src .venv/bin/python -m unittest discover tests`

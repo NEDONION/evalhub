@@ -92,7 +92,7 @@
 
 - 检查 README 中恰好包含 5 个 Mermaid 代码块。
 - 检查 Mermaid 块围栏成对、图类型为 GitHub 支持的 `flowchart` 或 `sequenceDiagram`。
-- 逐图核对节点与当前源码、`docs/ARCHITECTURE.md` 和运行命令一致。
+- 逐图核对节点与当前源码、`docs/architecture/ARCHITECTURE.md` 和运行命令一致。
 - 运行 Markdown 链接检查或等价的本地静态检查，确认原有相对链接仍存在。
 - 运行 `git diff --check`，避免 Markdown 空白错误。
 - 确认只修改 README 和本任务的设计/计划文档，不覆盖工作区现有其他改动。

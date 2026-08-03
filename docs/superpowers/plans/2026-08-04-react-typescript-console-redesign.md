@@ -42,7 +42,7 @@
 - `src/evalhub/server.py`: static root selection for the Vite production build.
 - `tests/test_server_frontend.py`: Python static-root behavior.
 - `scripts/start_local.sh`: build-presence check and actionable frontend setup guidance.
-- `README.md`, `docs/LOCAL_RUN.md`: React development and production run instructions.
+- `README.md`, `docs/getting-started/LOCAL_RUN.md`: React development and production run instructions.
 
 ---
 
@@ -484,7 +484,7 @@ git commit -m "feat: present evaluation results and errors"
 - Create: `tests/test_server_frontend.py`
 - Modify: `scripts/start_local.sh`
 - Modify: `README.md`
-- Modify: `docs/LOCAL_RUN.md`
+- Modify: `docs/getting-started/LOCAL_RUN.md`
 
 **Interfaces:**
 - Produces: `frontend_directory(project_root: Path) -> Path`
@@ -565,7 +565,7 @@ Expected: all tests PASS, typecheck/build exit 0, and Python compilation exits 0
 - [ ] **Step 6: Commit integration and docs**
 
 ```bash
-git add src/evalhub/server.py tests/test_server_frontend.py scripts/start_local.sh README.md docs/LOCAL_RUN.md
+git add src/evalhub/server.py tests/test_server_frontend.py scripts/start_local.sh README.md docs/getting-started/LOCAL_RUN.md
 git commit -m "feat: serve the React console locally"
 ```
 
