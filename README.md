@@ -209,6 +209,45 @@ cd /Users/nedonion/PycharmProjects/evalhub
 
 `--adapter oracle` 只用于验证 EvalHub 管线是否正常，不代表真实模型评测。
 
+## Professional Hexagon Mini Suite
+
+`evalhub-hexagon-v1` 是一个可复现的 60 次模型调用 Mini Suite：知识、指令遵循、数学、综合
+推理、代码各 10 条，安全可信由 TruthfulQA 和 BBQ 各 5 条合计 10 条。它用于本地能力画像，
+**不是**七个上游 Benchmark 的完整官方分数，不能与其论文或排行榜分数直接比较。
+
+先从仓库根目录准备全部固定资产、构建代码评分镜像，再启动控制台：
+
+```bash
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-mmlu
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-ifeval
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-gsm8k
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-bbh
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-humaneval
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-truthfulqa
+.venv/bin/python run_evalhub.py prepare-dataset hexagon-bbq
+./scripts/build_humaneval_image.sh
+./scripts/start_local.sh
+```
+
+模型和评分器只接收、只评分英文 `input` 与官方 `reference`。控制台中的 `input_zh`、
+`reference_zh` 和中文能力标签是非官方、仅展示的翻译，绝不进入模型提示、评分器或 HumanEval
+容器。HumanEval 必须同时具备 Docker daemon 与本地 `evalhub-humaneval:1.0.0` 镜像；缺少任一
+条件会阻塞代码节点，响应会给出 `./scripts/build_humaneval_image.sh`。其他已经成功的节点仍会保留
+为 `partial` 结果，但不完整的 Hexagon 运行不会进入模型成绩比较。
+
+每次准备都会校验固定 revision 和完整文件 SHA-256；工作流还保存清单 SHA-256、来源 revision、
+提示模板版本和生成配置，作为结果的 `reproducibility` 合同。七个官方来源如下：
+
+| Benchmark | 官方来源 | 固定 revision | SHA-256 |
+| --- | --- | --- | --- |
+| MMLU | [Hendrycks archive](https://people.eecs.berkeley.edu/~hendrycks/data.tar) | `sha256:bec563ba4bac1d6aaf04141cd7d1605d7a5ca833e38f994051e818489592989b` | `bec563ba4bac1d6aaf04141cd7d1605d7a5ca833e38f994051e818489592989b` |
+| IFEval | [Google Research](https://github.com/google-research/google-research/tree/8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0/instruction_following_eval) | `8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0` | `67ffeee0fcb87c317c5b08a2de85557b4a7e96ada6178aa645b4954fe4b53d49` |
+| GSM8K | [OpenAI grade-school-math](https://github.com/openai/grade-school-math/tree/3101c7d5072418e28b9008a6636bde82a006892c) | `3101c7d5072418e28b9008a6636bde82a006892c` | `3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14` |
+| BIG-Bench Hard | [BIG-Bench Hard](https://github.com/suzgunmirac/BIG-Bench-Hard/tree/9ee07bd481feebf959a6b59d61ea57bdcf30964d) | `9ee07bd481feebf959a6b59d61ea57bdcf30964d` | `0bb15e11935747f7cfa42ef2e02254b70f9c9e545f6dabfd374dec3b6ba95bbc` |
+| HumanEval | [OpenAI human-eval](https://github.com/openai/human-eval/tree/6d43fb980f9fee3c892a914eda09951f772ad10d) | `6d43fb980f9fee3c892a914eda09951f772ad10d` | `b796127e635a67f93fb35c04f4cb03cf06f38c8072ee7cee8833d7bee06979ef` |
+| TruthfulQA | [TruthfulQA](https://github.com/sylinrl/TruthfulQA/tree/d71c110897f5d31c5d7f309e7bc316c152f6f031) | `d71c110897f5d31c5d7f309e7bc316c152f6f031` | `b8d8ef1e12f98b4f2a9f47abc9765da0640b182b6c5d9b92f0c1a1f2f1e02e5c` |
+| BBQ | [BBQ](https://github.com/nyu-mll/BBQ/tree/bea11bd97d79217245b5871acd247b9d6eb24598) | `bea11bd97d79217245b5871acd247b9d6eb24598` | `2fa966b0395a0ce9248700e10e4b72cf47e02cebd34a06105f35ec78ca39dc95` |
+
 完整文档导航见：[docs/README.md](docs/README.md)。
 Ollama 安装和故障排查见：[docs/getting-started/20260804_Ollama本地模型安装与验证.md](docs/getting-started/20260804_Ollama本地模型安装与验证.md)。
 Codex 对话后的文档沉淀流程见：[docs/development/20260804_Codex对话沉淀工作流.md](docs/development/20260804_Codex对话沉淀工作流.md)。
