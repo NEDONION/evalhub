@@ -68,6 +68,49 @@ def test_evaluation_process_reports_progress_and_result(monkeypatch: pytest.Monk
     ]
 
 
+def test_evaluation_process_dispatches_lm_eval_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Registry 外部任务应进入 Harness，并继续使用既有样本事件协议。"""
+    request = replace(
+        request_fixture(),
+        dataset="ifeval",
+        adapter="ollama",
+        model="qwen2.5:0.5b",
+        sample_mode="all",
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_harness(**kwargs: object) -> dict[str, object]:
+        """记录外部评测参数并发送一条 JSON 样本结果。"""
+        observed.update(kwargs)
+        on_sample_result = kwargs["on_sample_result"]
+        assert callable(on_sample_result)
+        on_sample_result(
+            {
+                "sample_id": "ifeval:0",
+                "input": {"prompt": "Follow exactly"},
+                "prediction": "ok",
+                "reference": "ok",
+                "metric": "prompt_level_strict_acc",
+                "score": 1.0,
+                "reason": None,
+            },
+            1,
+            1,
+        )
+        return {"benchmark_id": "ifeval", "raw_score": 1.0, "total_samples": 1}
+
+    monkeypatch.setattr(executor_module, "run_harness_benchmark", fake_harness, raising=False)
+    _evaluation_process("job_ifeval", asdict(request), event_queue)
+
+    assert observed["benchmark_id"] == "ifeval"
+    assert observed["limit"] is None
+    assert event_queue.events[0]["type"] == "sample_result"
+    assert event_queue.events[-1]["result"]["benchmark_id"] == "ifeval"
+
+
 def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyPatch) -> None:
     """Codex Agent 请求应把难度原样交给 Coding Mini，且不再传旧 limit。"""
     request = replace(

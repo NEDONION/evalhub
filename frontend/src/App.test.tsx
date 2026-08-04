@@ -22,6 +22,8 @@ import {
   startModelPull,
 } from "./lib/api";
 import type {
+  BenchmarkDefinition,
+  Dataset,
   EvaluationNodeDetail,
   EvaluationNodeSummary,
   EvaluationTaskDetail,
@@ -453,7 +455,7 @@ describe("EvalHub console", () => {
     expect(screen.queryByLabelText("MMLU 学科")).not.toBeInTheDocument();
 
     await user.selectOptions(datasetSelect, "mmlu");
-    expect(screen.getByLabelText("MMLU 学科")).toBeInTheDocument();
+    expect(screen.getByLabelText("MMLU 学科")).toHaveValue("all");
 
     await user.click(screen.getByRole("radio", { name: "自定义" }));
     expect(screen.getByLabelText("自定义样本数量")).toBeInTheDocument();
@@ -567,6 +569,93 @@ describe("EvalHub console", () => {
 
     await user.click(screen.getByRole("button", { name: "缓存 MMLU 测试集" }));
     expect(prepareDataset).toHaveBeenCalledWith("mmlu", false);
+  });
+
+  it("shows and enables all thirteen registry benchmarks", async () => {
+    const user = userEvent.setup();
+    const externalRows: Array<
+      [string, string, Dataset["executor"], string, string]
+    > = [
+      ["mmlu-pro", "MMLU-Pro", "lm_eval", "知识", "exact_match"],
+      ["ifeval", "IFEval", "lm_eval", "指令遵循", "prompt_level_strict_acc"],
+      ["math-500", "MATH-500", "lm_eval", "数学", "exact_match"],
+      ["bbh", "BIG-Bench Hard", "lm_eval", "综合推理", "exact_match"],
+      ["arc-challenge", "ARC-Challenge", "lm_eval", "综合推理", "acc_norm"],
+      ["musr", "MuSR", "lm_eval", "综合推理", "acc_norm"],
+      ["hellaswag", "HellaSwag", "lm_eval", "综合推理", "acc_norm"],
+      ["humaneval", "HumanEval", "sandboxed_code", "代码", "pass@1"],
+      ["mbpp", "MBPP", "sandboxed_code", "代码", "pass@1"],
+      ["truthfulqa", "TruthfulQA", "lm_eval", "安全可信", "acc"],
+      ["bbq", "BBQ", "lm_eval", "安全可信", "acc"],
+    ];
+    const datasets: Dataset[] = [datasetFixture, mmluFixture, ...externalRows.map(
+      ([name, displayName, executor, capabilityLabel, metric]) => ({
+        name,
+        display_name: displayName,
+        task_type: capabilityLabel,
+        evaluator_type: metric,
+        homepage: `https://example.com/${name}`,
+        source_url: name,
+        local_path: `.runtime/benchmarks/${name}.json`,
+        description: `${displayName} 官方公开 Benchmark`,
+        executor,
+        capability: "reasoning",
+        capability_label: capabilityLabel,
+        locally_runnable: true,
+        readiness_reason: null,
+        prepared: false,
+        sample_count: null,
+      })),
+    ];
+    const benchmarks: BenchmarkDefinition[] = datasets.map((dataset) => ({
+      id: dataset.name,
+      version: "1.0.0",
+      display_name: dataset.display_name,
+      capability: dataset.capability || "reasoning",
+      capability_label: dataset.capability_label || "综合推理",
+      dataset_source: dataset.source_url,
+      dataset_revision: "resolved-at-runtime:sha256",
+      homepage: dataset.homepage,
+      executor: dataset.executor || "native",
+      metric: dataset.evaluator_type,
+      locally_runnable: true,
+      readiness_reason: null,
+    }));
+    vi.mocked(getDatasets).mockResolvedValue({ datasets });
+    vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks });
+    vi.mocked(getSuites).mockResolvedValue({
+      suites: [
+        {
+          id: "llm-industry-core-v1",
+          version: "1.0.0",
+          display_name: "LLM 行业核心套件 v1",
+          benchmark_ids: benchmarks.map((item) => item.id),
+          benchmark_count: 13,
+          locally_runnable_count: 13,
+        },
+      ],
+    });
+    vi.mocked(prepareDataset).mockResolvedValue({
+      ok: true,
+      dataset: "mmlu-pro",
+      path: ".runtime/benchmarks/mmlu-pro.json",
+      operation: "cached",
+      sample_count: null,
+    });
+    render(<App />);
+
+    await user.click(navigationButton("资产管理"));
+    expect(await screen.findByText("13 DATASETS")).toBeInTheDocument();
+    const row = screen.getByRole("row", { name: /MMLU-Pro/ });
+    expect(within(row).getByText("lm-eval · 精确匹配")).toBeInTheDocument();
+    await user.click(within(row).getByRole("button", { name: "缓存 MMLU-Pro" }));
+    expect(prepareDataset).toHaveBeenCalledWith("mmlu-pro", false);
+
+    await user.click(navigationButton("发起评测"));
+    const option = within(await screen.findByLabelText("数据集")).getByRole("option", {
+      name: /MMLU-Pro/,
+    });
+    expect(option).toBeEnabled();
   });
 
   it("force-refreshes a cached dataset and reports what changed", async () => {

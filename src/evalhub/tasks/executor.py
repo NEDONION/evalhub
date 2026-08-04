@@ -11,7 +11,9 @@ from time import monotonic
 from typing import Protocol
 
 from evalhub.agent.codex import AgentTraceEvent, TraceCallback
+from evalhub.benchmarks import ExecutorKind, get_benchmark_spec
 from evalhub.benchmarks.coding_mini import run_codex_agent_benchmark
+from evalhub.benchmarks.harness import run_harness_benchmark
 from evalhub.cli import run_real_benchmark
 from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks.models import ResourceUsage, TaskRequest
@@ -61,20 +63,32 @@ def _evaluation_process(
         total: int,
     ) -> None:
         """把领域样本结果转换为可跨进程传输的纯字典事件。"""
+        report_harness_sample(
+            {
+                "sample_id": sample.sample_id,
+                "input": sample.input,
+                "prediction": sample.prediction,
+                "reference": sample.reference,
+                "metric": sample.metric,
+                "score": sample.score,
+                "reason": sample.reason,
+            },
+            completed,
+            total,
+        )
+
+    def report_harness_sample(
+        sample: dict[str, object],
+        completed: int,
+        total: int,
+    ) -> None:
+        """把已是 JSON 结构的 Harness 样本转成统一跨进程事件。"""
         event_queue.put(
             {
                 "type": "sample_result",
                 "completed": completed,
                 "total": total,
-                "sample": {
-                    "sample_id": sample.sample_id,
-                    "input": sample.input,
-                    "prediction": sample.prediction,
-                    "reference": sample.reference,
-                    "metric": sample.metric,
-                    "score": sample.score,
-                    "reason": sample.reason,
-                },
+                "sample": sample,
             }
         )
 
@@ -101,18 +115,31 @@ def _evaluation_process(
                 limit = 5
             else:
                 limit = request.limit
-            result = run_real_benchmark(
-                dataset=request.dataset,
-                adapter_type=request.adapter,
-                model=request.model,
-                base_url=request.base_url,
-                limit=limit,
-                subject=request.subject,
-                job_id=task_id,
-                on_progress=report_progress,
-                skip_sample_ids=frozenset(skip_sample_ids),
-                on_sample_result=report_sample,
-            )
+            spec = get_benchmark_spec(request.dataset)
+            if spec.executor == ExecutorKind.NATIVE:
+                result = run_real_benchmark(
+                    dataset=request.dataset,
+                    adapter_type=request.adapter,
+                    model=request.model,
+                    base_url=request.base_url,
+                    limit=limit,
+                    subject=request.subject,
+                    job_id=task_id,
+                    on_progress=report_progress,
+                    skip_sample_ids=frozenset(skip_sample_ids),
+                    on_sample_result=report_sample,
+                )
+            else:
+                if request.adapter != "ollama":
+                    raise ValueError(f"{spec.display_name} 仅支持 Ollama 本地模型")
+                result = run_harness_benchmark(
+                    benchmark_id=spec.id,
+                    model=request.model,
+                    base_url=request.base_url,
+                    limit=limit,
+                    on_progress=report_progress,
+                    on_sample_result=report_harness_sample,
+                )
         event_queue.put({"type": "result", "result": result})
     except Exception as exc:
         # 子进程边界只发送安全字符串，不尝试跨进程序列化任意异常对象和堆栈。

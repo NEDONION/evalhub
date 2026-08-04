@@ -9,6 +9,12 @@ PORT="${EVALHUB_PORT:-8000}"
 OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_PID=""
 OLLAMA_LOG=".runtime/ollama.log"
+LM_EVAL_IMAGE="evalhub-lm-eval:0.4.12"
+
+if [ ! -x "${PYTHON}" ]; then
+  echo "Python environment not found. Run: python3 -m venv .venv"
+  exit 1
+fi
 
 if ! command -v npm >/dev/null 2>&1; then
   echo "npm is required to build the React frontend. Install Node.js 20+ first."
@@ -18,6 +24,22 @@ fi
 if [ ! -d "frontend/node_modules" ]; then
   echo "Frontend dependencies are not installed. Run: npm --prefix frontend install"
   exit 1
+fi
+
+if ! "${PYTHON}" -c "import lm_eval, transformers" >/dev/null 2>&1; then
+  echo "Installing official Benchmark runtime..."
+  "${PYTHON}" -m pip install -e ".[benchmarks]"
+fi
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  if ! docker image inspect "${LM_EVAL_IMAGE}" >/dev/null 2>&1; then
+    echo "Building isolated HumanEval/MBPP runtime..."
+    if ! docker build -t "${LM_EVAL_IMAGE}" -f docker/lm-eval.Dockerfile .; then
+      echo "Docker image build failed; HumanEval and MBPP will remain unavailable."
+    fi
+  fi
+else
+  echo "Docker Desktop is not running; HumanEval and MBPP will remain unavailable."
 fi
 
 echo "Building React frontend..."

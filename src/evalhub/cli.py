@@ -332,7 +332,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
     # 数量与学科选项控制数据加载范围，不改变数据集和模型身份参数。
     run_parser.add_argument("--limit", type=int, default=None)
-    run_parser.add_argument("--subject", default="abstract_algebra")
+    run_parser.add_argument("--subject", default="all")
 
     # 服务命令默认只监听本机回环地址，避免开发控制台意外暴露到外部网络。
     serve_parser = subparsers.add_parser(

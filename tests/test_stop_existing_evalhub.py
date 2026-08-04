@@ -220,6 +220,7 @@ class LauncherIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 call_log.read_text().splitlines(),
                 [
+                    '-c import lm_eval, transformers',
                     'scripts/stop_existing_evalhub.py --host 127.0.0.1 --port 8000',
                     'curl -fsS http://127.0.0.1:11434/api/tags',
                     'run_evalhub.py serve --host 127.0.0.1 --port 8000',

@@ -10,7 +10,7 @@
 - `MMLU-Pro`、`IFEval`、`MATH-500`、`BBH`、`ARC-Challenge`、`MuSR`、`HellaSwag`、`TruthfulQA`、`BBQ`：使用固定版本 `lm-eval 0.4.12` 的官方任务定义，通过 Ollama 的 OpenAI 兼容 `/v1/completions` 端点运行。
 - `HumanEval`、`MBPP`：使用同版本 `lm-eval`，但整个评测进程在受限 Docker 容器中运行，生成代码不在宿主 Python 进程执行。
 
-注册表是唯一 Benchmark 清单。MATH-500 使用当前 `lm-eval` 的 `math500` 任务名；启动和测试阶段用 `lm-eval validate` 校验全部外部任务名，避免静默使用错误协议。
+注册表是唯一 Benchmark 清单。MATH-500 使用 `lm-eval==0.4.12` 的 `hendrycks_math500`，MuSR 使用 `leaderboard_musr`；启动和测试阶段用 `lm-eval validate` 校验全部外部任务名，避免静默使用错误协议。
 
 ## 模型与依赖
 

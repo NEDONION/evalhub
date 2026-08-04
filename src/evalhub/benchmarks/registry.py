@@ -29,7 +29,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "TIGER-Lab/MMLU-Pro",
         ExecutorKind.LM_EVAL,
         "mmlu_pro",
-        "acc",
+        "exact_match",
         0.1,
     ),
     (
@@ -68,7 +68,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         Capability.MATHEMATICS,
         "HuggingFaceH4/MATH-500",
         ExecutorKind.LM_EVAL,
-        "leaderboard_math_hard",
+        "hendrycks_math500",
         "exact_match",
         None,
     ),
@@ -89,7 +89,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "allenai/ai2_arc",
         ExecutorKind.LM_EVAL,
         "arc_challenge",
-        "acc",
+        "acc_norm",
         0.25,
     ),
     (
@@ -98,8 +98,8 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         Capability.REASONING,
         "TAUR-Lab/MuSR",
         ExecutorKind.LM_EVAL,
-        "musr",
-        "acc",
+        "leaderboard_musr",
+        "acc_norm",
         0.5,
     ),
     (
@@ -109,7 +109,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "Rowan/hellaswag",
         ExecutorKind.LM_EVAL,
         "hellaswag",
-        "acc",
+        "acc_norm",
         0.25,
     ),
     (

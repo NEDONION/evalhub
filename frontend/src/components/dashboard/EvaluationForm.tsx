@@ -76,7 +76,7 @@ export function EvaluationForm({
   const [targetMode, setTargetMode] = useState<"single" | "suite">("single");
   const [suiteId, setSuiteId] = useState("llm-industry-core-v1");
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
-  const [subject, setSubject] = useState("abstract_algebra");
+  const [subject, setSubject] = useState("all");
   const [adapter, setAdapter] = useState<AdapterType>("ollama");
   const [sampleMode, setSampleMode] = useState<SampleMode>("all");
   const [agentDifficulty, setAgentDifficulty] = useState<AgentDifficulty>("all");
@@ -113,6 +113,7 @@ export function EvaluationForm({
       readiness_reason: null,
     }));
   }, [benchmarks, datasetOptions]);
+  const selectedBenchmark = benchmarkOptions.find((item) => item.id === dataset) || null;
   const selectedSuite = suites.find((item) => item.id === suiteId) || suites[0] || null;
 
   const availableModels =
@@ -257,9 +258,17 @@ export function EvaluationForm({
                     ))}
                   </select>
                   {selectedSuite ? (
-                    <p className="mt-2 text-xs leading-5 text-amber-700">
-                      当前已接通 {selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个本地执行器；
-                      其余节点会明确记录为阻塞，不会产生虚假分数。
+                    <p
+                      className={`mt-2 text-xs leading-5 ${
+                        selectedSuite.locally_runnable_count === selectedSuite.benchmark_count
+                          ? "text-emerald-700"
+                          : "text-amber-700"
+                      }`}
+                    >
+                      当前已接通 {selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个本地执行器
+                      {selectedSuite.locally_runnable_count === selectedSuite.benchmark_count
+                        ? "，全部可运行。"
+                        : "；未就绪节点会记录为阻塞。"}
                     </p>
                   ) : null}
                 </div>
@@ -273,12 +282,17 @@ export function EvaluationForm({
                   aria-label="数据集"
                   className={controlClass}
                   value={dataset}
-                  onChange={(event) => setDataset(event.target.value as DatasetName)}
+                  onChange={(event) => {
+                    const nextDataset = event.target.value as DatasetName;
+                    const nextBenchmark = benchmarkOptions.find((item) => item.id === nextDataset);
+                    setDataset(nextDataset);
+                    if (nextBenchmark?.executor !== "native") setAdapter("ollama");
+                  }}
                 >
                   {benchmarkOptions.map((item) => (
                     <option key={item.id} value={item.id} disabled={!item.locally_runnable}>
                       {item.display_name} · {item.capability_label || "本地"}
-                      {item.locally_runnable ? "" : "（执行器未配置）"}
+                      {item.locally_runnable ? "" : "（未就绪）"}
                     </option>
                   ))}
                 </select>
@@ -310,7 +324,9 @@ export function EvaluationForm({
                   onChange={(event) => setAdapter(event.target.value as AdapterType)}
                 >
                   <option value="ollama">Ollama 本地模型</option>
-                  <option value="oracle">Oracle 管线自检</option>
+                  <option value="oracle" disabled={selectedBenchmark?.executor !== "native"}>
+                    Oracle 管线自检
+                  </option>
                 </select>
               </div>
             </>

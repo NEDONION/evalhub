@@ -223,6 +223,10 @@ cd /Users/nedonion/PycharmProjects/evalhub
 ./scripts/start_local.sh
 ```
 
+首次启动会安装固定版本的 `lm-eval` 官方评测运行时。若 Docker Desktop 已启动，脚本还会构建
+`evalhub-lm-eval:0.4.12` 隔离镜像用于 HumanEval 和 MBPP；其他 11 项 Benchmark 不依赖该镜像。
+页面打开后，“资产管理”会列出行业套件的全部 13 项数据集，首次评测或点击“缓存”时下载真实公开数据。
+
 ```mermaid
 sequenceDiagram
     actor Dev as 开发者
