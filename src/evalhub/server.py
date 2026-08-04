@@ -23,6 +23,7 @@ from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ol
 from evalhub.ollama_pull import OllamaPullManager
 from evalhub.tasks import (
     EvaluationTaskService,
+    EvaluationType,
     SQLiteTaskRepository,
     TaskConflictError,
     TaskNotFoundError,
@@ -133,8 +134,18 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/model-performance":
             query = parse_qs(parsed.query)
             scope = _first(query, "scope", "").strip() or None
+            evaluation_type_text = _first(query, "evaluation_type", "model").strip()
+            if evaluation_type_text not in {"model", "agent"}:
+                self._json(
+                    {"ok": False, "error": "evaluation_type must be model or agent"},
+                    status=400,
+                )
+                return
+            evaluation_type: EvaluationType = (
+                "agent" if evaluation_type_text == "agent" else "model"
+            )
             try:
-                report = self._require_task_service().model_performance(scope)
+                report = self._require_task_service().model_performance(scope, evaluation_type)
             except ValueError as exc:
                 # 未知范围属于可恢复筛选错误，不能回退后混合不同评测口径。
                 self._json({"ok": False, "error": str(exc)}, status=400)

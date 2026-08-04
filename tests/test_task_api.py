@@ -16,6 +16,7 @@ from evalhub.tasks import (
     EvaluationSampleCheckpoint,
     EvaluationSamplePage,
     EvaluationTask,
+    EvaluationType,
     TaskConflictError,
     TaskNotFoundError,
     TaskRequest,
@@ -116,6 +117,7 @@ class FakeTaskService:
         self.node = node_fixture()
         self.submitted_request: TaskRequest | None = None
         self.performance_scope: str | None = None
+        self.performance_evaluation_type: EvaluationType = "model"
 
     def submit(self, request: TaskRequest) -> EvaluationTask:
         """记录转换后的请求并返回排队任务。"""
@@ -126,11 +128,16 @@ class FakeTaskService:
         """返回包含唯一任务的轻量列表。"""
         return [self.task]
 
-    def model_performance(self, scope: str | None = None) -> ModelPerformanceReport:
+    def model_performance(
+        self,
+        scope: str | None = None,
+        evaluation_type: EvaluationType = "model",
+    ) -> ModelPerformanceReport:
         """记录成绩范围并使用真实聚合逻辑返回可序列化报告。"""
         self.performance_scope = scope
+        self.performance_evaluation_type = evaluation_type
         tasks = [self.task] if self.task.average_score is not None else []
-        return build_model_performance(tasks, scope)
+        return build_model_performance(tasks, scope, evaluation_type=evaluation_type)
 
     def get(self, task_id: str) -> EvaluationTask:
         """读取匹配任务，未知 ID 转换为仓储级缺失异常。"""
@@ -401,6 +408,38 @@ def test_get_model_performance_serializes_default_and_requested_scope() -> None:
     assert response["models"][0]["model"] == "local-test"
     assert response["models"][0]["best_score"] == 0.8
     assert "result" not in response["models"][0]
+
+
+def test_get_model_performance_selects_agent_scores_without_mixing_model_scores() -> None:
+    """成绩端点应接受独立 Agent 口径，避免把两种评分协议放进同一排行榜。"""
+    service = FakeTaskService(task_fixture(status="success", with_result=True))
+
+    status, response = call_handler(
+        method="GET",
+        path="/api/model-performance?evaluation_type=agent",
+        service=service,
+    )
+
+    assert status == 200
+    assert service.performance_evaluation_type == "agent"
+    assert response["models"] == []
+
+
+def test_get_model_performance_rejects_unknown_evaluation_type() -> None:
+    """未知成绩类型应在 HTTP 边界返回 400，不能静默回退到模型排行榜。"""
+    service = FakeTaskService(task_fixture(status="success", with_result=True))
+
+    status, response = call_handler(
+        method="GET",
+        path="/api/model-performance?evaluation_type=workflow",
+        service=service,
+    )
+
+    assert status == 400
+    assert response == {
+        "ok": False,
+        "error": "evaluation_type must be model or agent",
+    }
 
 
 def test_get_model_performance_rejects_unknown_scope() -> None:

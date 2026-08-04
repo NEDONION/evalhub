@@ -9,6 +9,7 @@ import type {
   EvaluationResult,
   EvaluationTaskDetail,
   EvaluationTaskSummary,
+  EvaluationType,
   HealthResponse,
   ModelPerformanceResponse,
   OllamaPullResponse,
@@ -230,14 +231,19 @@ export async function getEvaluationTasks(): Promise<EvaluationTaskSummary[]> {
 }
 
 /**
- * 读取同一 Benchmark 或 Suite 范围内的模型历史排行与成绩轨迹。
+ * 读取同一评测类型、Benchmark 或 Suite 范围内的基模历史排行与成绩轨迹。
  *
  * @param scope 可选的 `benchmark:<id>` 或 `suite:<id>`；省略时由服务端选择默认范围。
+ * @param evaluationType 模型评测或 Agent 评测，两种评分协议由服务端严格隔离。
  * @returns 可用比较范围、当前排行榜和最新破纪录节点。
  */
-export function getModelPerformance(scope?: string): Promise<ModelPerformanceResponse> {
+export function getModelPerformance(
+  scope?: string,
+  evaluationType: EvaluationType = "model",
+): Promise<ModelPerformanceResponse> {
   const query = new URLSearchParams();
   if (scope) query.set("scope", scope);
+  if (evaluationType === "agent") query.set("evaluation_type", evaluationType);
   const suffix = query.size > 0 ? `?${query.toString()}` : "";
   return fetchJson<ModelPerformanceResponse>(`/api/model-performance${suffix}`);
 }

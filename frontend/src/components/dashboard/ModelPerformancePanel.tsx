@@ -2,6 +2,7 @@ import { ArrowRight, Award, ChartNoAxesCombined, Medal, Sparkles } from "lucide-
 import { useEffect, useMemo, useState } from "react";
 
 import type {
+  EvaluationType,
   ModelPerformanceModel,
   ModelPerformancePoint,
   ModelPerformanceResponse,
@@ -10,10 +11,12 @@ import { cn } from "../../lib/utils";
 import { Panel } from "../ui/Panel";
 
 interface ModelPerformancePanelProps {
+  evaluationType: EvaluationType;
   report: ModelPerformanceResponse | null;
   loading: boolean;
   error: string | null;
   onScopeChange: (scope: string) => void;
+  onEvaluationTypeChange: (evaluationType: EvaluationType) => void;
   onStartEvaluation: () => void;
 }
 
@@ -202,19 +205,24 @@ function ModelLeaderboard({
 /**
  * 呈现按 Benchmark 或 Suite 隔离的模型历史成绩、排行和纪录趋势。
  *
+ * @param evaluationType 当前独立展示的模型评测或 Agent 评测成绩类型。
  * @param report 服务端已聚合的比较范围与模型表现。
  * @param loading 当前是否正在切换或刷新比较范围。
  * @param error 无法读取历史成绩时的可诊断消息。
  * @param onScopeChange 用户选择新的同口径比较范围时触发的加载回调。
+ * @param onEvaluationTypeChange 用户在模型与 Agent 独立成绩之间切换时触发的回调。
  * @param onStartEvaluation 空历史状态进入模型评测配置页的导航回调。
  */
 export function ModelPerformancePanel({
+  evaluationType,
   report,
   loading,
   error,
   onScopeChange,
+  onEvaluationTypeChange,
   onStartEvaluation,
 }: ModelPerformancePanelProps) {
+  const agentPerformance = evaluationType === "agent";
   const [selectedModel, setSelectedModel] = useState("");
   const models = report?.models || [];
 
@@ -237,9 +245,34 @@ export function ModelPerformancePanel({
     <Panel aria-labelledby="model-performance-title" className="overflow-hidden">
       <div className="flex flex-col gap-4 border-b border-border px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
         <div>
-          <p className="mb-1 text-[11px] font-semibold tracking-[0.12em] text-primary uppercase">Model performance</p>
-          <h2 id="model-performance-title" className="text-lg font-semibold tracking-tight text-ink">模型历史成绩</h2>
-          <p className="mt-1 text-sm leading-6 text-muted">只在同一个 Benchmark 或 Suite 内比较，避免不同口径混排。</p>
+          <p className="mb-1 text-[11px] font-semibold tracking-[0.12em] text-primary uppercase">
+            {agentPerformance ? "Agent performance" : "Model performance"}
+          </p>
+          <h2 id="model-performance-title" className="text-lg font-semibold tracking-tight text-ink">
+            {agentPerformance ? "Agent 基模历史成绩" : "模型历史成绩"}
+          </h2>
+          <p className="mt-1 text-sm leading-6 text-muted">
+            {agentPerformance
+              ? "固定同一 Agent 壳和完整 Benchmark，只比较不同基模。"
+              : "只在同一个 Benchmark 或 Suite 内比较，避免不同口径混排。"}
+          </p>
+          <div role="group" aria-label="成绩类型" className="mt-3 inline-flex rounded-md border border-border bg-slate-50 p-0.5">
+            {(["model", "agent"] as const).map((type) => (
+              <button
+                key={type}
+                type="button"
+                aria-label={type === "model" ? "模型评测成绩" : "Agent 评测成绩"}
+                aria-pressed={evaluationType === type}
+                onClick={() => onEvaluationTypeChange(type)}
+                className={cn(
+                  "rounded px-3 py-1.5 text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+                  evaluationType === type ? "bg-white text-primary shadow-sm" : "text-muted hover:text-ink",
+                )}
+              >
+                {type === "model" ? "模型评测" : "Agent 评测"}
+              </button>
+            ))}
+          </div>
         </div>
         <label className="min-w-56 text-xs font-semibold text-slate-600">
           比较范围
@@ -273,14 +306,18 @@ export function ModelPerformancePanel({
         <div className="grid min-h-72 place-items-center px-6 text-center">
           <div>
             <ChartNoAxesCombined className="mx-auto h-8 w-8 text-slate-300" aria-hidden="true" />
-            <p className="mt-3 text-sm font-semibold text-ink">还没有可比较的模型成绩</p>
-            <p className="mt-1 text-xs leading-5 text-muted">完成至少一次模型评测后，这里会按相同评测范围生成排行与趋势。</p>
+            <p className="mt-3 text-sm font-semibold text-ink">
+              {agentPerformance ? "还没有可比较的 Agent 成绩" : "还没有可比较的模型成绩"}
+            </p>
+            <p className="mt-1 text-xs leading-5 text-muted">
+              完成至少一次{agentPerformance ? "全量 Agent" : "模型"}评测后，这里会按相同评测范围生成排行与趋势。
+            </p>
             <button
               type="button"
               onClick={onStartEvaluation}
               className="mt-4 inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary-hover focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
-              发起模型评测
+              {agentPerformance ? "发起 Agent 评测" : "发起模型评测"}
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </div>
@@ -289,7 +326,7 @@ export function ModelPerformancePanel({
         <div className={cn("transition-opacity", loading && "opacity-60")}>
           <div className="grid border-b border-border sm:grid-cols-3">
             <div className="border-b border-border px-5 py-4 sm:border-r sm:border-b-0 sm:px-6">
-              <p className="text-[11px] font-medium text-muted">参与模型</p>
+              <p className="text-[11px] font-medium text-muted">{agentPerformance ? "参与基模" : "参与模型"}</p>
               <p className="mt-1 text-xl font-semibold text-ink">{models.length}</p>
             </div>
             <div className="border-b border-border px-5 py-4 sm:border-r sm:border-b-0 sm:px-6">

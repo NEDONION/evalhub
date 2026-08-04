@@ -39,7 +39,7 @@ const pageCopy: Record<WorkspaceView, { eyebrow: string; title: string; descript
   performance: {
     eyebrow: "Model performance",
     title: "模型成绩",
-    description: "在相同 Benchmark 或 Suite 范围内比较历史最佳、最近表现与成绩趋势。",
+    description: "按评测类型与相同 Benchmark 或 Suite，分别比较历史最佳、最近表现与成绩趋势。",
   },
 };
 
@@ -177,10 +177,14 @@ export default function App() {
 
             <div hidden={currentView !== "performance"}>
               <ModelPerformancePanel
+                evaluationType={dashboard.performanceEvaluationType}
                 report={dashboard.modelPerformance}
                 loading={dashboard.modelPerformanceLoading}
                 error={dashboard.modelPerformanceError}
                 onScopeChange={(scope) => void dashboard.selectPerformanceScope(scope)}
+                onEvaluationTypeChange={(evaluationType) =>
+                  void dashboard.selectPerformanceEvaluationType(evaluationType)
+                }
                 onStartEvaluation={() => setCurrentView("evaluation")}
               />
             </div>

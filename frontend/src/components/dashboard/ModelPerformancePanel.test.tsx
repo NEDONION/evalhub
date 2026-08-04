@@ -113,10 +113,12 @@ describe("ModelPerformancePanel", () => {
     const onScopeChange = vi.fn();
     render(
       <ModelPerformancePanel
+        evaluationType="model"
         report={report}
         loading={false}
         error={null}
         onScopeChange={onScopeChange}
+        onEvaluationTypeChange={vi.fn()}
         onStartEvaluation={vi.fn()}
       />,
     );
@@ -138,10 +140,12 @@ describe("ModelPerformancePanel", () => {
     const onScopeChange = vi.fn();
     render(
       <ModelPerformancePanel
+        evaluationType="model"
         report={report}
         loading={false}
         error={null}
         onScopeChange={onScopeChange}
+        onEvaluationTypeChange={vi.fn()}
         onStartEvaluation={vi.fn()}
       />,
     );
@@ -151,13 +155,35 @@ describe("ModelPerformancePanel", () => {
     expect(onScopeChange).toHaveBeenCalledWith("suite:core-v1");
   });
 
+  it("switches between model and Agent score types without mixing their labels", () => {
+    const onEvaluationTypeChange = vi.fn();
+    render(
+      <ModelPerformancePanel
+        evaluationType="agent"
+        report={report}
+        loading={false}
+        error={null}
+        onScopeChange={vi.fn()}
+        onEvaluationTypeChange={onEvaluationTypeChange}
+        onStartEvaluation={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Agent 基模历史成绩" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "模型评测成绩" }));
+
+    expect(onEvaluationTypeChange).toHaveBeenCalledWith("model");
+  });
+
   it("keeps prior rankings visible during a recoverable refresh error", () => {
     render(
       <ModelPerformancePanel
+        evaluationType="model"
         report={report}
         loading={false}
         error="暂时无法刷新"
         onScopeChange={vi.fn()}
+        onEvaluationTypeChange={vi.fn()}
         onStartEvaluation={vi.fn()}
       />,
     );
@@ -169,10 +195,12 @@ describe("ModelPerformancePanel", () => {
   it("does not present an initial load failure as a successful empty history", () => {
     render(
       <ModelPerformancePanel
+        evaluationType="model"
         report={null}
         loading={false}
         error="暂时无法读取模型成绩"
         onScopeChange={vi.fn()}
+        onEvaluationTypeChange={vi.fn()}
         onStartEvaluation={vi.fn()}
       />,
     );
@@ -185,10 +213,12 @@ describe("ModelPerformancePanel", () => {
     const onStartEvaluation = vi.fn();
     render(
       <ModelPerformancePanel
+        evaluationType="model"
         report={{ scopes: [], selected_scope: null, models: [], record: null }}
         loading={false}
         error={null}
         onScopeChange={vi.fn()}
+        onEvaluationTypeChange={vi.fn()}
         onStartEvaluation={onStartEvaluation}
       />,
     );

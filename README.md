@@ -105,7 +105,8 @@ flowchart LR
 ```
 
 Web 与 CLI 复用同一条 Python 评测核心链路。模型任务和 Agent 任务进入同一个持久化任务中心，运行中
-可以查看进度和资源，结束后可以回放节点证据并比较同一 Benchmark 或 Suite 下的模型成绩。
+可以查看进度和资源，结束后可以回放节点证据，并按模型评测或固定 Agent 壳的独立口径比较同一
+Benchmark 或 Suite 下的基模成绩。
 
 ## Benchmarks
 

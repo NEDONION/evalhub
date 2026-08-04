@@ -26,6 +26,7 @@ def performance_task(
     dataset: str = "gsm8k",
     suite_id: str | None = None,
     evaluation_type: EvaluationType = "model",
+    agent_difficulty: str | None = None,
     status: TaskStatus = "success",
     completed_samples: int = 10,
     total_samples: int = 10,
@@ -41,6 +42,7 @@ def performance_task(
         dataset: 单项 Benchmark 的稳定标识。
         suite_id: Suite 稳定标识；提供时不再按单项 Benchmark 分组。
         evaluation_type: 模型或 Agent 任务类型，用于验证排除逻辑。
+        agent_difficulty: Agent 任务覆盖的难度范围；缺省时使用完整难度集合。
         status: 持久化任务终态，用于覆盖不完整但错误标成功的回归场景。
         completed_samples: 已形成评分结果的持久化样本数。
         total_samples: 任务声明的持久化样本总数。
@@ -60,6 +62,7 @@ def performance_task(
         limit=None,
         evaluation_type=evaluation_type,
         agent_framework="pi" if evaluation_type == "agent" else None,
+        agent_difficulty=(agent_difficulty or "all") if evaluation_type == "agent" else None,
         suite_id=suite_id,
     )
     fingerprint = comparison_fingerprint
@@ -122,8 +125,8 @@ def test_performance_isolates_scopes_agents_and_ranks_historical_bests() -> None
     assert (report.record.model, report.record.task_id) == ("qwen", "qwen-record")
 
 
-def test_performance_defaults_to_most_used_scope_and_keeps_suites_separate() -> None:
-    """默认范围应选择有效运行最多的一组，并让 Suite 与单项任务严格分离。"""
+def test_performance_defaults_to_latest_scope_and_keeps_suites_separate() -> None:
+    """默认范围应跟随最近完成的有效成绩，并让 Suite 与单项任务严格分离。"""
     tasks = [
         performance_task("suite-a", model="qwen", score=0.55, minute=1, suite_id="core-v1"),
         performance_task("suite-b", model="llama", score=0.65, minute=2, suite_id="core-v1"),
@@ -133,10 +136,54 @@ def test_performance_defaults_to_most_used_scope_and_keeps_suites_separate() -> 
     report = build_model_performance(tasks, None)
 
     assert report.selected_scope is not None
-    assert report.selected_scope.key == "suite:core-v1"
-    assert report.selected_scope.run_count == 2
-    assert [item.model for item in report.models] == ["llama", "qwen"]
+    assert report.selected_scope.key == "benchmark:gsm8k"
+    assert report.selected_scope.run_count == 1
+    assert [item.model for item in report.models] == ["qwen"]
     assert {scope.key for scope in report.scopes} == {"suite:core-v1", "benchmark:gsm8k"}
+
+
+def test_agent_performance_uses_a_separate_full_benchmark_scope() -> None:
+    """Agent 成绩应只比较同一完整 Benchmark 的基模，不能混入模型评测分数。"""
+    tasks = [
+        performance_task("model-high", model="model-only", score=1.0, minute=1),
+        performance_task(
+            "agent-qwen",
+            model="qwen",
+            score=0.5,
+            minute=2,
+            dataset="coding_mini",
+            evaluation_type="agent",
+            completed_samples=6,
+            total_samples=6,
+        ),
+        performance_task(
+            "agent-gemma",
+            model="gemma",
+            score=0.25,
+            minute=3,
+            dataset="coding_mini",
+            evaluation_type="agent",
+            completed_samples=6,
+            total_samples=6,
+        ),
+        performance_task(
+            "agent-hard-only",
+            model="partial",
+            score=1.0,
+            minute=4,
+            dataset="coding_mini",
+            evaluation_type="agent",
+            agent_difficulty="hard",
+            completed_samples=2,
+            total_samples=2,
+        ),
+    ]
+
+    report = build_model_performance(tasks, None, evaluation_type="agent")
+
+    assert report.selected_scope is not None
+    assert report.selected_scope.key == "benchmark:coding_mini"
+    assert [item.model for item in report.models] == ["qwen", "gemma"]
 
 
 def test_performance_rejects_unknown_scope_but_allows_empty_history() -> None:

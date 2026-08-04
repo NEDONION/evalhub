@@ -67,6 +67,24 @@ describe("EvalHub API", () => {
     );
   });
 
+  it("requests Agent performance as a separate score type", async () => {
+    const response = {
+      scopes: [],
+      selected_scope: null,
+      models: [],
+      record: null,
+    };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getModelPerformance("benchmark:coding_mini", "agent")).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/model-performance?scope=benchmark%3Acoding_mini&evaluation_type=agent",
+      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+    );
+  });
+
   it("converts unsuccessful JSON responses to ApiError", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ ok: false, error: "Ollama 不可用" }, 500)));
 

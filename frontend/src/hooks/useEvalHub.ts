@@ -25,6 +25,7 @@ import type {
   EvaluationRequest,
   EvaluationTaskDetail,
   EvaluationTaskSummary,
+  EvaluationType,
   ModelPerformanceResponse,
   OllamaPullTask,
   OllamaStatus,
@@ -40,6 +41,7 @@ interface UseEvalHubResult {
   ollama: OllamaStatus | null;
   tasks: EvaluationTaskSummary[];
   modelPerformance: ModelPerformanceResponse | null;
+  performanceEvaluationType: EvaluationType;
   selectedTaskId: string | null;
   selectedTask: EvaluationTaskDetail | null;
   modelPullTask: OllamaPullTask | null;
@@ -64,6 +66,7 @@ interface UseEvalHubResult {
   cancelTask: (taskId: string) => Promise<EvaluationTaskDetail | null>;
   retryNode: (taskId: string, nodeId: string) => Promise<EvaluationTaskDetail | null>;
   selectPerformanceScope: (scope: string) => Promise<void>;
+  selectPerformanceEvaluationType: (evaluationType: EvaluationType) => Promise<void>;
 }
 
 /**
@@ -92,14 +95,21 @@ function replaceTask(
 }
 
 /**
- * 为已经形成分数的模型任务生成稳定签名，用于判断排行榜是否确实需要重载。
+ * 为指定评测类型中已经形成分数的任务生成稳定签名，用于判断排行榜是否需要重载。
  *
  * @param tasks 当前服务端任务摘要。
- * @returns 与任务顺序无关、仅受模型成绩变化影响的签名。
+ * @param evaluationType 当前独立展示的模型或 Agent 成绩类型。
+ * @returns 与任务顺序无关、仅受当前类型成绩变化影响的签名。
  */
-function modelScoreSignature(tasks: EvaluationTaskSummary[]): string {
+function modelScoreSignature(
+  tasks: EvaluationTaskSummary[],
+  evaluationType: EvaluationType,
+): string {
   return tasks
-    .filter((task) => task.evaluation_type !== "agent" && task.result_summary !== null)
+    .filter(
+      (task) =>
+        (task.evaluation_type || "model") === evaluationType && task.result_summary !== null,
+    )
     .map((task) => `${task.id}:${task.result_summary!.average_score}`)
     .sort()
     .join("|");
@@ -121,6 +131,8 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [tasks, setTasks] = useState<EvaluationTaskSummary[]>([]);
   const [modelPerformance, setModelPerformance] = useState<ModelPerformanceResponse | null>(null);
+  const [performanceEvaluationType, setPerformanceEvaluationType] =
+    useState<EvaluationType>("model");
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<EvaluationTaskDetail | null>(null);
   const [modelPullTask, setModelPullTask] = useState<OllamaPullTask | null>(null);
@@ -142,6 +154,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const taskListRequestVersionRef = useRef(0);
   const detailRequestVersionRef = useRef(0);
   const requestedPerformanceScopeRef = useRef<string | null>(null);
+  const performanceEvaluationTypeRef = useRef<EvaluationType>("model");
   const modelScoreSignatureRef = useRef("");
   const performanceRequestVersionRef = useRef(0);
   selectedTaskIdRef.current = selectedTaskId;
@@ -165,32 +178,41 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     });
   }, []);
 
-  const loadModelPerformance = useCallback(async (scope?: string): Promise<boolean> => {
-    requestedPerformanceScopeRef.current = scope || null;
-    const taskSignature = modelScoreSignature(latestTasksRef.current);
-    const requestVersion = performanceRequestVersionRef.current + 1;
-    performanceRequestVersionRef.current = requestVersion;
-    setModelPerformanceLoading(true);
-    try {
-      const report = await getModelPerformance(scope);
-      if (!mountedRef.current || performanceRequestVersionRef.current !== requestVersion) return false;
-      if (modelScoreSignature(latestTasksRef.current) !== taskSignature) return false;
-      requestedPerformanceScopeRef.current = report.selected_scope?.key || scope || null;
-      setModelPerformance(report);
-      setModelPerformanceError(null);
-      modelScoreSignatureRef.current = taskSignature;
-      return true;
-    } catch (error) {
-      if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
-        setModelPerformanceError(errorMessage(error));
+  const loadModelPerformance = useCallback(
+    async (
+      scope: string | undefined,
+      evaluationType: EvaluationType,
+    ): Promise<boolean> => {
+      const taskSignature = modelScoreSignature(latestTasksRef.current, evaluationType);
+      const requestVersion = performanceRequestVersionRef.current + 1;
+      performanceRequestVersionRef.current = requestVersion;
+      setModelPerformanceLoading(true);
+      try {
+        const report = await getModelPerformance(scope, evaluationType);
+        if (!mountedRef.current || performanceRequestVersionRef.current !== requestVersion) {
+          return false;
+        }
+        if (performanceEvaluationTypeRef.current !== evaluationType) return false;
+        if (modelScoreSignature(latestTasksRef.current, evaluationType) !== taskSignature) {
+          return false;
+        }
+        setModelPerformance(report);
+        setModelPerformanceError(null);
+        modelScoreSignatureRef.current = taskSignature;
+        return true;
+      } catch (error) {
+        if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
+          setModelPerformanceError(errorMessage(error));
+        }
+        return false;
+      } finally {
+        if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
+          setModelPerformanceLoading(false);
+        }
       }
-      return false;
-    } finally {
-      if (mountedRef.current && performanceRequestVersionRef.current === requestVersion) {
-        setModelPerformanceLoading(false);
-      }
-    }
-  }, []);
+    },
+    [],
+  );
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -246,7 +268,10 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
         setTaskError(errorMessage(tasksResult.reason));
       }
       // 成绩读取严格排在任务快照之后，避免终态任务与旧榜单同时成为稳定页面状态。
-      await loadModelPerformance(requestedPerformanceScopeRef.current || undefined);
+      await loadModelPerformance(
+        requestedPerformanceScopeRef.current || undefined,
+        performanceEvaluationTypeRef.current,
+      );
     }
     setRefreshing(false);
   }, [applyTaskList, baseUrl, loadModelPerformance, model]);
@@ -340,13 +365,17 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   );
 
   useEffect(() => {
-    const scoreSignature = modelScoreSignature(tasks);
+    const evaluationType = performanceEvaluationTypeRef.current;
+    const scoreSignature = modelScoreSignature(tasks, evaluationType);
     if (refreshing || scoreSignature === modelScoreSignatureRef.current) return undefined;
     let active = true;
     let retryId: number | undefined;
 
     // 成绩加载失败时保留未提交签名，并独立于任务轮询安排有限间隔重试。
-    void loadModelPerformance(requestedPerformanceScopeRef.current || undefined).then((success) => {
+    void loadModelPerformance(
+      requestedPerformanceScopeRef.current || undefined,
+      evaluationType,
+    ).then((success) => {
       if (!success && active && mountedRef.current) {
         retryId = window.setTimeout(() => setPerformanceRetryToken((value) => value + 1), 1500);
       }
@@ -506,6 +535,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     ollama,
     tasks,
     modelPerformance,
+    performanceEvaluationType,
     selectedTaskId,
     selectedTask,
     modelPullTask,
@@ -530,7 +560,17 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     cancelTask,
     retryNode,
     selectPerformanceScope: async (scope) => {
-      await loadModelPerformance(scope);
+      requestedPerformanceScopeRef.current = scope;
+      await loadModelPerformance(scope, performanceEvaluationTypeRef.current);
+    },
+    selectPerformanceEvaluationType: async (evaluationType) => {
+      if (performanceEvaluationTypeRef.current === evaluationType) return;
+      performanceEvaluationTypeRef.current = evaluationType;
+      requestedPerformanceScopeRef.current = null;
+      setPerformanceEvaluationType(evaluationType);
+      setModelPerformance(null);
+      setModelPerformanceError(null);
+      await loadModelPerformance(undefined, evaluationType);
     },
   };
 }

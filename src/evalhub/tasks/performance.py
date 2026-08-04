@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from evalhub.tasks.models import EvaluationTask
+from evalhub.tasks.models import EvaluationTask, EvaluationType
 
 PerformanceScopeKind = Literal["benchmark", "suite"]
 _HEXAGON_SUITE_ID = "evalhub-hexagon-v1"
@@ -62,12 +62,14 @@ class ModelPerformanceReport:
 def build_model_performance(
     tasks: list[EvaluationTask],
     scope: str | None,
+    evaluation_type: EvaluationType = "model",
 ) -> ModelPerformanceReport:
-    """从轻量任务摘要构建一个按可比范围隔离的模型成绩报告。
+    """从轻量任务摘要构建一个按类型和可比范围隔离的基模成绩报告。
 
     Args:
         tasks: 包含请求类型、模型、范围、得分和完成时间的任务摘要。
-        scope: `benchmark:<id>` 或 `suite:<id>`；为空时选择有效运行数最多的范围。
+        scope: `benchmark:<id>` 或 `suite:<id>`；为空时选择最近完成任务所属范围。
+        evaluation_type: 需要独立聚合的模型评测或 Agent 评测类型。
 
     Returns:
         范围列表、当前排行榜、模型历史点和最近刷新纪录。
@@ -75,14 +77,15 @@ def build_model_performance(
     Raises:
         ValueError: 请求的范围没有任何可比较模型成绩。
     """
-    # 所有排行榜只接受成功模型任务；Hexagon 再核对固定题数和协议指纹。
-    comparable = [task for task in tasks if _is_comparable(task)]
+    # 两类排行榜严格隔离；模型 Hexagon 与 Agent 全量任务分别执行完整性检查。
+    comparable = [task for task in tasks if _is_comparable(task, evaluation_type)]
     grouped = _group_by_scope(comparable)
     scopes = tuple(_build_scope(key, items) for key, items in grouped.items())
     scopes = tuple(sorted(scopes, key=lambda item: (-item.run_count, item.key)))
 
-    # 默认选择运行次数最多的范围；显式范围不存在时返回可诊断客户端错误。
-    selected_key = scope or (scopes[0].key if scopes else None)
+    # 未手选时跟随最近完成的有效成绩，使新范围完成后能立即成为页面默认内容。
+    latest = max(comparable, key=_task_time_key) if comparable else None
+    selected_key = scope or (_scope_key(latest) if latest else None)
     selected_scope = next((item for item in scopes if item.key == selected_key), None)
     if selected_key is not None and selected_scope is None:
         raise ValueError(f"unknown model performance scope: {selected_key}")
@@ -104,21 +107,30 @@ def build_model_performance(
     return ModelPerformanceReport(scopes, selected_scope, models, record)
 
 
-def _is_comparable(task: EvaluationTask) -> bool:
-    """判断任务是否具备进入模型历史比较的最小持久化事实。
+def _is_comparable(task: EvaluationTask, evaluation_type: EvaluationType) -> bool:
+    """判断任务是否具备进入指定成绩类型历史比较的最小持久化事实。
 
     Args:
         task: 不含大型结果正文、但包含请求、终态和样本计数的任务摘要。
+        evaluation_type: 当前请求的独立成绩类型。
 
     Returns:
-        非成功、Agent 或无分任务返回 ``False``；Hexagon 还必须是 30 题全量运行。
+        类型不符、非成功或无分任务返回 ``False``；各类型还需满足对应完整性要求。
     """
     if (
         task.status != "success"
-        or task.request.evaluation_type != "model"
+        or task.request.evaluation_type != evaluation_type
         or task.average_score is None
     ):
         return False
+    if evaluation_type == "agent":
+        # Agent 排行只接收完整难度集合，避免 2 题难度子集与 6 题全量结果混排。
+        return (
+            task.request.sample_mode == "all"
+            and task.request.agent_difficulty in {None, "all"}
+            and task.total_samples > 0
+            and task.completed_samples == task.total_samples
+        )
     if task.request.suite_id != _HEXAGON_SUITE_ID:
         return True
     # 仅靠 success 不足以识别旧数据中的部分套件，必须同时核对模式和持久化计数。
@@ -135,7 +147,7 @@ def _group_by_scope(tasks: list[EvaluationTask]) -> dict[str, list[EvaluationTas
     """按 Suite 或单 Benchmark 稳定键对有效模型任务分组。
 
     Args:
-        tasks: 已排除 Agent 和无分记录的模型任务。
+        tasks: 已排除其他评测类型、无分记录和不完整任务的可比任务。
 
     Returns:
         稳定范围键到该范围全部历史任务的映射。
@@ -168,7 +180,7 @@ def _scope_key(task: EvaluationTask) -> str:
     """返回任务唯一且不会混合 Suite 与 Benchmark 的可比范围键。
 
     Args:
-        task: 包含可选 Suite 标识和数据集标识的模型任务。
+        task: 包含可选 Suite 标识和数据集标识的模型或 Agent 任务。
 
     Returns:
         `suite:<id>` 或 `benchmark:<dataset>` 格式的稳定键。

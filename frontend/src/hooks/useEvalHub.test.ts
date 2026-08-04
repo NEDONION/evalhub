@@ -168,7 +168,7 @@ function deferred<T>(): {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
-  vi.mocked(getModelPerformance).mockResolvedValue(emptyPerformance);
+  vi.mocked(getModelPerformance).mockReset().mockResolvedValue(emptyPerformance);
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [] });
   vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
   vi.mocked(getSuites).mockResolvedValue({ suites: [] });
@@ -217,7 +217,7 @@ describe("useEvalHub local asset orchestration", () => {
       await result.current.selectPerformanceScope("benchmark:gsm8k");
     });
 
-    expect(getModelPerformance).toHaveBeenLastCalledWith("benchmark:gsm8k");
+    expect(getModelPerformance).toHaveBeenLastCalledWith("benchmark:gsm8k", "model");
     expect(result.current.modelPerformance).toEqual(scopedPerformance);
   });
 
@@ -234,7 +234,7 @@ describe("useEvalHub local asset orchestration", () => {
       await tasksRequest.promise;
     });
 
-    await waitFor(() => expect(getModelPerformance).toHaveBeenCalledWith(undefined));
+    await waitFor(() => expect(getModelPerformance).toHaveBeenCalledWith(undefined, "model"));
   });
 
   it("retries performance loading when a newly scored snapshot hits a transient error", async () => {
@@ -288,11 +288,11 @@ describe("useEvalHub local asset orchestration", () => {
       await scopeLoad;
     });
 
-    expect(getModelPerformance).toHaveBeenLastCalledWith("benchmark:mmlu");
+    expect(getModelPerformance).toHaveBeenLastCalledWith("benchmark:mmlu", "model");
     expect(result.current.modelPerformance).toEqual(requestedPerformance);
   });
 
-  it("retains the server-selected default scope for later score refreshes", async () => {
+  it("keeps following the latest server default until the user selects a scope", async () => {
     const initialPerformance = scopedPerformance("gsm8k", "GSM8K");
     vi.mocked(getModelPerformance).mockResolvedValue(initialPerformance);
     const { result } = renderHook(() =>
@@ -304,7 +304,27 @@ describe("useEvalHub local asset orchestration", () => {
       await result.current.refresh();
     });
 
-    expect(getModelPerformance).toHaveBeenLastCalledWith("benchmark:gsm8k");
+    expect(getModelPerformance).toHaveBeenLastCalledWith(undefined, "model");
+  });
+
+  it("switches to an independent Agent score type without reusing the model scope", async () => {
+    const initialPerformance = scopedPerformance("gsm8k", "GSM8K");
+    const agentPerformance = scopedPerformance("coding_mini", "EvalHub Coding Mini");
+    vi.mocked(getModelPerformance)
+      .mockResolvedValueOnce(initialPerformance)
+      .mockResolvedValueOnce(agentPerformance);
+    const { result } = renderHook(() =>
+      useEvalHub("qwen2.5:1.5b", "http://127.0.0.1:11434"),
+    );
+    await waitFor(() => expect(result.current.modelPerformance).toEqual(initialPerformance));
+
+    await act(async () => {
+      await result.current.selectPerformanceEvaluationType("agent");
+    });
+
+    expect(getModelPerformance).toHaveBeenLastCalledWith(undefined, "agent");
+    expect(result.current.performanceEvaluationType).toBe("agent");
+    expect(result.current.modelPerformance).toEqual(agentPerformance);
   });
 
   it("keeps the latest model performance scope when requests finish out of order", async () => {

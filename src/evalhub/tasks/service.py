@@ -18,6 +18,7 @@ from evalhub.tasks.models import (
     EvaluationNodeEvent,
     EvaluationSamplePage,
     EvaluationTask,
+    EvaluationType,
     ResourceUsage,
     TaskRequest,
 )
@@ -188,20 +189,25 @@ class EvaluationTaskService:
         """返回按创建时间倒序排列的轻量任务快照。"""
         return self._repository.list()
 
-    def model_performance(self, scope: str | None = None) -> ModelPerformanceReport:
-        """按同一 Benchmark 或 Suite 聚合模型历史最好成绩和趋势。
+    def model_performance(
+        self,
+        scope: str | None = None,
+        evaluation_type: EvaluationType = "model",
+    ) -> ModelPerformanceReport:
+        """按评测类型和同一 Benchmark 或 Suite 聚合基模历史成绩。
 
         Args:
             scope: 可选的 `benchmark:<id>` 或 `suite:<id>` 稳定范围键。
+            evaluation_type: 模型评测或 Agent 评测；两类成绩不会混合。
 
         Returns:
-            已排除 Agent 和无分任务的模型成绩聚合报告。
+            已排除其他评测类型和无分任务的成绩聚合报告。
 
         Raises:
             ValueError: 显式请求的范围不存在有效模型成绩。
         """
         tasks = self._repository.list_scored()
-        return build_model_performance(tasks, scope)
+        return build_model_performance(tasks, scope, evaluation_type=evaluation_type)
 
     def get(self, task_id: str) -> EvaluationTask:
         """按稳定标识返回包含完整结果的任务详情。"""
