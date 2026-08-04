@@ -11,6 +11,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { JSX } from "react";
 
 import { getEvaluationNode, getEvaluationNodeSamples } from "../../lib/api";
+import { sampleMetadata } from "../../lib/assets";
+import { formatScore } from "../../lib/evaluation";
 import type {
   EvaluationNodeDetail,
   EvaluationNodeEvent,
@@ -47,7 +49,7 @@ const kindLabels: Record<string, string> = {
   workflow_finalize: "生成最终报告",
 };
 
-/** 展示持久化 DAG 节点、运行快照、审计事件和失败样本。 */
+/** 展示持久化 DAG 节点、运行快照、审计事件和可审计样本。 */
 export function EvaluationNodeInspector({
   taskId,
   taskStatus,
@@ -88,7 +90,7 @@ export function EvaluationNodeInspector({
     setError(null);
     void Promise.all([
       getEvaluationNode(taskId, selectedNodeId),
-      getEvaluationNodeSamples(taskId, selectedNodeId, { status: "failed", limit: 20 }),
+      getEvaluationNodeSamples(taskId, selectedNodeId, { limit: 20 }),
     ])
       .then(([nextDetail, samplePage]) => {
         if (!active) return;
@@ -107,19 +109,18 @@ export function EvaluationNodeInspector({
     };
   }, [taskId, selectedNodeId, nodeRevision(nodes)]);
 
-  async function loadMoreFailures(): Promise<void> {
+  async function loadMoreSamples(): Promise<void> {
     if (!selectedNodeId || !nextCursor || loading) return;
     setLoading(true);
     try {
       const page = await getEvaluationNodeSamples(taskId, selectedNodeId, {
-        status: "failed",
         limit: 20,
         cursor: nextCursor,
       });
       setSamples((current) => [...current, ...page.samples]);
       setNextCursor(page.next_cursor);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "失败样本读取失败");
+      setError(reason instanceof Error ? reason.message : "样本明细读取失败");
     } finally {
       setLoading(false);
     }
@@ -205,7 +206,7 @@ export function EvaluationNodeInspector({
               }
               retrying={retryingNodeId === detail.id}
               onRetry={() => onRetry(taskId, detail.id)}
-              onLoadMore={() => void loadMoreFailures()}
+              onLoadMore={() => void loadMoreSamples()}
             />
           ) : null}
         </div>
@@ -228,8 +229,8 @@ interface NodeDetailProps {
 /**
  * 展示单个节点的运行快照，并为 Agent 节点切换到可读的实时过程时间线。
  *
- * @param props 节点详情、失败样本、重试和分页操作。
- * @returns 包含诊断、原始检查点、事件与失败样本的节点详情区域。
+ * @param props 节点详情、样本明细、重试和分页操作。
+ * @returns 包含诊断、原始检查点、事件与可读样本证据的节点详情区域。
  */
 function NodeDetail({
   detail,
@@ -271,34 +272,17 @@ function NodeDetail({
         </div>
       ) : null}
 
-      <details className="border-t border-border">
-        <summary className="cursor-pointer px-5 py-3 text-xs font-medium text-muted hover:bg-slate-50 sm:px-6">
-          输入、检查点与输出
-        </summary>
-        <pre className="max-h-72 overflow-auto border-t border-slate-800 bg-slate-950 p-4 font-mono text-[11px] leading-5 text-slate-200">
-          {JSON.stringify({ input: detail.input, checkpoint: detail.checkpoint, output: detail.output }, null, 2)}
-        </pre>
-      </details>
-
       <NodeEventTimeline detail={detail} />
 
       {samples.length > 0 ? (
         <div className="border-t border-border">
           <div className="flex items-center justify-between gap-3 px-5 py-3 sm:px-6">
-            <h4 className="text-xs font-semibold text-ink">失败样本</h4>
+            <h4 className="text-xs font-semibold text-ink">样本明细</h4>
             <span className="text-[11px] text-muted">{samples.length} 条</span>
           </div>
-          <div className="max-h-72 divide-y divide-border overflow-auto border-t border-border">
+          <div className="max-h-[36rem] divide-y divide-border overflow-auto border-t border-border">
             {samples.map((sample) => (
-              <div key={sample.sample_key} className="px-5 py-3 sm:px-6">
-                <div className="flex items-center justify-between gap-3">
-                  <code className="truncate font-mono text-[11px] text-slate-500">{sample.sample_key}</code>
-                  <span className="font-mono text-[10px] text-red-600">ATTEMPT {sample.attempt_count}</span>
-                </div>
-                <p className="mt-1 truncate text-xs text-muted">
-                  {sampleErrorMessage(sample)}
-                </p>
-              </div>
+              <SampleEvidence key={sample.sample_key} sample={sample} />
             ))}
           </div>
           {hasMoreSamples ? (
@@ -464,8 +448,31 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
-function sampleErrorMessage(sample: EvaluationSampleCheckpoint): string {
-  const message = sample.last_error?.message;
-  if (typeof message === "string") return message;
-  return JSON.stringify(sample.last_error || sample.result || {});
+function SampleEvidence({ sample }: { sample: EvaluationSampleCheckpoint }): JSX.Element {
+  const metadata = sampleMetadata(sample.result?.metadata);
+  const input = typeof sample.input.input === "string" ? sample.input.input : "—";
+  const score = typeof sample.result?.score === "number" ? formatScore(sample.result.score) : "—";
+  const source = metadata?.source || "—";
+  const sourceKey = metadata?.source_key || sample.sample_key;
+
+  return (
+    <article className="px-5 py-4 sm:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+        <span className="font-medium text-ink">{sample.status === "success" ? "成功" : "失败"}</span>
+        <span className="text-muted">得分 {score}</span>
+      </div>
+      <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink">{input}</p>
+      {metadata?.input_zh ? (
+        <div className="mt-3 border-l-2 border-blue-200 bg-blue-50/60 px-3 py-2.5 text-xs leading-5 text-slate-700">
+          <strong className="block font-medium text-ink">中文译文</strong>
+          <p className="mt-1 whitespace-pre-wrap">{metadata.input_zh}</p>
+          <span className="mt-1 block text-[10px] text-muted">EvalHub 中文辅助翻译，非官方译文</span>
+        </div>
+      ) : null}
+      <div className="mt-3 grid gap-1 text-[11px] text-muted sm:grid-cols-2">
+        <span>来源 {source}</span>
+        <span>来源键 <code className="font-mono text-slate-600">{sourceKey}</code></span>
+      </div>
+    </article>
+  );
 }

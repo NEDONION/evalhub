@@ -258,7 +258,7 @@ export function EvaluationForm({
                   </select>
                   {selectedSuite ? (
                     <p className="mt-2 text-xs leading-5 text-amber-700">
-                      当前已接通 {selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个本地执行器；
+                      当前已就绪 {selectedSuite.ready_count ?? selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个执行器；
                       其余节点会明确记录为阻塞，不会产生虚假分数。
                     </p>
                   ) : null}

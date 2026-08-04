@@ -6,7 +6,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from evalhub.benchmarks import (
-    ExecutorKind,
+    BenchmarkSpec,
+    Capability,
+    ExecutorReadiness,
+    benchmark_readiness,
     benchmark_registry,
     get_benchmark_spec,
     get_suite_spec,
@@ -498,34 +501,9 @@ def _benchmark_catalog() -> dict[str, object]:
         "safety_trust": "安全可信",
     }
     benchmarks = []
-    # Registry 顺序即套件展示顺序；只把已经接通的原生执行器标记为可运行。
+    # Registry 顺序即套件展示顺序；所有状态统一经共享就绪检查计算。
     for spec in benchmark_registry().values():
-        locally_runnable = spec.executor == ExecutorKind.NATIVE
-        reason = None
-        if not locally_runnable:
-            # 未接通执行器仍公开规格，但必须返回可诊断原因，不能伪装成本地可用。
-            executor_name = {
-                ExecutorKind.LM_EVAL: "lm_eval",
-                ExecutorKind.SANDBOXED_CODE: "代码沙箱",
-            }[spec.executor]
-            reason = f"{executor_name} 执行器尚未配置"
-        # 显式选择公开字段，防止内部生成配置或枚举表示意外改变 HTTP 契约。
-        benchmarks.append(
-            {
-                "id": spec.id,
-                "version": spec.version,
-                "display_name": spec.display_name,
-                "capability": spec.capability.value,
-                "capability_label": capability_labels[spec.capability.value],
-                "dataset_source": spec.dataset_source,
-                "dataset_revision": spec.dataset_revision,
-                "homepage": spec.homepage,
-                "executor": spec.executor.value,
-                "metric": spec.metric,
-                "locally_runnable": locally_runnable,
-                "readiness_reason": reason,
-            }
-        )
+        benchmarks.append(_benchmark_payload(spec, capability_labels))
     return {"benchmarks": benchmarks}
 
 
@@ -537,12 +515,20 @@ def _suite_catalog() -> dict[str, object]:
     """
     benchmarks = benchmark_registry()
     suites = []
-    # 每次从同一 Registry 计算计数，避免套件响应与 Benchmark 就绪状态漂移。
+    # 每个套件成员均重用 Benchmark 目录的相同就绪语义，避免 Docker 状态产生漂移。
     for spec in suite_registry().values():
-        runnable_count = sum(
-            benchmarks[item].executor == ExecutorKind.NATIVE for item in spec.benchmark_ids
+        members = [_suite_member_payload(benchmarks[item]) for item in spec.benchmark_ids]
+        ready_count = sum(member["readiness"]["ready"] for member in members)
+        expected_sample_count = sum(
+            benchmarks[item].expected_sample_count or 0 for item in spec.benchmark_ids
         )
-        # 套件可以部分就绪，因此同时暴露总数和可运行数供调用方明确提示。
+        # Capability 枚举定义显示顺序，安全可信的两个 Benchmark 不应重复占用一个维度。
+        capabilities = [
+            capability.value
+            for capability in Capability
+            if any(benchmarks[item].capability == capability for item in spec.benchmark_ids)
+        ]
+        # 保留旧计数字段，新增字段让新客户端无需根据成员状态自行推断。
         suites.append(
             {
                 "id": spec.id,
@@ -550,10 +536,80 @@ def _suite_catalog() -> dict[str, object]:
                 "display_name": spec.display_name,
                 "benchmark_ids": list(spec.benchmark_ids),
                 "benchmark_count": len(spec.benchmark_ids),
-                "locally_runnable_count": runnable_count,
+                "locally_runnable_count": ready_count,
+                "expected_sample_count": expected_sample_count,
+                "capabilities": capabilities,
+                "ready_count": ready_count,
+                "members": members,
             }
         )
     return {"suites": suites}
+
+
+def _benchmark_payload(spec: BenchmarkSpec, capability_labels: dict[str, str]) -> dict[str, object]:
+    """将 Benchmark 规格与共享执行器检查结果转换为兼容目录响应。
+
+    Args:
+        spec: Registry 返回的不可变 Benchmark 规格。
+        capability_labels: 能力稳定标识对应的中文显示名称。
+
+    Returns:
+        同时包含旧版可运行字段和新版结构化就绪状态的安全 JSON 字典。
+    """
+    readiness = benchmark_readiness(spec)
+    # 显式选择公开字段，避免内部生成配置或枚举表示意外改变 HTTP 契约。
+    return {
+        "id": spec.id,
+        "version": spec.version,
+        "display_name": spec.display_name,
+        "capability": spec.capability.value,
+        "capability_label": capability_labels[spec.capability.value],
+        "dataset_source": spec.dataset_source,
+        "dataset_revision": spec.dataset_revision,
+        "homepage": spec.homepage,
+        "executor": spec.executor.value,
+        "metric": spec.metric,
+        "expected_sample_count": spec.expected_sample_count,
+        "locally_runnable": readiness.ready,
+        "readiness_reason": None if readiness.ready else readiness.message,
+        "readiness": _readiness_payload(readiness, spec.id),
+    }
+
+
+def _suite_member_payload(spec: BenchmarkSpec) -> dict[str, object]:
+    """提供套件成员所需的最小身份、样本规模和执行器就绪信息。
+
+    Args:
+        spec: 已由套件引用验证过的 Benchmark 规格。
+
+    Returns:
+        不包含内部生成参数的成员响应，供客户端审计套件准备度。
+    """
+    readiness = benchmark_readiness(spec)
+    return {
+        "id": spec.id,
+        "display_name": spec.display_name,
+        "capability": spec.capability.value,
+        "expected_sample_count": spec.expected_sample_count,
+        "readiness": _readiness_payload(readiness, spec.id),
+    }
+
+
+def _readiness_payload(readiness: ExecutorReadiness, benchmark_id: str) -> dict[str, object]:
+    """把共享就绪状态转为稳定 API 字段，并为 HumanEval 公开唯一构建指引。
+
+    Args:
+        readiness: 共享检查返回的就绪结果。
+        benchmark_id: 当前 Benchmark 稳定标识，用于识别固定 HumanEval 构建命令。
+
+    Returns:
+        客户端可直接显示的状态码、说明和可选构建命令。
+    """
+    payload = {"ready": readiness.ready, "code": readiness.code, "message": readiness.message}
+    # 镜像缺失和 Docker 不可用都只能通过这条受控脚本修复，不能推测其他命令。
+    if benchmark_id == "hexagon-humaneval" and not readiness.ready:
+        payload["build_command"] = "./scripts/build_humaneval_image.sh"
+    return payload
 
 
 def _first(query: dict[str, list[str]], key: str, default: str) -> str:

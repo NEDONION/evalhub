@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from types import MethodType
 from typing import cast
 
+from evalhub.benchmarks import Capability
 from evalhub.server import EvalHubRequestHandler
 from evalhub.tasks import (
     EvaluationNode,
@@ -19,7 +20,7 @@ from evalhub.tasks import (
     TaskRequest,
 )
 from evalhub.tasks.performance import ModelPerformanceReport, build_model_performance
-from evalhub.tasks.presentation import task_detail
+from evalhub.tasks.presentation import sample_checkpoint, task_detail
 
 
 def request_fixture() -> TaskRequest:
@@ -556,6 +557,61 @@ def test_registry_endpoints_expose_real_readiness_without_false_availability() -
     assert benchmarks["mmlu-pro"]["readiness_reason"] == "lm_eval 执行器尚未配置"
     assert suite_response["suites"][0]["benchmark_count"] == 13
     assert suite_response["suites"][0]["locally_runnable_count"] == 2
+
+
+def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness() -> None:
+    """Hexagon 套件应公开固定样本数、六维能力和每个成员的真实就绪状态。"""
+    status, response = call_handler(
+        method="GET", path="/api/suites", service=FakeTaskService(task_fixture())
+    )
+
+    suite = next(item for item in response["suites"] if item["id"] == "evalhub-hexagon-v1")
+    humaneval = next(item for item in suite["members"] if item["id"] == "hexagon-humaneval")
+
+    assert status == 200
+    assert suite["expected_sample_count"] == 60
+    assert suite["benchmark_count"] == 7
+    assert suite["capabilities"] == [item.value for item in Capability]
+    assert suite["ready_count"] == sum(item["readiness"]["ready"] for item in suite["members"])
+    assert humaneval["readiness"]["code"] == "executor_not_ready"
+    assert humaneval["readiness"]["build_command"] == "./scripts/build_humaneval_image.sh"
+
+
+def test_sample_checkpoint_exposes_only_safe_translation_and_source_metadata() -> None:
+    """样本检查点只应保留展示所需的双语来源字段，不能泄漏隐藏判题材料。"""
+    sample = EvaluationSampleCheckpoint(
+        node_id="node_api",
+        task_id="job_api",
+        sample_key="HumanEval/7",
+        sample_index=6,
+        status="failed",
+        attempt_count=1,
+        input={"input": "English prompt", "reference": "hidden canonical solution"},
+        result={
+            "score": 0.0,
+            "metadata": {
+                "input_zh": "中文题目",
+                "reference_zh": None,
+                "source": "HumanEval",
+                "source_key": "HumanEval/7",
+                "canonical_solution": "hidden canonical solution",
+                "test": "hidden test",
+            },
+            "raw_secret_result": "never expose",
+        },
+    )
+
+    response = sample_checkpoint(sample)
+
+    assert response["result"] == {
+        "score": 0.0,
+        "metadata": {
+            "input_zh": "中文题目",
+            "reference_zh": None,
+            "source": "HumanEval",
+            "source_key": "HumanEval/7",
+        },
+    }
 
 
 def test_create_suite_evaluation_persists_suite_id() -> None:

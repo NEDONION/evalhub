@@ -186,4 +186,54 @@ describe("EvaluationNodeInspector", () => {
     expect(screen.getByText("1 passed")).toBeInTheDocument();
     expect(screen.getByText("AssertionError: total")).toBeInTheDocument();
   });
+
+  it("renders every sample as a bilingual evidence ledger without hidden HumanEval material", async () => {
+    const humaneval = node("node-humaneval", "hexagon-humaneval");
+    vi.mocked(getEvaluationNode).mockResolvedValue(detail(humaneval));
+    vi.mocked(getEvaluationNodeSamples).mockResolvedValue({
+      samples: [
+        {
+          task_id: "task-1",
+          node_id: humaneval.id,
+          sample_key: "HumanEval/7",
+          sample_index: 6,
+          status: "failed",
+          attempt_count: 1,
+          input: { input: "English prompt", reference: "hidden canonical solution" },
+          result: {
+            score: 0,
+            metadata: {
+              input_zh: "中文辅助翻译",
+              reference_zh: null,
+              source: "HumanEval",
+              source_key: "HumanEval/7",
+            },
+          },
+          last_error: null,
+          created_at: null,
+          updated_at: null,
+          finished_at: null,
+        },
+      ],
+      next_cursor: null,
+    });
+
+    render(
+      <EvaluationNodeInspector
+        taskId="task-1"
+        taskStatus="failed"
+        nodes={[humaneval]}
+        retryingNodeId={null}
+        onRetry={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("样本明细")).toBeInTheDocument();
+    expect(screen.getByText("English prompt")).toBeInTheDocument();
+    expect(screen.getByText("中文辅助翻译")).toBeInTheDocument();
+    expect(screen.getByText("EvalHub 中文辅助翻译，非官方译文")).toBeInTheDocument();
+    expect(screen.getByText("HumanEval/7")).toBeInTheDocument();
+    expect(screen.queryByText("hidden canonical solution")).toBeNull();
+    expect(getEvaluationNodeSamples).toHaveBeenCalledWith("task-1", humaneval.id, { limit: 20 });
+  });
 });

@@ -1,3 +1,5 @@
+import type { EvaluationSampleMetadata } from "../types";
+
 export interface DownloadRange {
   minimumSeconds: number;
   maximumSeconds: number;
@@ -64,4 +66,29 @@ export function estimateDownloadRange(bytes: number | null | undefined): Downloa
     minimumSeconds: Math.ceil((bytes * 8) / MAXIMUM_BITS_PER_SECOND),
     maximumSeconds: Math.ceil((bytes * 8) / MINIMUM_BITS_PER_SECOND),
   };
+}
+
+/**
+ * 白名单化样本翻译和来源字段，防止服务端扩展结果 JSON 时意外进入样本审计界面。
+ *
+ * @param value 未经信任的样本结果 metadata。
+ * @returns 只含已定义字符串或允许为空字段的展示元数据；非法输入返回 null。
+ */
+export function sampleMetadata(value: unknown): EvaluationSampleMetadata | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const output: EvaluationSampleMetadata = {};
+  const stringKeys = ["input_zh", "source", "source_key", "source_revision", "translation_version"] as const;
+
+  for (const key of stringKeys) {
+    if (key in input && typeof input[key] !== "string") return null;
+    if (typeof input[key] === "string") output[key] = input[key];
+  }
+  if ("reference_zh" in input && input.reference_zh !== null && typeof input.reference_zh !== "string") {
+    return null;
+  }
+  if (typeof input.reference_zh === "string" || input.reference_zh === null) {
+    output.reference_zh = input.reference_zh;
+  }
+  return Object.keys(output).length > 0 ? output : null;
 }
