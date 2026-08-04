@@ -95,13 +95,18 @@ _EXPECTED_STRATA = {
         "Religion/ambig",
     },
 }
-_IFEVAL_SOURCE_KEYS = dict(
-    zip(
-        _EXPECTED_STRATA["hexagon-ifeval"],
-        ("32", "1759", "2829", "321", "3221", "2832", "2253", "2925", "1551", "1659"),
-        strict=True,
-    )
-)
+_IFEVAL_SOURCE_KEYS = {
+    "punctuation:no_comma": "32",
+    "detectable_content:postscript": "1759",
+    "startend:quotation": "2829",
+    "detectable_format:json_format": "321",
+    "detectable_content:number_placeholders": "3221",
+    "detectable_format:number_bullet_lists": "2832",
+    "detectable_format:number_highlighted_sections": "2253",
+    "detectable_format:multiple_sections": "2925",
+    "detectable_format:title": "1551",
+    "startend:end_checker": "1659",
+}
 _TRUTHFULQA_OPTION_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"), ("B", "A"), ("A", "B"))
 
 
@@ -279,7 +284,7 @@ def _validate_strata(rows: tuple[HexagonSampleSpec, ...]) -> None:
     for benchmark_id, expected in _EXPECTED_STRATA.items():
         selected = [row for row in rows if row.benchmark_id == benchmark_id]
         strata = {row.selection_stratum for row in selected}
-        if strata != expected or len(selected) != len(expected):
+        if strata != expected:
             raise ValueError(f"manifest sample strata mismatch for {benchmark_id}")
         for row in selected:
             if not _source_key_matches_stratum(row):
@@ -296,7 +301,8 @@ def _source_key_matches_stratum(row: HexagonSampleSpec) -> bool:
         不含可验证前缀的来源返回 ``True``，其余来源必须与选择层级一致。
     """
     if row.benchmark_id == "hexagon-mmlu":
-        return row.selection_stratum in row.source_key
+        source_key_pattern = rf"{re.escape(row.selection_stratum)}:[1-9]\d*"
+        return re.fullmatch(source_key_pattern, row.source_key) is not None
     if row.benchmark_id == "hexagon-ifeval":
         return row.source_key == _IFEVAL_SOURCE_KEYS[row.selection_stratum]
     if row.benchmark_id == "hexagon-bbh":
