@@ -275,7 +275,7 @@ def test_create_evaluation_returns_accepted_task() -> None:
 
 
 def test_create_agent_evaluation_returns_accepted_task() -> None:
-    """合法 Codex Agent 请求应保留评测类型和框架后立即进入队列。"""
+    """合法 Pi Agent 请求应保留评测类型和框架后立即进入队列。"""
     service = FakeTaskService(task_fixture())
     status, response = call_handler(
         method="POST",
@@ -283,7 +283,7 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
         service=service,
         payload={
             "evaluation_type": "agent",
-            "agent_framework": "codex",
+            "agent_framework": "pi",
             "dataset": "coding_mini",
             "adapter": "ollama",
             "model": "qwen2.5-coder:7b",
@@ -298,24 +298,24 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
     assert response["ok"] is True
     assert service.submitted_request is not None
     assert service.submitted_request.evaluation_type == "agent"
-    assert service.submitted_request.agent_framework == "codex"
+    assert service.submitted_request.agent_framework == "pi"
     assert service.submitted_request.agent_difficulty == "hard"
     assert service.submitted_request.sample_mode == "all"
     assert service.submitted_request.dataset == "coding_mini"
 
 
 def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
-    """Agent 首版只允许 Codex、Coding Mini 和 Ollama 的固定组合。"""
+    """Agent 首版只允许 Pi、Coding Mini 和 Ollama 的固定组合。"""
     base_payload = {
         "evaluation_type": "agent",
-        "agent_framework": "codex",
+        "agent_framework": "pi",
         "dataset": "coding_mini",
         "adapter": "ollama",
         "model": "local-test",
         "sample_mode": "all",
     }
     invalid_cases = [
-        ({**base_payload, "agent_framework": "unknown"}, "agent_framework must be codex"),
+        ({**base_payload, "agent_framework": "unknown"}, "agent_framework must be pi"),
         ({**base_payload, "dataset": "gsm8k"}, "agent dataset must be coding_mini"),
         ({**base_payload, "adapter": "oracle"}, "agent adapter must be ollama"),
         (

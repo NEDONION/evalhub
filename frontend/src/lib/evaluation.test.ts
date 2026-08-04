@@ -21,7 +21,7 @@ const baseValues: EvaluationFormValues = {
   suiteId: null,
 };
 
-it("builds the fixed Codex Coding Mini request for Agent evaluation", () => {
+it("builds the fixed Pi Coding Mini request for Agent evaluation", () => {
   expect(
     buildEvaluationRequest({
       ...baseValues,
@@ -34,7 +34,7 @@ it("builds the fixed Codex Coding Mini request for Agent evaluation", () => {
     }),
   ).toEqual({
     evaluation_type: "agent",
-    agent_framework: "codex",
+    agent_framework: "pi",
     dataset: "coding_mini",
     adapter: "ollama",
     model: baseValues.model,

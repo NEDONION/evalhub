@@ -10,7 +10,7 @@ from threading import Event
 from time import monotonic
 from typing import Protocol
 
-from evalhub.agent.codex import AgentTraceEvent, TraceCallback
+from evalhub.agent.pi import AgentTraceEvent, TraceCallback
 from evalhub.benchmarks import (
     DockerHumanEvalSandbox,
     ExecutorKind,
@@ -19,7 +19,7 @@ from evalhub.benchmarks import (
     load_humaneval_problems,
     run_humaneval_benchmark,
 )
-from evalhub.benchmarks.coding_mini import run_codex_agent_benchmark
+from evalhub.benchmarks.coding_mini import run_pi_agent_benchmark
 from evalhub.benchmarks.harness import run_harness_benchmark
 from evalhub.cli import build_model_adapter, run_real_benchmark
 from evalhub.datasets import prepare_dataset
@@ -118,7 +118,7 @@ def _evaluation_process(
     try:
         # Agent 样本由难度目录筛选；不再复用模型评测的条数限制语义。
         if request.evaluation_type == "agent":
-            result = run_codex_agent_benchmark(
+            result = run_pi_agent_benchmark(
                 job_id=task_id,
                 model=request.model,
                 base_url=request.base_url,

@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from evalhub.agent.codex import AgentTraceEvent, CodexAgentError, CodexRunResult, TraceCallback
+from evalhub.agent.pi import AgentTraceEvent, PiAgentError, PiRunResult, TraceCallback
 from evalhub.benchmarks.coding_mini import (
     CAPABILITY_DIMENSIONS,
     _create_workspace,
     _run_sample,
     _select_samples,
     coding_mini_samples,
-    run_codex_agent_benchmark,
+    run_pi_agent_benchmark,
 )
 
 
@@ -65,7 +65,7 @@ def test_coding_mini_rejects_unknown_difficulty() -> None:
 
 
 class EditingFakeRunner:
-    """按样本工作区写入确定性修复，用来隔离真实 Codex 与 Ollama。"""
+    """按样本工作区写入确定性修复，用来隔离真实 Pi 与 Ollama。"""
 
     def __init__(self, *, skip_sample: str | None = None) -> None:
         """配置一个可选的不修复样本，以验证隐藏 Verifier 会拒绝错误代码。"""
@@ -73,8 +73,8 @@ class EditingFakeRunner:
         self.workspaces: list[Path] = []
 
     def version(self) -> str:
-        """返回测试固定 CLI 版本，避免调用用户机器上的 Codex。"""
-        return "codex-cli test"
+        """返回测试固定 CLI 版本，避免调用用户机器上的 Pi。"""
+        return "pi-cli test"
 
     def run(
         self,
@@ -85,7 +85,7 @@ class EditingFakeRunner:
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
+    ) -> PiRunResult:
         """根据工作区样本标识写入正确实现，并返回稳定的 Agent 元数据。"""
         del instruction, model, base_url, timeout_seconds
         self.workspaces.append(workspace)
@@ -96,12 +96,12 @@ class EditingFakeRunner:
             on_event(
                 {
                     "event_type": "tool_started",
-                    "actor": "codex",
+                    "actor": "pi",
                     "message": "edit file",
                     "payload": {"tool_name": "file_change", "command": "edit file"},
                 }
             )
-        return CodexRunResult("fixed", 2, 0, 0.01, self.version(), tool_call_count=1)
+        return PiRunResult("fixed", 2, 0, 0.01, self.version(), tool_call_count=1)
 
     @staticmethod
     def _apply_fix(sample_id: str, workspace: Path) -> None:
@@ -177,11 +177,11 @@ class NoActionFakeRunner(EditingFakeRunner):
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
+    ) -> PiRunResult:
         """保留初始工作区并返回存在的最终消息。"""
         del instruction, model, base_url, timeout_seconds, on_event
         self.workspaces.append(workspace)
-        return CodexRunResult("only narration", 1, 0, 0.01, self.version())
+        return PiRunResult("only narration", 1, 0, 0.01, self.version())
 
 
 class WrongEditFakeRunner(EditingFakeRunner):
@@ -196,7 +196,7 @@ class WrongEditFakeRunner(EditingFakeRunner):
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
+    ) -> PiRunResult:
         """写入无效注释，使 Git 有变化但隐藏校验仍失败。"""
         del instruction, model, base_url, timeout_seconds, on_event
         self.workspaces.append(workspace)
@@ -205,11 +205,11 @@ class WrongEditFakeRunner(EditingFakeRunner):
             target.read_text(encoding="utf-8") + "# attempted fix\n",
             encoding="utf-8",
         )
-        return CodexRunResult("wrong edit", 2, 0, 0.01, self.version(), tool_call_count=1)
+        return PiRunResult("wrong edit", 2, 0, 0.01, self.version(), tool_call_count=1)
 
 
 class ErrorFakeRunner(EditingFakeRunner):
-    """模拟 Codex 无最终消息等运行时故障。"""
+    """模拟 Pi 无最终消息等运行时故障。"""
 
     def run(
         self,
@@ -220,10 +220,10 @@ class ErrorFakeRunner(EditingFakeRunner):
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
+    ) -> PiRunResult:
         """不修改工作区并抛出稳定 Runner 错误。"""
         del instruction, model, base_url, workspace, timeout_seconds, on_event
-        raise CodexAgentError("codex produced no final message")
+        raise PiAgentError("pi produced no final message")
 
 
 def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Path) -> None:
@@ -231,7 +231,7 @@ def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Pa
     runner = EditingFakeRunner()
     progress: list[tuple[int, int]] = []
 
-    result = run_codex_agent_benchmark(
+    result = run_pi_agent_benchmark(
         job_id="job_agent",
         model="local-test",
         base_url="http://127.0.0.1:11434",
@@ -274,7 +274,7 @@ def test_coding_mini_scores_failed_sample_by_declared_capability_weights(
     tmp_path: Path,
 ) -> None:
     """一个样本未修复时应由隐藏校验判失败，并只降低它覆盖的能力维度。"""
-    result = run_codex_agent_benchmark(
+    result = run_pi_agent_benchmark(
         job_id="job_partial",
         model="local-test",
         base_url="http://127.0.0.1:11434",
@@ -349,7 +349,7 @@ def test_coding_mini_emits_auditable_stages_without_hidden_verifier_code(
     """实时事件应包含题目和外部动作，但不得提前泄漏隐藏断言源码。"""
     events: list[AgentTraceEvent] = []
 
-    run_codex_agent_benchmark(
+    run_pi_agent_benchmark(
         job_id="job_trace",
         model="local-test",
         base_url="http://127.0.0.1:11434",

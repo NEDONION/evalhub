@@ -42,10 +42,10 @@ def make_request(dataset: str) -> TaskRequest:
 
 
 def make_agent_request() -> TaskRequest:
-    """创建固定 Codex 壳与 Coding Mini 的本地 Agent 评测请求。
+    """创建固定 Pi 壳与 Coding Mini 的本地 Agent 评测请求。
 
     Returns:
-        不会在测试中实际启动 Codex 或访问 Ollama 的请求值对象。
+        不会在测试中实际启动 Pi 或访问 Ollama 的请求值对象。
     """
     return TaskRequest(
         dataset="coding_mini",
@@ -56,7 +56,7 @@ def make_agent_request() -> TaskRequest:
         subject="",
         limit=None,
         evaluation_type="agent",
-        agent_framework="codex",
+        agent_framework="pi",
     )
 
 
@@ -241,7 +241,7 @@ class BlockingAgentExecutor(BlockingExecutor):
             on_trace(
                 {
                     "event_type": "agent_session_started",
-                    "actor": "codex",
+                    "actor": "pi",
                     "message": "session ready",
                     "payload": {"session_id": "session-test"},
                 }
@@ -357,7 +357,7 @@ def test_model_submission_persists_generated_workflow_nodes(
 def test_agent_submission_persists_single_auditable_workflow_node(
     repository: SQLiteTaskRepository,
 ) -> None:
-    """Codex Agent 应使用单节点而不是被错误映射为 LLM Benchmark DAG。"""
+    """Pi Agent 应使用单节点而不是被错误映射为 LLM Benchmark DAG。"""
     service = EvaluationTaskService(repository, executor=RecordingExecutor())
 
     task = service.submit(make_agent_request())
@@ -393,7 +393,7 @@ def test_service_fails_agent_node_when_agent_executor_errors(
     repository: SQLiteTaskRepository,
 ) -> None:
     """Agent 执行异常应同时形成节点和顶层任务的可解释失败状态。"""
-    executor = RecordingAgentExecutor(error="codex unavailable")
+    executor = RecordingAgentExecutor(error="pi unavailable")
     service = EvaluationTaskService(repository, agent_executor=executor)
     service.start()
     try:
@@ -403,7 +403,7 @@ def test_service_fails_agent_node_when_agent_executor_errors(
         service.stop()
 
     node = service.list_nodes(task.id)[0]
-    assert (node.status, node.error_message) == ("failed", "codex unavailable")
+    assert (node.status, node.error_message) == ("failed", "pi unavailable")
     assert service.list_node_events(task.id, node.id)[-1].event_type == "node_failed"
 
 

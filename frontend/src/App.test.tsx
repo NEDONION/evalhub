@@ -215,7 +215,7 @@ const agentTask: EvaluationTaskSummary = {
   ...successfulTask,
   id: "job_agent_success",
   evaluation_type: "agent",
-  agent_framework: "codex",
+  agent_framework: "pi",
   dataset: "coding_mini",
   adapter: "ollama",
   resources: {
@@ -267,7 +267,7 @@ const agentTaskDetail: EvaluationTaskDetail = {
   ...agentTask,
   request: {
     evaluation_type: "agent",
-    agent_framework: "codex",
+    agent_framework: "pi",
     dataset: "coding_mini",
     adapter: "ollama",
     model: "qwen2.5:0.5b",
@@ -305,8 +305,8 @@ const agentTaskDetail: EvaluationTaskDetail = {
     requested_difficulty: "hard",
     difficulty_report: [{ difficulty: "hard", total: 2, passed: 1, pass_rate: 0.5 }],
     agent: {
-      framework: "codex",
-      cli_version: "codex-cli 0.test",
+      framework: "pi",
+      cli_version: "pi-cli 0.test",
       scaffold_hash: "a1b2c3d4e5f6",
     },
     capability_report: {
@@ -738,7 +738,7 @@ describe("EvalHub console", () => {
     expect(details).not.toHaveAttribute("open");
   });
 
-  it("submits a fixed Codex Agent task and shows its six-dimension report", async () => {
+  it("submits a fixed Pi Agent task and shows its six-dimension report", async () => {
     const user = userEvent.setup();
     vi.mocked(createEvaluation).mockResolvedValue(pendingTask);
     vi.mocked(getEvaluationTask)
@@ -750,13 +750,13 @@ describe("EvalHub console", () => {
     await user.click(await screen.findByRole("radio", { name: "Agent 评测" }));
     expect(screen.getByText("EvalHub Coding Mini")).toBeInTheDocument();
     expect(screen.getByText("6 个三级难度隐藏校验任务")).toBeInTheDocument();
-    expect(screen.getByText("Codex CLI")).toBeInTheDocument();
+    expect(screen.getByText("Pi CLI")).toBeInTheDocument();
     await user.click(screen.getByRole("radio", { name: "困难" }));
     await user.click(screen.getByRole("button", { name: "发起 Agent 评测" }));
 
     expect(createEvaluation).toHaveBeenCalledWith({
       evaluation_type: "agent",
-      agent_framework: "codex",
+      agent_framework: "pi",
       dataset: "coding_mini",
       adapter: "ollama",
       model: "granite4.1:3b",

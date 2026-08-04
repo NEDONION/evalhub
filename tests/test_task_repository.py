@@ -211,7 +211,7 @@ def test_repository_allows_only_one_concurrent_terminal_transition(
 
 
 def test_repository_round_trips_agent_request_fields(tmp_path: Path) -> None:
-    """Agent 请求写入 JSON 后应完整恢复类型和固定 Codex 框架。"""
+    """Agent 请求写入 JSON 后应完整恢复类型和固定 Pi 框架。"""
     repository = SQLiteTaskRepository(tmp_path / "tasks.db")
     request = TaskRequest(
         dataset="coding_mini",
@@ -222,13 +222,13 @@ def test_repository_round_trips_agent_request_fields(tmp_path: Path) -> None:
         subject="",
         limit=None,
         evaluation_type="agent",
-        agent_framework="codex",
+        agent_framework="pi",
         agent_difficulty="medium",
     )
 
     # 仓储继续复用 request_json，无需为 Agent 字段增加新的数据库列或迁移。
     restored = repository.create(request, task_id="job_agent")
     assert restored.request.evaluation_type == "agent"
-    assert restored.request.agent_framework == "codex"
+    assert restored.request.agent_framework == "pi"
     assert restored.request.agent_difficulty == "medium"
     assert restored.request.dataset == "coding_mini"

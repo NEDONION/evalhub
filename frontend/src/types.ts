@@ -3,7 +3,7 @@ export type BenchmarkExecutor = "native" | "lm_eval" | "sandboxed_code";
 export type AdapterType = "ollama" | "oracle";
 export type SampleMode = "all" | "quick" | "custom";
 export type EvaluationType = "model" | "agent";
-export type AgentFramework = "codex";
+export type AgentFramework = "pi";
 export type AgentDifficulty = "all" | "easy" | "medium" | "hard";
 
 export interface Dataset {

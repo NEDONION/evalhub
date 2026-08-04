@@ -1,4 +1,4 @@
-"""提供可离线验证的 Codex Coding Mini Agent Benchmark。"""
+"""提供可离线验证的 Pi Coding Mini Agent Benchmark。"""
 
 from __future__ import annotations
 
@@ -11,11 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
-from evalhub.agent.codex import (
+from evalhub.agent.pi import (
     AgentTraceEvent,
-    CodexAgentError,
-    CodexAgentRunner,
-    CodexRunResult,
+    PiAgentError,
+    PiAgentRunner,
+    PiRunResult,
     TraceCallback,
 )
 
@@ -59,7 +59,7 @@ class AgentRunner(Protocol):
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
+    ) -> PiRunResult:
         """在隔离工作区执行一个编码样本并返回运行元数据。"""
 
 
@@ -282,7 +282,7 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
     )
 
 
-def run_codex_agent_benchmark(
+def run_pi_agent_benchmark(
     *,
     job_id: str,
     model: str,
@@ -297,13 +297,13 @@ def run_codex_agent_benchmark(
 
     参数：
         job_id: 任务中心生成的唯一标识，用作运行目录名。
-        model: Codex 本地 Ollama Provider 使用的基模。
+        model: Pi 本地 Ollama Provider 使用的基模。
         base_url: Ollama 服务根地址。
         difficulty: 运行全部样本或指定简单、中等、困难单档。
         on_progress: 接收已完成样本数和总数的可选回调。
-        runner: 可替换的 Agent 壳；默认创建真实 ``CodexAgentRunner``。
+        runner: 可替换的 Agent 壳；默认创建真实 ``PiAgentRunner``。
         runtime_root: 所有 Agent 样本工作区的父目录。
-        on_trace: 接收样本阶段和 Codex 外部动作的可选实时回调。
+        on_trace: 接收样本阶段和 Pi 外部动作的可选实时回调。
 
     返回：
         与普通评测公共字段兼容，并包含 Agent 元数据、样本结果和六维报告的字典。
@@ -311,11 +311,11 @@ def run_codex_agent_benchmark(
     异常：
         ValueError: 任务标识或难度无效。
         RuntimeError: 无法创建 Git 工作区或执行隐藏 Verifier。
-        CodexAgentError: 无法探测 Codex CLI 版本。
+        PiAgentError: 无法探测 Pi CLI 版本。
     """
     selected_samples = _select_samples(difficulty)
     job_root = _job_root(runtime_root, job_id)
-    active_runner = runner or CodexAgentRunner()
+    active_runner = runner or PiAgentRunner()
     cli_version = active_runner.version()
 
     # 先公布真实分母，页面在第一个 Agent 样本运行期间也能显示确定进度。
@@ -324,7 +324,7 @@ def run_codex_agent_benchmark(
         on_progress(0, total_samples)
     sample_results: list[dict[str, object]] = []
 
-    # 每个样本拥有独立初始提交；某个 Codex 失败不会阻断后续能力维度采样。
+    # 每个样本拥有独立初始提交；某个 Pi 失败不会阻断后续能力维度采样。
     for completed, sample in enumerate(selected_samples, start=1):
         workspace = _create_workspace(job_root, sample)
         sample_results.append(
@@ -370,7 +370,7 @@ def run_codex_agent_benchmark(
         "failed_examples": _failed_examples(sample_results),
         "difficulty_report": _aggregate_difficulty(selected_samples, sample_results),
         "agent": {
-            "framework": "codex",
+            "framework": "pi",
             "cli_version": cli_version,
             "scaffold_hash": _scaffold_hash(selected_samples),
         },
@@ -424,7 +424,7 @@ def _create_workspace(job_root: Path, sample: CodingAgentSample) -> Path:
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(content, encoding="utf-8")
 
-    # 初始提交让 Codex 可以用标准 Git 工具观察自己的变更，身份只对本次提交生效。
+    # 初始提交让 Pi 可以用标准 Git 工具观察自己的变更，身份只对本次提交生效。
     _run_setup_command(["git", "init", "--quiet"], workspace)
     _run_setup_command(["git", "add", "."], workspace)
     _run_setup_command(
@@ -486,8 +486,8 @@ def _run_sample(
         },
     )
 
-    def relay_codex_event(event: AgentTraceEvent) -> None:
-        """为 Codex 原始外部事件补充稳定样本标识后向上游转发。"""
+    def relay_pi_event(event: AgentTraceEvent) -> None:
+        """为 Pi 原始外部事件补充稳定样本标识后向上游转发。"""
         payload = {**event["payload"], "sample_id": sample.id}
         _emit_trace(
             on_trace,
@@ -504,9 +504,9 @@ def _run_sample(
             base_url=base_url,
             workspace=workspace,
             timeout_seconds=180,
-            on_event=relay_codex_event,
+            on_event=relay_pi_event,
         )
-    except CodexAgentError as exc:
+    except PiAgentError as exc:
         # Runner 错误独立于解题正确性，仍检查文件证据并继续后续样本。
         changed_files = _changed_files(workspace)
         diagnostics = _diagnostics(
@@ -654,7 +654,7 @@ def _emit_trace(
 def _emit_runner_error(
     callback: TraceCallback | None,
     sample_id: str,
-    error: CodexAgentError,
+    error: PiAgentError,
 ) -> None:
     """发送明确归属于运行边界的失败事件。"""
     _emit_trace(
@@ -664,7 +664,7 @@ def _emit_runner_error(
         message=str(error),
         payload={
             "sample_id": sample_id,
-            "error_type": "codex_agent_error",
+            "error_type": "pi_agent_error",
             "message": str(error),
         },
     )
@@ -675,7 +675,7 @@ def _emit_workspace_changed(
     sample_id: str,
     changed_files: list[str],
 ) -> None:
-    """发送 Codex 退出后由 Git 独立观察到的受控文件变化。"""
+    """发送 Pi 退出后由 Git 独立观察到的受控文件变化。"""
     message = f"修改 {len(changed_files)} 个受控文件" if changed_files else "无受控文件变化"
     _emit_trace(
         callback,

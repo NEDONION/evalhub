@@ -30,7 +30,7 @@ export function buildEvaluationRequest(values: EvaluationFormValues): Evaluation
   if (values.evaluationType === "agent") {
     return {
       evaluation_type: "agent",
-      agent_framework: "codex",
+      agent_framework: "pi",
       dataset: "coding_mini",
       adapter: "ollama",
       model: values.model,

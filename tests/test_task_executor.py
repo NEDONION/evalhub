@@ -113,11 +113,11 @@ def test_evaluation_process_dispatches_lm_eval_benchmark(
 
 
 def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Codex Agent 请求应把难度原样交给 Coding Mini，且不再传旧 limit。"""
+    """Pi Agent 请求应把难度原样交给 Coding Mini，且不再传旧 limit。"""
     request = replace(
         request_fixture(),
         evaluation_type="agent",
-        agent_framework="codex",
+        agent_framework="pi",
         dataset="coding_mini",
         adapter="ollama",
         sample_mode="all",
@@ -144,7 +144,7 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
             "total_samples": 2,
         }
 
-    monkeypatch.setattr(executor_module, "run_codex_agent_benchmark", fake_agent_benchmark)
+    monkeypatch.setattr(executor_module, "run_pi_agent_benchmark", fake_agent_benchmark)
     _evaluation_process("job_agent", asdict(request), event_queue)
 
     assert observed["job_id"] == "job_agent"

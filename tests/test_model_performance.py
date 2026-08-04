@@ -59,7 +59,7 @@ def performance_task(
         subject="abstract_algebra",
         limit=None,
         evaluation_type=evaluation_type,
-        agent_framework="codex" if evaluation_type == "agent" else None,
+        agent_framework="pi" if evaluation_type == "agent" else None,
         suite_id=suite_id,
     )
     fingerprint = comparison_fingerprint

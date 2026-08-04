@@ -97,7 +97,7 @@ class OllamaPullManager:
         """
         # 所有外部输入在线程启动前完成校验，避免后台错误丢失在 HTTP 响应之后。
         normalized_model = _validate_model_name(model)
-        normalized_base_url = _validate_loopback_base_url(base_url)
+        normalized_base_url = validate_loopback_base_url(base_url)
         with self._state_lock:
             existing = self._tasks.get(normalized_model)
             if existing is not None and existing.status in ACTIVE_PULL_STATUSES:
@@ -318,7 +318,7 @@ def _validate_model_name(model: str) -> str:
     return model
 
 
-def _validate_loopback_base_url(base_url: str) -> str:
+def validate_loopback_base_url(base_url: str) -> str:
     """只接受没有凭据和额外路径的本机 HTTP Ollama 地址。
 
     Args:

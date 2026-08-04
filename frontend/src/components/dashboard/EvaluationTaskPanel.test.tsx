@@ -10,7 +10,7 @@ function taskFixture(id: string, evaluationType: EvaluationType): EvaluationTask
     id,
     status: "success",
     evaluation_type: evaluationType,
-    agent_framework: evaluationType === "agent" ? "codex" : null,
+    agent_framework: evaluationType === "agent" ? "pi" : null,
     dataset: evaluationType === "agent" ? "coding_mini" : "gsm8k",
     suite_id: null,
     model: evaluationType === "agent" ? "qwen-coder" : "qwen",

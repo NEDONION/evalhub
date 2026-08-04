@@ -1,9 +1,10 @@
-"""运行固定 Codex CLI Agent 壳并提取可评分结果。"""
+"""运行固定 Pi CLI Agent 壳并提取可评分结果。"""
 
 from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,14 +13,21 @@ from queue import Empty, Queue
 from threading import Thread
 from time import monotonic
 from typing import IO, Protocol, TypedDict
+from urllib.parse import urlparse
+
+from evalhub.ollama_pull import validate_loopback_base_url
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_PI_BINARY = _PROJECT_ROOT / "agent-runtime" / "node_modules" / ".bin" / "pi"
+_SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 
 
-class CodexAgentError(RuntimeError):
-    """表示 Codex CLI 未能产生可评分的 Agent 执行结果。"""
+class PiAgentError(RuntimeError):
+    """表示 Pi CLI 未能产生可评分的 Agent 执行结果。"""
 
 
 @dataclass(frozen=True)
-class CodexRunResult:
+class PiRunResult:
     """记录一次固定 Agent 壳运行后需要持久化的审计信息。"""
 
     final_message: str
@@ -31,7 +39,7 @@ class CodexRunResult:
 
 
 class AgentTraceEvent(TypedDict):
-    """描述可跨进程持久化的单条 Codex 外部可观察事件。"""
+    """描述可跨进程持久化的单条 Pi 外部可观察事件。"""
 
     event_type: str
     actor: str
@@ -43,14 +51,14 @@ TraceCallback = Callable[[AgentTraceEvent], None]
 
 
 class CommandRunner(Protocol):
-    """描述可替换的子进程执行函数，便于测试时隔离真实 Codex。"""
+    """描述可替换的子进程执行函数，便于测试时隔离真实 Pi。"""
 
     def __call__(self, command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         """执行命令并返回已完成进程；关键字参数遵循 ``subprocess.run``。"""
 
 
 class StreamingProcess(Protocol):
-    """描述流式 Codex 子进程需要暴露的最小生命周期接口。"""
+    """描述流式 Pi 子进程需要暴露的最小生命周期接口。"""
 
     stdout: IO[str] | None
     stderr: IO[str] | None
@@ -70,14 +78,14 @@ class StreamingProcess(Protocol):
 
 
 class ProcessFactory(Protocol):
-    """描述可注入的 Codex 流式进程构造器。"""
+    """描述可注入的 Pi 流式进程构造器。"""
 
     def __call__(self, command: list[str], **kwargs: object) -> StreamingProcess:
         """启动命令并返回可读取 stdout/stderr 的进程。"""
 
 
-class CodexAgentRunner:
-    """通过受约束的 Codex CLI 命令运行本地 Ollama 模型。"""
+class PiAgentRunner:
+    """通过受约束的 Pi CLI 命令运行本地 Ollama 模型。"""
 
     def __init__(
         self,
@@ -98,13 +106,13 @@ class CodexAgentRunner:
         self._cli_version: str | None = None
 
     def version(self) -> str:
-        """读取并缓存 Codex CLI 版本。
+        """读取并缓存 Pi CLI 版本。
 
         返回：
             CLI 输出的单行版本文本。
 
         异常：
-            CodexAgentError: CLI 不存在、退出失败或没有返回版本时抛出。
+            PiAgentError: CLI 不存在、退出失败或没有返回版本时抛出。
         """
         if self._cli_version is not None:
             return self._cli_version
@@ -112,18 +120,24 @@ class CodexAgentRunner:
         # 版本探测沿用同一个可替换执行器，使单元测试不依赖用户机器环境。
         try:
             completed = self._run_command(
-                ["codex", "--version"], capture_output=True, text=True, timeout=10, check=False
+                [str(_PI_BINARY), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
             )
         except FileNotFoundError as exc:
-            raise CodexAgentError("codex CLI is not installed or not available on PATH") from exc
+            raise PiAgentError(
+                "project Pi CLI is missing; run npm --prefix agent-runtime ci --ignore-scripts"
+            ) from exc
 
-        # 非零退出和空输出都无法形成可复现的 Agent 运行元数据。
+        # Pi 0.74.1 在非 TTY 下把版本写入 stderr；只有非零退出才把该流当错误详情。
         if completed.returncode != 0:
             detail = _error_detail(completed.stderr)
-            raise CodexAgentError(f"codex version check failed: {detail}")
-        version = completed.stdout.strip()
+            raise PiAgentError(f"pi version check failed: {detail}")
+        version = completed.stdout.strip() or completed.stderr.strip()
         if not version:
-            raise CodexAgentError("codex version check produced no output")
+            raise PiAgentError("pi version check produced no output")
         self._cli_version = version
         return version
 
@@ -136,13 +150,13 @@ class CodexAgentRunner:
         workspace: Path,
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
-    ) -> CodexRunResult:
-        """在指定工作区运行固定 Codex Agent 壳。
+    ) -> PiRunResult:
+        """在指定工作区运行固定 Pi Agent 壳。
 
         参数：
             instruction: 交给 Agent 的单个编码任务说明。
             model: 通过 Ollama 暴露的基模名称。
-            base_url: Ollama 服务地址，会写入子进程 ``OLLAMA_HOST``。
+            base_url: 仅允许本机回环地址的 Ollama 服务根地址。
             workspace: Agent 唯一可写的样本工作区。
             timeout_seconds: 本次样本允许的最长执行秒数。
             on_event: 每产生一条白名单外部事件时立即调用的可选回调。
@@ -151,30 +165,44 @@ class CodexAgentRunner:
             包含最终消息、事件数量、耗时和 CLI 版本的执行结果。
 
         异常：
-            CodexAgentError: 参数无效、CLI 不可用、超时、退出失败或结果缺失时抛出。
+            PiAgentError: 参数无效、CLI 不可用、超时、退出失败或结果缺失时抛出。
         """
         _validate_run_arguments(instruction, model, base_url, workspace, timeout_seconds)
-        # Codex 会切换子进程 cwd；提前绝对化可避免状态目录和输出路径被二次相对解析。
+        try:
+            normalized_base_url = validate_loopback_base_url(base_url)
+        except ValueError as exc:
+            raise PiAgentError(str(exc)) from exc
+
+        # Pi 会切换子进程 cwd；提前绝对化可避免沙箱根和配置路径被二次相对解析。
         workspace = workspace.resolve()
         cli_version = self.version()
 
-        # 每个样本把 Codex 状态和最终消息限制在自己的工作区，避免污染用户配置。
+        # 每个样本把 Pi 状态和临时文件限制在自己的工作区，避免污染用户配置。
         evalhub_dir = workspace / ".evalhub"
-        codex_home = evalhub_dir / "codex-home"
-        output_path = evalhub_dir / "final-message.txt"
-        codex_home.mkdir(parents=True, exist_ok=True)
-        output_path.unlink(missing_ok=True)
+        pi_home = evalhub_dir / "pi-home"
+        temp_dir = evalhub_dir / "tmp"
+        pi_home.mkdir(parents=True, exist_ok=True)
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        _write_models_config(pi_home, normalized_base_url, model)
 
-        # 命令参数由平台固定，用户只能选择基模和 Ollama 地址。
+        # 命令参数与 Seatbelt 策略由平台固定，用户只能选择基模和本机 Ollama 地址。
         command = _build_command(
             instruction=instruction,
             model=model,
             workspace=workspace,
-            output_path=output_path,
+            base_url=normalized_base_url,
         )
         environment = os.environ.copy()
-        environment["OLLAMA_HOST"] = base_url.rstrip("/")
-        environment["CODEX_HOME"] = str(codex_home)
+        environment.update(
+            {
+                "PI_CODING_AGENT_DIR": str(pi_home),
+                "PI_CODING_AGENT_SESSION_DIR": str(pi_home / "sessions"),
+                "PI_OFFLINE": "1",
+                "PI_SKIP_VERSION_CHECK": "1",
+                "PI_TELEMETRY": "0",
+                "TMPDIR": str(temp_dir),
+            }
+        )
 
         # 生产路径逐行读取 JSONL；旧测试注入方式仍可同步执行并复用同一标准化逻辑。
         started_at = monotonic()
@@ -187,26 +215,24 @@ class CodexAgentRunner:
                 on_event=on_event,
             )
         except FileNotFoundError as exc:
-            raise CodexAgentError("codex CLI is not installed or not available on PATH") from exc
+            raise PiAgentError("Pi CLI or macOS sandbox-exec is unavailable") from exc
         except subprocess.TimeoutExpired as exc:
             timeout_label = f"{timeout_seconds:g}"
-            raise CodexAgentError(f"codex timed out after {timeout_label} seconds") from exc
+            raise PiAgentError(f"pi timed out after {timeout_label} seconds") from exc
         elapsed_seconds = monotonic() - started_at
 
-        # 只有退出成功且落盘了最终消息才算一次可审计的 Agent 执行。
+        # 只有退出成功且 JSONL 含权威 assistant message_end 才算可审计执行。
         if return_code != 0:
             detail = _error_detail(stderr)
-            raise CodexAgentError(f"codex exited with code {return_code}: {detail}")
-        if not output_path.is_file():
-            raise CodexAgentError("codex produced no final message")
-        final_message = output_path.read_text(encoding="utf-8").strip()
+            raise PiAgentError(f"pi exited with code {return_code}: {detail}")
+        final_message = _final_message(stdout)
         if not final_message:
-            raise CodexAgentError("codex produced no final message")
+            raise PiAgentError("pi produced no final message")
 
         # 流式路径已经实时发送事件；这里仅从完整 stdout 重新计算可审计计数。
         event_count, tool_call_count = _emit_stdout_events(stdout, None)
 
-        return CodexRunResult(
+        return PiRunResult(
             final_message=final_message,
             event_count=event_count,
             return_code=return_code,
@@ -224,7 +250,7 @@ class CodexAgentRunner:
         timeout_seconds: float,
         on_event: TraceCallback | None,
     ) -> tuple[int, str, str]:
-        """执行 Codex 并返回退出码及完整的安全边界输出。
+        """执行 Pi 并返回退出码及完整的安全边界输出。
 
         生产环境从 Popen 流式读取 stdout；兼容路径只服务于既有同步执行器注入。
         """
@@ -250,6 +276,7 @@ class CodexAgentRunner:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            start_new_session=True,
         )
         return _consume_process(
             process,
@@ -267,42 +294,109 @@ def _validate_run_arguments(
 ) -> None:
     """校验运行参数，避免把明显错误推迟到昂贵的 Agent 子进程中。"""
     if not instruction.strip():
-        raise CodexAgentError("instruction must not be empty")
+        raise PiAgentError("instruction must not be empty")
     if not model.strip():
-        raise CodexAgentError("model must not be empty")
+        raise PiAgentError("model must not be empty")
     if not base_url.strip():
-        raise CodexAgentError("base_url must not be empty")
+        raise PiAgentError("base_url must not be empty")
 
     # 工作区必须由 benchmark 提前创建，Runner 不猜测或扩大可写范围。
     if not workspace.is_dir():
-        raise CodexAgentError(f"workspace does not exist: {workspace}")
+        raise PiAgentError(f"workspace does not exist: {workspace}")
     if timeout_seconds <= 0:
-        raise CodexAgentError("timeout_seconds must be greater than zero")
+        raise PiAgentError("timeout_seconds must be greater than zero")
+
+
+def _write_models_config(pi_home: Path, base_url: str, model: str) -> None:
+    """写入只含当前 Ollama 模型的隔离 Pi 配置。
+
+    参数：
+        pi_home: 当前样本专用的 Pi 配置目录。
+        base_url: 已通过回环地址校验且移除末尾斜杠的 Ollama 根地址。
+        model: 本次评测选择的 Ollama 模型标签。
+
+    异常：
+        OSError: 配置目录不可写时保留原始文件系统诊断。
+    """
+    config = {
+        "providers": {
+            "ollama": {
+                "baseUrl": f"{base_url}/v1",
+                "api": "openai-completions",
+                "apiKey": "ollama",
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                },
+                "models": [{"id": model}],
+            }
+        }
+    }
+    # 使用 JSON 编码而不是字符串拼接，模型标签无法逃逸配置结构。
+    (pi_home / "models.json").write_text(
+        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _build_command(
-    *, instruction: str, model: str, workspace: Path, output_path: Path
+    *, instruction: str, model: str, workspace: Path, base_url: str
 ) -> list[str]:
-    """构造固定且可审计的 Codex 本地 Ollama 命令。"""
+    """构造固定且可审计的 Pi 本地 Ollama 沙箱命令。
+
+    参数：
+        instruction: 交给 Pi 的单个编码任务。
+        model: 在隔离配置中注册的 Ollama 模型标签。
+        workspace: 已绝对化的唯一可写样本目录。
+        base_url: 已验证的 HTTP 回环 Ollama 根地址。
+
+    返回：
+        可直接交给 subprocess 且不经 shell 解释的参数列表。
+    """
+    parsed = urlparse(base_url)
+    port = parsed.port or 80
+    sandbox_profile = _sandbox_profile(port)
     return [
-        "codex",
-        "exec",
-        "--oss",
-        "--local-provider",
+        str(_SANDBOX_EXEC),
+        "-p",
+        sandbox_profile,
+        f"-DWORKSPACE={workspace}",
+        "--",
+        str(_PI_BINARY),
+        "--mode",
+        "json",
+        "--no-session",
+        "--provider",
         "ollama",
         "--model",
         model,
-        "--ephemeral",
-        "--ignore-user-config",
-        "--json",
-        "--sandbox",
-        "workspace-write",
-        "--output-last-message",
-        str(output_path),
-        "--cd",
-        str(workspace),
+        "--tools",
+        "read,write,edit,bash",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-context-files",
         instruction,
     ]
+
+
+def _sandbox_profile(ollama_port: int) -> str:
+    """生成仅允许工作区写入与本机 Ollama 连接的 Seatbelt 策略。
+
+    参数：
+        ollama_port: 已从受信回环 URL 解析出的 TCP 端口。
+
+    返回：
+        由 ``sandbox-exec`` 读取的完整策略文本；工作区通过参数传入，避免路径注入。
+    """
+    return (
+        "(version 1)\n"
+        "(allow default)\n"
+        "(deny file-write*)\n"
+        '(allow file-write* (subpath (param "WORKSPACE")))\n'
+        "(deny network*)\n"
+        f'(allow network-outbound (remote tcp "localhost:{ollama_port}"))\n'
+    )
 
 
 def _consume_process(
@@ -314,7 +408,7 @@ def _consume_process(
     """并发读取子进程输出，在截止时间内实时发送 stdout 白名单事件。
 
     参数：
-        process: 已启动且 stdout/stderr 配置为文本管道的 Codex 进程。
+        process: 已启动且 stdout/stderr 配置为文本管道的 Pi 进程。
         timeout_seconds: 整个 Agent 运行允许的最长秒数。
         on_event: 接收标准化事件的可选回调。
 
@@ -335,7 +429,7 @@ def _consume_process(
         Thread(
             target=_read_stream,
             args=(source, stream, line_queue),
-            name=f"codex-{source}-reader",
+            name=f"pi-{source}-reader",
             daemon=True,
         ).start()
 
@@ -348,7 +442,7 @@ def _consume_process(
             remaining = deadline - monotonic()
             if remaining <= 0:
                 _stop_process(process)
-                raise subprocess.TimeoutExpired("codex exec", timeout_seconds)
+                raise subprocess.TimeoutExpired("pi exec", timeout_seconds)
             try:
                 source, line = line_queue.get(timeout=min(0.1, remaining))
             except Empty:
@@ -364,7 +458,7 @@ def _consume_process(
 
         return_code = process.wait(timeout=max(0.0, deadline - monotonic()))
     except BaseException:
-        # 回调或读取异常也必须回收 Codex，避免评测 Worker 退出后残留模型客户端。
+        # 回调或读取异常也必须回收 Pi，避免评测 Worker 退出后残留模型客户端。
         if process.poll() is None:
             _stop_process(process)
         raise
@@ -385,12 +479,24 @@ def _read_stream(
 
 
 def _stop_process(process: StreamingProcess) -> None:
-    """先请求优雅终止，再强制回收超过两秒仍未退出的 Codex 进程。"""
-    process.terminate()
+    """先终止独立进程组，再强制回收超过两秒仍未退出的 Pi。
+
+    参数：
+        process: 生产环境是通过 ``start_new_session`` 启动的 Pi Popen；测试可用最小 Fake。
+    """
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int):
+        os.killpg(pid, signal.SIGTERM)
+    else:
+        # 不带 pid 的测试替身沿用最小生命周期接口，生产 Popen 不会进入此分支。
+        process.terminate()
     try:
         process.wait(timeout=2.0)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if isinstance(pid, int):
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            process.kill()
         process.wait(timeout=2.0)
 
 
@@ -406,7 +512,7 @@ def _emit_stdout_events(
         if event is None:
             continue
         event_count += 1
-        normalized = _normalize_codex_event(event)
+        normalized = _normalize_pi_event(event)
         if normalized is None:
             continue
         if normalized["event_type"] == "tool_started":
@@ -425,77 +531,130 @@ def _json_object(line: str) -> dict[str, object] | None:
     return event if isinstance(event, dict) else None
 
 
-def _normalize_codex_event(event: dict[str, object]) -> AgentTraceEvent | None:
-    """把 Codex 版本相关 JSON 对象转换为稳定且最小的外部动作事件。"""
+def _normalize_pi_event(event: dict[str, object]) -> AgentTraceEvent | None:
+    """把 Pi 版本相关 JSON 对象转换为稳定且最小的外部动作事件。"""
     source_type = str(event.get("type", ""))
-    if source_type == "thread.started":
+    if source_type == "session":
         payload: dict[str, object] = {"source_type": source_type}
-        thread_id = event.get("thread_id")
-        if isinstance(thread_id, str):
-            payload["thread_id"] = thread_id
+        session_id = event.get("id")
+        if isinstance(session_id, str):
+            payload["session_id"] = session_id
         return {
             "event_type": "agent_session_started",
-            "actor": "codex",
-            "message": "Codex 会话已启动",
+            "actor": "pi",
+            "message": "Pi 会话已启动",
             "payload": payload,
         }
-    if source_type == "turn.started":
+    if source_type == "agent_start":
         return {
             "event_type": "agent_turn_started",
-            "actor": "codex",
-            "message": "Codex 开始处理任务",
+            "actor": "pi",
+            "message": "Pi 开始处理任务",
             "payload": {"source_type": source_type},
         }
 
-    # item 事件必须同时包含对象载荷和受支持类型，未知未来字段不会泄漏进审计日志。
-    item = event.get("item")
-    if source_type not in {"item.started", "item.completed"} or not isinstance(item, dict):
-        return None
-    item_type = str(item.get("type", ""))
-    if source_type == "item.completed" and item_type == "agent_message":
-        text = _truncated_text(item.get("text"), 1_000)
+    # 最终 assistant 消息来自权威 message_end；增量事件不重复持久化。
+    if source_type == "message_end":
+        message = event.get("message")
+        if not isinstance(message, dict) or message.get("role") != "assistant":
+            return None
+        text = _truncated_text(_message_text(message), 1_000)
         return {
             "event_type": "agent_message",
-            "actor": "codex",
+            "actor": "pi",
             "message": text,
             "payload": {"text": text},
         }
 
-    if item_type not in {"command_execution", "mcp_tool_call", "file_change"}:
+    if source_type not in {"tool_execution_start", "tool_execution_end"}:
         return None
-    tool_name = _tool_name(item_type, item)
-    command = _truncated_text(item.get("command"), 1_000)
+    tool_name = _truncated_text(event.get("toolName"), 100) or "tool"
+    command = ""
+    args = event.get("args")
+    if source_type == "tool_execution_start" and isinstance(args, dict):
+        candidate = args.get("command") if tool_name == "bash" else args.get("path")
+        command = _truncated_text(candidate, 1_000)
     payload = {"tool_name": tool_name, "command": command}
-    if source_type == "item.started":
+    if source_type == "tool_execution_start":
         return {
             "event_type": "tool_started",
-            "actor": "codex",
+            "actor": "pi",
             "message": command or tool_name,
             "payload": payload,
         }
 
-    # 完成事件只加入退出码和安全截断输出，不复制 MCP 参数或其他未知动态字段。
-    exit_code = item.get("exit_code")
-    if isinstance(exit_code, int):
-        payload["exit_code"] = exit_code
-    output = _truncated_text(item.get("aggregated_output", item.get("output")), 2_000)
+    # 完成事件只保留文本结果与错误标记，不复制工具输入或未知动态字段。
+    output = _truncated_text(_result_text(event.get("result")), 2_000)
     payload["output"] = output
+    payload["is_error"] = event.get("isError") is True
     return {
         "event_type": "tool_finished",
-        "actor": "codex",
-        "message": command or tool_name,
+        "actor": "pi",
+        "message": tool_name,
         "payload": payload,
     }
 
 
-def _tool_name(item_type: str, item: dict[str, object]) -> str:
-    """为命令、MCP 和文件动作生成不包含动态参数的稳定工具名称。"""
-    if item_type == "command_execution":
-        return "command"
-    if item_type == "file_change":
-        return "file_change"
-    candidate = item.get("tool") or item.get("name")
-    return str(candidate) if isinstance(candidate, str) else "mcp_tool"
+def _final_message(stdout: str) -> str:
+    """返回 Pi JSONL 中最后一条权威 assistant 完成消息。
+
+    参数：
+        stdout: Pi JSON 模式产生的完整标准输出。
+
+    返回：
+        最后一条非空 assistant ``message_end`` 文本；不存在时返回空字符串。
+    """
+    final_message = ""
+    for line in stdout.splitlines():
+        event = _json_object(line)
+        if event is None or event.get("type") != "message_end":
+            continue
+        message = event.get("message")
+        if isinstance(message, dict) and message.get("role") == "assistant":
+            final_message = _message_text(message).strip() or final_message
+    return final_message
+
+
+def _message_text(message: dict[str, object]) -> str:
+    """从 Pi 消息内容块中提取并拼接可展示文本。
+
+    参数：
+        message: Pi ``message_end`` 事件中的消息对象。
+
+    返回：
+        保持内容块顺序的纯文本；动态或非文本内容返回空字符串。
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    # 图片、thinking 和工具调用块不进入最终自然语言结果。
+    texts = [
+        str(block["text"])
+        for block in content
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
+    ]
+    return "".join(texts)
+
+
+def _result_text(result: object) -> str:
+    """从 Pi 工具结果中提取安全文本，不持久化任意动态结构。
+
+    参数：
+        result: ``tool_execution_end`` 的动态结果字段。
+
+    返回：
+        工具结果中保持顺序的文本内容；不支持的结构返回空字符串。
+    """
+    if isinstance(result, str):
+        return result
+    if not isinstance(result, dict):
+        return ""
+    return _message_text(result)
 
 
 def _truncated_text(value: object, limit: int) -> str:

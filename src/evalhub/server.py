@@ -721,10 +721,10 @@ def _task_request(payload: object) -> TaskRequest:
     agent_framework: str | None = None
     agent_difficulty: str | None = None
     if evaluation_type == "agent":
-        # Agent MVP 只接受已实现的 Codex 与 Coding Mini 组合，拒绝虚假可用选项。
+        # Agent MVP 只接受已实现的 Pi 与 Coding Mini 组合，拒绝虚假可用选项。
         agent_framework = str(payload.get("agent_framework", ""))
-        if agent_framework != "codex":
-            raise ValueError("agent_framework must be codex")
+        if agent_framework != "pi":
+            raise ValueError("agent_framework must be pi")
         if dataset != "coding_mini":
             raise ValueError("agent dataset must be coding_mini")
         if adapter != "ollama":

@@ -1,0 +1,8 @@
+{
+  "name": "evalhub-agent-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "0.74.1"
+  }
+}

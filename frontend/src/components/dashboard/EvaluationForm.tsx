@@ -345,8 +345,10 @@ export function EvaluationForm({
                 <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
                   Agent shell
                 </span>
-                <strong className="mt-1 block text-sm text-blue-950">Codex CLI</strong>
-                <span className="mt-1 block text-xs leading-5 text-blue-700">固定工具与 workspace-write 沙箱</span>
+                <strong className="mt-1 block text-sm text-blue-950">Pi CLI</strong>
+                <span className="mt-1 block text-xs leading-5 text-blue-700">
+                  固定工具与 macOS workspace-write 沙箱
+                </span>
               </div>
             </div>
           )}
@@ -473,7 +475,7 @@ export function EvaluationForm({
                 <p className="text-xs font-medium text-muted">本次 Agent 评测流程</p>
                 <ol className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
                   <li className="rounded-md border border-border bg-slate-50 px-3 py-2">1. 创建独立 Git 样本工作区</li>
-                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Codex 使用所选基模完成任务</li>
+                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Pi 使用所选基模完成任务</li>
                   <li className="rounded-md border border-border bg-slate-50 px-3 py-2">3. 隐藏 Verifier 评分并聚合六维能力</li>
                 </ol>
               </div>
