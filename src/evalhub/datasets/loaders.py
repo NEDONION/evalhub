@@ -11,7 +11,11 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.request import urlretrieve
 
 from evalhub.datasets.catalog import DatasetSpec, get_dataset_spec
-from evalhub.datasets.hexagon_manifest import HexagonSampleSpec, hexagon_manifest
+from evalhub.datasets.hexagon_manifest import (
+    IFEVAL_SELECTED_SOURCE_CONTRACTS,
+    HexagonSampleSpec,
+    hexagon_manifest,
+)
 from evalhub.datasets.hexagon_sources import (
     NormalizedSourceRow,
     extract_gsm8k_answer,
@@ -224,6 +228,15 @@ def _validate_ifeval_selected_rules(
                 f"IFEval source key {item.source_key} must contain exactly rule "
                 f"{item.selection_stratum}"
             )
+        expected = IFEVAL_SELECTED_SOURCE_CONTRACTS.get(item.source_key)
+        if expected is None:
+            raise ValueError(f"unsupported IFEval source key: {item.source_key}")
+        expected_ids, expected_kwargs = expected
+        # 冻结键的完整规则参数是 Benchmark 协议的一部分，不能仅校验类型后允许语义漂移。
+        if instruction_ids != list(expected_ids) or row.source_metadata["kwargs"] != [
+            dict(item_kwargs) for item_kwargs in expected_kwargs
+        ]:
+            raise ValueError(f"IFEval source key {item.source_key} rule contract has changed")
 
 
 def _selected_samples(

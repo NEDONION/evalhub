@@ -95,17 +95,29 @@ _EXPECTED_STRATA = {
         "Religion/ambig",
     },
 }
+IFEVAL_SELECTED_SOURCE_CONTRACTS: dict[
+    str, tuple[tuple[str, ...], tuple[tuple[tuple[str, object], ...], ...]]
+] = {
+    "32": (("punctuation:no_comma",), ((),)),
+    "1759": (("detectable_content:postscript",), ((("postscript_marker", "P.S."),),)),
+    "2829": (("startend:quotation",), ((),)),
+    "321": (("detectable_format:json_format",), ((),)),
+    "3221": (("detectable_content:number_placeholders",), ((("num_placeholders", 8),),)),
+    "2832": (("detectable_format:number_bullet_lists",), ((("num_bullets", 1),),)),
+    "2253": (("detectable_format:number_highlighted_sections",), ((("num_highlights", 3),),)),
+    "2925": (
+        ("detectable_format:multiple_sections",),
+        ((("section_spliter", "SECTION"), ("num_sections", 3)),),
+    ),
+    "1551": (("detectable_format:title",), ((),)),
+    "1659": (
+        ("startend:end_checker",),
+        ((("end_phrase", "You cannot fail with the steps listed above."),),),
+    ),
+}
 _IFEVAL_SOURCE_KEYS = {
-    "punctuation:no_comma": "32",
-    "detectable_content:postscript": "1759",
-    "startend:quotation": "2829",
-    "detectable_format:json_format": "321",
-    "detectable_content:number_placeholders": "3221",
-    "detectable_format:number_bullet_lists": "2832",
-    "detectable_format:number_highlighted_sections": "2253",
-    "detectable_format:multiple_sections": "2925",
-    "detectable_format:title": "1551",
-    "startend:end_checker": "1659",
+    instruction_ids[0]: source_key
+    for source_key, (instruction_ids, _) in IFEVAL_SELECTED_SOURCE_CONTRACTS.items()
 }
 _TRUTHFULQA_OPTION_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"), ("B", "A"), ("A", "B"))
 

@@ -290,6 +290,51 @@ def test_hexagon_ifeval_loader_rejects_invalid_selected_rule_arguments(
         load_hexagon_samples("hexagon-ifeval", root=tmp_path, manifest=manifest)
 
 
+@pytest.mark.parametrize(
+    ("source_key", "instruction_id", "kwargs"),
+    [
+        ("1759", "detectable_content:postscript", {"postscript_marker": "P.P.S"}),
+        ("3221", "detectable_content:number_placeholders", {"num_placeholders": 1}),
+    ],
+)
+def test_hexagon_ifeval_loader_rejects_drifted_selected_rule_values(
+    tmp_path: Path,
+    source_key: str,
+    instruction_id: str,
+    kwargs: dict[str, object],
+) -> None:
+    """语义有效但偏离冻结来源键契约的规则参数必须在模型执行前被拒绝。
+
+    Args:
+        tmp_path: pytest 提供的隔离目录，用于放置单条 IFEval 来源夹具。
+        source_key: 有固定官方规则参数的 IFEval 整数键字符串。
+        instruction_id: 与冻结清单层级匹配的官方规则标识。
+        kwargs: 类型正确但故意偏离固定来源值的参数对象。
+    """
+    path = tmp_path / "data/raw/hexagon/ifeval/input_data.jsonl"
+    path.parent.mkdir(parents=True)
+    prompt = f"Validate frozen {source_key}."
+    row = {
+        "key": int(source_key),
+        "prompt": prompt,
+        "instruction_id_list": [instruction_id],
+        "kwargs": [kwargs],
+    }
+    path.write_text(f"{json.dumps(row)}\n", encoding="utf-8")
+    manifest = (
+        _spec(
+            benchmark_id="hexagon-ifeval",
+            source_key=source_key,
+            input_text=prompt,
+            reference="",
+            selection_stratum=instruction_id,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="IFEval source key .* rule contract"):
+        load_hexagon_samples("hexagon-ifeval", root=tmp_path, manifest=manifest)
+
+
 def test_mmlu_parser_reads_test_csv_from_pinned_archive(tmp_path: Path) -> None:
     """MMLU 解析器必须从固定归档读取一基行号、四个选项和官方答案字母。"""
     archive_path = tmp_path / "data.tar"
