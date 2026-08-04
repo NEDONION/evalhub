@@ -22,6 +22,9 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.5",
 ]
+benchmarks = [
+  "lm_eval[api,math,sentencepiece]==0.4.12",
+]
 infra = [
   "celery>=5.4",
   "pydantic-settings>=2.4",

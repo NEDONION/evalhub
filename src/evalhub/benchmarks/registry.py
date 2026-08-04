@@ -68,7 +68,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         Capability.MATHEMATICS,
         "HuggingFaceH4/MATH-500",
         ExecutorKind.LM_EVAL,
-        "leaderboard_math_hard",
+        "math500",
         "exact_match",
         None,
     ),

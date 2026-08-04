@@ -21,6 +21,14 @@ def test_core_suite_has_six_capabilities_and_real_sources() -> None:
     assert all(item.weight > 0 for item in specs)
 
 
+def test_core_suite_registers_all_thirteen_official_tasks() -> None:
+    """核心套件必须固定包含 13 项，并使用当前 Harness 的 MATH-500 任务名。"""
+    suite = get_suite_spec("llm-industry-core-v1")
+
+    assert len(suite.benchmark_ids) == 13
+    assert get_benchmark_spec("math-500").task_name == "math500"
+
+
 def test_registry_returns_new_mappings_with_stable_members() -> None:
     """调用方修改返回映射时不得污染后续 Registry 查询。"""
     first = benchmark_registry()
