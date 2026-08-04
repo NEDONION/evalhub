@@ -8,6 +8,8 @@
 > Agent评测
 <img width="1262" height="838" alt="image" src="https://github.com/user-attachments/assets/5e1c29b4-4b31-4b09-8a02-dd6d3f8e8542" />
 
+<img width="852" height="665" alt="image" src="https://github.com/user-attachments/assets/36fd8ac4-2ee5-44e1-9ee6-dbb34b897293" />
+
 
 > 模型下载与数据集管理
 <img width="1274" height="821" alt="image" src="https://github.com/user-attachments/assets/b56c2a2d-503d-4d30-a1ca-2016e5200f83" />
