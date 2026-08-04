@@ -11,6 +11,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.request import urlretrieve
 
 from evalhub.datasets.catalog import DatasetSpec, get_dataset_spec
+from evalhub.datasets.hexagon_sources import prepare_hexagon_dataset
 from evalhub.domain import EvaluationSample
 
 # MMLU 官方测试集的完整学科列表用于 ``subject=all`` 的确定性遍历。
@@ -94,6 +95,8 @@ def prepare_dataset(
     # 先解析公共规格，再把不同来源格式分派给各自的幂等准备流程。
     spec = get_dataset_spec(name)
     root_path = Path(root)
+    if name.startswith("hexagon-"):
+        return prepare_hexagon_dataset(name, root=root_path, force=force)
     if name == "gsm8k":
         return _prepare_gsm8k(spec, root_path, force=force)
     # MMLU 使用归档下载与安全解压流程，不能复用单文件准备逻辑。
