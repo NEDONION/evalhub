@@ -147,6 +147,7 @@ def _evaluation_process(
                     oracle_responses={
                         problem.prompt: problem.canonical_solution for problem in problems
                     },
+                    provider_id=request.provider_id,
                 )
                 result = run_humaneval_benchmark(
                     job_id=task_id,
@@ -174,9 +175,14 @@ def _evaluation_process(
                         on_sample_result=report_sample,
                         generation_config=request.generation_config,
                         evaluator_type=request.evaluator_type,
+                        provider_id=request.provider_id,
                     )
                 else:
                     if request.adapter != "ollama":
+                        if request.adapter == "openai-compatible":
+                            raise ValueError(
+                                f"{spec.display_name}暂不支持 API 服务商；仅支持 Ollama 本地模型"
+                            )
                         raise ValueError(f"{spec.display_name} 仅支持 Ollama 本地模型")
                     result = run_harness_benchmark(
                         benchmark_id=spec.id,

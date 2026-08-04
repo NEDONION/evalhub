@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from types import MethodType
 from typing import cast
 from unittest.mock import patch
 
 from evalhub.benchmarks import Capability, ExecutorReadiness
+from evalhub.credentials import CredentialCipher
+from evalhub.model_providers import ModelProviderRepository
 from evalhub.server import EvalHubRequestHandler, _dataset_is_prepared
 from evalhub.tasks import (
     EvaluationNode,
@@ -223,14 +227,18 @@ def call_handler(
     path: str,
     service: FakeTaskService,
     payload: object | None = None,
+    provider_repository: ModelProviderRepository | None = None,
+    client_host: str = "127.0.0.1",
 ) -> tuple[int, dict[str, object]]:
     """绕过真实套接字调用请求处理器并捕获 JSON 响应。
 
     Args:
-        method: 需要执行的 ``GET`` 或 ``POST`` 处理方法。
+        method: 需要执行的 ``GET``、``POST``、``PUT`` 或 ``DELETE`` 方法。
         path: 包含完整 API 路径的请求目标。
         service: 注入处理器的可控任务服务。
         payload: POST 请求解析后应获得的 JSON 值。
+        provider_repository: 可选的临时模型服务商仓储。
+        client_host: 用于验证凭据写操作回环限制的客户端地址。
 
     Returns:
         HTTP 状态码与处理器发送的 JSON 正文。
@@ -238,6 +246,8 @@ def call_handler(
     handler = cast(EvalHubRequestHandler, object.__new__(EvalHubRequestHandler))
     handler.path = path
     handler.task_service = cast(object, service)
+    handler.provider_repository = provider_repository
+    handler.client_address = (client_host, 12345)
     captured: list[tuple[int, dict[str, object]]] = []
 
     def capture_json(
@@ -251,10 +261,7 @@ def call_handler(
     # 实例级替换只隔离套接字读写，路由、参数转换和异常映射仍使用生产代码。
     handler._json = MethodType(capture_json, handler)
     handler._read_json = MethodType(lambda self: payload or {}, handler)
-    if method == "GET":
-        handler.do_GET()
-    else:
-        handler.do_POST()
+    getattr(handler, f"do_{method}")()
     assert len(captured) == 1
     return captured[0]
 
@@ -833,3 +840,229 @@ def test_create_evaluation_rejects_non_object_json() -> None:
 
     assert status == 400
     assert response == {"ok": False, "error": "request body must be a JSON object"}
+
+
+def _provider_repository(tmp_path: Path) -> ModelProviderRepository:
+    """构造凭据与数据库均位于临时目录的 API 测试仓储。
+
+    Args:
+        tmp_path: pytest 为当前测试提供的隔离目录。
+
+    Returns:
+        不会读取用户真实模型服务商配置的仓储。
+    """
+    return ModelProviderRepository(
+        tmp_path / "providers.sqlite3",
+        CredentialCipher.from_runtime(tmp_path, env={}),
+    )
+
+
+def test_model_provider_crud_never_returns_secret(tmp_path: Path) -> None:
+    """服务商创建、列表、空密钥更新和删除响应都不得回显完整凭据。"""
+    repository = _provider_repository(tmp_path)
+    service = FakeTaskService(task_fixture())
+    secret = "sk-provider-secret"
+
+    list_status, initial = call_handler(
+        method="GET",
+        path="/api/model-providers",
+        service=service,
+        provider_repository=repository,
+    )
+    create_status, created = call_handler(
+        method="POST",
+        path="/api/model-providers",
+        service=service,
+        provider_repository=repository,
+        payload={
+            "name": "Internal Gateway",
+            "base_url": "https://gateway.example.com/v1/",
+            "api_key": secret,
+        },
+    )
+    provider_id = created["provider"]["id"]
+    update_status, updated = call_handler(
+        method="PUT",
+        path=f"/api/model-providers/{provider_id}",
+        service=service,
+        provider_repository=repository,
+        payload={"name": "Renamed Gateway", "api_key": ""},
+    )
+    preserved_key = repository.resolve_api_key(provider_id)
+    delete_status, deleted = call_handler(
+        method="DELETE",
+        path=f"/api/model-providers/{provider_id}",
+        service=service,
+        provider_repository=repository,
+    )
+
+    assert list_status == 200
+    assert initial["providers"][0] == {
+        "id": "deepseek",
+        "name": "DeepSeek",
+        "kind": "builtin",
+        "base_url": "https://api.deepseek.com",
+        "key_configured": False,
+        "key_hint": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+    assert create_status == 201
+    assert update_status == delete_status == 200
+    assert updated["provider"]["name"] == "Renamed Gateway"
+    assert preserved_key == secret
+    assert deleted == {"ok": True, "provider_id": provider_id, "reset": False}
+    assert secret not in json.dumps([initial, created, updated, deleted], ensure_ascii=False)
+
+
+def test_delete_builtin_provider_restores_default(tmp_path: Path) -> None:
+    """删除内置项应清除凭据和地址覆盖，但固定预设本身仍然可选。"""
+    repository = _provider_repository(tmp_path)
+    repository.save(
+        "deepseek",
+        name="DeepSeek",
+        base_url="https://proxy.example.com/v1",
+        api_key="sk-reset",
+    )
+
+    status, response = call_handler(
+        method="DELETE",
+        path="/api/model-providers/deepseek",
+        service=FakeTaskService(task_fixture()),
+        provider_repository=repository,
+    )
+
+    assert status == 200
+    assert response == {"ok": True, "provider_id": "deepseek", "reset": True}
+    assert repository.get("deepseek").base_url == "https://api.deepseek.com"
+    assert repository.get("deepseek").key_configured is False
+
+
+def test_provider_mutation_rejects_remote_client_and_unsafe_url(tmp_path: Path) -> None:
+    """非回环客户端不能写凭据，远程明文 HTTP 地址也必须在保存前拒绝。"""
+    repository = _provider_repository(tmp_path)
+    service = FakeTaskService(task_fixture())
+    payload = {
+        "name": "Unsafe",
+        "base_url": "http://api.example.com/v1",
+        "api_key": "sk-secret",
+    }
+
+    remote_status, remote = call_handler(
+        method="POST",
+        path="/api/model-providers",
+        service=service,
+        provider_repository=repository,
+        payload=payload,
+        client_host="203.0.113.10",
+    )
+    local_status, local = call_handler(
+        method="POST",
+        path="/api/model-providers",
+        service=service,
+        provider_repository=repository,
+        payload=payload,
+    )
+
+    assert remote_status == 403
+    assert remote == {"ok": False, "error": "provider credentials are loopback-only"}
+    assert local_status == 400
+    assert "HTTPS" in local["error"]
+    assert len(repository.list()) == 3
+
+
+def test_provider_test_discovers_models_from_saved_credential(
+    tmp_path: Path,
+) -> None:
+    """连通性测试应只使用已保存凭据并返回排序后的模型列表。"""
+    repository = _provider_repository(tmp_path)
+    repository.save(
+        "kimi",
+        name="Kimi",
+        base_url="https://api.moonshot.ai/v1",
+        api_key="sk-kimi",
+    )
+
+    with patch(
+        "evalhub.server.discover_models",
+        return_value=["kimi-k3", "kimi-k3-fast"],
+    ) as discover:
+        status, response = call_handler(
+            method="POST",
+            path="/api/model-providers/kimi/test",
+            service=FakeTaskService(task_fixture()),
+            provider_repository=repository,
+        )
+
+    assert status == 200
+    assert response == {"ok": True, "models": ["kimi-k3", "kimi-k3-fast"]}
+    discover.assert_called_once_with("https://api.moonshot.ai/v1", "sk-kimi")
+    assert "sk-kimi" not in json.dumps(response)
+
+
+def test_create_api_evaluation_uses_provider_snapshot_without_key(tmp_path: Path) -> None:
+    """API 模型任务应忽略客户端冲突地址并只持久化服务商引用和仓储地址。"""
+    repository = _provider_repository(tmp_path)
+    repository.save(
+        "deepseek",
+        name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-evaluation-secret",
+    )
+    service = FakeTaskService(task_fixture())
+
+    status, response = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        provider_repository=repository,
+        payload={
+            "dataset": "gsm8k",
+            "adapter": "openai-compatible",
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://attacker.example.com/v1",
+            "sample_mode": "quick",
+        },
+    )
+
+    assert status == 202
+    assert response["ok"] is True
+    assert service.submitted_request is not None
+    assert service.submitted_request.provider_id == "deepseek"
+    assert service.submitted_request.base_url == "https://api.deepseek.com"
+    request_payload = asdict(service.submitted_request)
+    assert all("api_key" not in key for key in request_payload)
+    assert "sk-evaluation-secret" not in json.dumps(response)
+
+
+def test_create_api_evaluation_requires_configured_provider(tmp_path: Path) -> None:
+    """缺少服务商 ID 或未配置凭据时，API 模型任务必须在入队前返回 400。"""
+    repository = _provider_repository(tmp_path)
+    service = FakeTaskService(task_fixture())
+    base_payload = {
+        "dataset": "gsm8k",
+        "adapter": "openai-compatible",
+        "model": "deepseek-v4-pro",
+        "sample_mode": "quick",
+    }
+
+    missing_status, missing = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        provider_repository=repository,
+        payload=base_payload,
+    )
+    unconfigured_status, unconfigured = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        provider_repository=repository,
+        payload={**base_payload, "provider_id": "deepseek"},
+    )
+
+    assert missing_status == unconfigured_status == 400
+    assert missing["error"] == "provider_id is required for openai-compatible adapter"
+    assert unconfigured["error"] == "model provider deepseek has no API Key"
+    assert service.submitted_request is None

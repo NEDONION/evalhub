@@ -3,7 +3,12 @@
 import argparse
 import json
 
-from evalhub.adapters import ModelAdapter, OllamaAdapter, StaticMappingAdapter
+from evalhub.adapters import (
+    ModelAdapter,
+    OllamaAdapter,
+    OpenAICompatibleAdapter,
+    StaticMappingAdapter,
+)
 from evalhub.datasets import dataset_catalog, get_dataset_spec, load_samples, prepare_dataset
 from evalhub.domain import (
     BenchmarkRecord,
@@ -15,6 +20,10 @@ from evalhub.domain import (
 )
 from evalhub.engine import EvaluationRunner, ProgressCallback, SampleResultCallback
 from evalhub.evaluators import default_evaluator_registry
+from evalhub.model_providers import (
+    ModelProviderRepository,
+    default_model_provider_repository,
+)
 from evalhub.ollama import DEFAULT_OLLAMA_MODEL
 from evalhub.registry import InMemoryRegistry
 
@@ -25,14 +34,18 @@ def build_model_adapter(
     model: str,
     base_url: str,
     oracle_responses: dict[str, str],
+    provider_id: str | None = None,
+    provider_repository: ModelProviderRepository | None = None,
 ) -> ModelAdapter:
     """为文本与 HumanEval 执行路径构造同一模型调用边界。
 
     Args:
-        adapter_type: ``ollama`` 或仅供管线验证的 ``oracle``。
-        model: Ollama 使用的固定模型标签。
-        base_url: Ollama 本地服务根地址。
+        adapter_type: ``ollama``、``openai-compatible`` 或管线验证用 ``oracle``。
+        model: 本地标签或远程服务公开的固定模型 ID。
+        base_url: 本地服务地址或任务创建时冻结的远程 API 根地址。
         oracle_responses: Oracle 模式按官方英文提示回放的确定性响应。
+        provider_id: 远程 API 模式引用的已保存服务商标识。
+        provider_repository: 测试或装配层注入的服务商仓储；缺省使用运行时仓储。
 
     Returns:
         可供 Runner 调用的统一模型适配器。
@@ -40,11 +53,20 @@ def build_model_adapter(
     Raises:
         ValueError: 适配器类型不受支持时抛出，禁止静默回退为 Oracle。
     """
+    if adapter_type != "openai-compatible" and provider_id is not None:
+        raise ValueError("provider_id is only supported by openai-compatible adapter")
     if adapter_type == "ollama":
         return OllamaAdapter(model=model, base_url=base_url)
     if adapter_type == "oracle":
         return StaticMappingAdapter(oracle_responses)
-    raise ValueError("adapter must be one of: ollama, oracle")
+    if adapter_type == "openai-compatible":
+        if provider_id is None:
+            raise ValueError("provider_id is required for openai-compatible adapter")
+        # 任务只保存服务商引用，Worker 在真正发起请求前解析最新轮换后的凭据。
+        repository = provider_repository or default_model_provider_repository()
+        api_key = repository.resolve_api_key(provider_id)
+        return OpenAICompatibleAdapter(model=model, base_url=base_url, api_key=api_key)
+    raise ValueError("adapter must be one of: ollama, oracle, openai-compatible")
 
 
 def run_example() -> int:
@@ -170,12 +192,13 @@ def run_real_benchmark(
     on_sample_result: SampleResultCallback | None = None,
     generation_config: dict[str, object] | None = None,
     evaluator_type: str | None = None,
+    provider_id: str | None = None,
 ) -> dict[str, object]:
     """准备真实数据集并使用指定模型适配器执行同步评测。
 
     Args:
         dataset: 数据集目录中的稳定名称。
-        adapter_type: ``ollama`` 或仅用于管线校验的 ``oracle``。
+        adapter_type: ``ollama``、``openai-compatible`` 或管线校验用 ``oracle``。
         model: 记录和模型适配器使用的模型标签。
         base_url: Ollama 本地服务根地址。
         limit: 最多执行的样本数；为 ``None`` 时执行完整数据集。
@@ -186,6 +209,7 @@ def run_real_benchmark(
         on_sample_result: 新样本完成评分后接收完整结果的可选回调。
         generation_config: 工作流创建时冻结的模型生成参数；缺省保持历史确定性配置。
         evaluator_type: 工作流创建时冻结的评分器类型；缺省使用当前数据集目录值。
+        provider_id: 远程 API 模式引用的服务商标识；其他模式必须为空。
 
     Returns:
         包含任务状态、汇总指标和最多五条失败示例的 JSON 兼容字典。
@@ -254,6 +278,7 @@ def run_real_benchmark(
         model=model,
         base_url=base_url,
         oracle_responses={sample.input: sample.reference for sample in samples},
+        provider_id=provider_id,
     )
 
     # 评测器由 Benchmark 类型动态创建，Runner 只负责统一编排与状态转换。
@@ -314,6 +339,7 @@ def run_benchmark_command(args: argparse.Namespace) -> int:
         base_url=args.base_url,
         limit=args.limit,
         subject=args.subject,
+        provider_id=args.provider_id,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0
@@ -363,9 +389,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run a local evaluation on a real public benchmark dataset.",
     )
     run_parser.add_argument("--dataset", choices=sorted(dataset_catalog()), default="gsm8k")
-    run_parser.add_argument("--adapter", choices=["ollama", "oracle"], default="ollama")
+    run_parser.add_argument(
+        "--adapter",
+        choices=["ollama", "oracle", "openai-compatible"],
+        default="ollama",
+    )
     run_parser.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
     run_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
+    run_parser.add_argument("--provider-id", default=None)
     # 数量与学科选项控制数据加载范围，不改变数据集和模型身份参数。
     run_parser.add_argument("--limit", type=int, default=None)
     run_parser.add_argument("--subject", default="all")

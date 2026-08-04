@@ -12,6 +12,9 @@ import type {
   EvaluationType,
   HealthResponse,
   ModelPerformanceResponse,
+  ModelProvider,
+  ModelProviderDeleteResponse,
+  ModelProviderInput,
   OllamaPullResponse,
   OllamaStatus,
   PrepareDatasetResponse,
@@ -50,6 +53,20 @@ interface EvaluationNodeResponse {
 interface EvaluationNodeSummaryResponse {
   ok: true;
   node: EvaluationNodeSummary;
+}
+
+interface ModelProvidersResponse {
+  providers: ModelProvider[];
+}
+
+interface ModelProviderResponse {
+  ok: true;
+  provider: ModelProvider;
+}
+
+interface ModelProviderTestResponse {
+  ok: true;
+  models: string[];
 }
 
 export class ApiError extends Error {
@@ -142,6 +159,50 @@ export function getSuites(): Promise<SuitesResponse> {
 export function getOllamaStatus(model: string, baseUrl: string): Promise<OllamaStatus> {
   const query = new URLSearchParams({ model, base_url: baseUrl });
   return fetchJson<OllamaStatus>(`/api/ollama/status?${query.toString()}`);
+}
+
+/** 读取全部内置预设和自定义 OpenAI-compatible 服务商的脱敏配置。 */
+export async function getModelProviders(): Promise<ModelProvider[]> {
+  const response = await fetchJson<ModelProvidersResponse>("/api/model-providers");
+  return response.providers;
+}
+
+/** 创建一个自定义服务商；响应不会回显提交的 API Key。 */
+export async function createModelProvider(input: ModelProviderInput): Promise<ModelProvider> {
+  const response = await fetchJson<ModelProviderResponse>("/api/model-providers", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  return response.provider;
+}
+
+/** 更新已有服务商；空 API Key 由服务端解释为保留当前凭据。 */
+export async function updateModelProvider(
+  providerId: string,
+  input: Partial<ModelProviderInput>,
+): Promise<ModelProvider> {
+  const response = await fetchJson<ModelProviderResponse>(
+    `/api/model-providers/${encodeURIComponent(providerId)}`,
+    { method: "PUT", body: JSON.stringify(input) },
+  );
+  return response.provider;
+}
+
+/** 使用已保存凭据探测 `/models`，不在浏览器请求中重复传输密钥。 */
+export async function testModelProvider(providerId: string): Promise<string[]> {
+  const response = await fetchJson<ModelProviderTestResponse>(
+    `/api/model-providers/${encodeURIComponent(providerId)}/test`,
+    { method: "POST" },
+  );
+  return response.models;
+}
+
+/** 删除自定义服务商，或把内置服务商恢复为无凭据默认配置。 */
+export function deleteModelProvider(providerId: string): Promise<ModelProviderDeleteResponse> {
+  return fetchJson<ModelProviderDeleteResponse>(
+    `/api/model-providers/${encodeURIComponent(providerId)}`,
+    { method: "DELETE" },
+  );
 }
 
 /**

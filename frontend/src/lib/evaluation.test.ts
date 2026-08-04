@@ -19,6 +19,7 @@ const baseValues: EvaluationFormValues = {
   agentDifficulty: "all",
   limit: "20",
   suiteId: null,
+  providerId: null,
 };
 
 it("builds the fixed Pi Coding Mini request for Agent evaluation", () => {
@@ -80,6 +81,38 @@ describe("evaluation form rules", () => {
     expect(buildEvaluationRequest({ ...baseValues, sampleMode: "custom", limit: "20" })).toMatchObject({
       sample_mode: "custom",
       limit: 20,
+    });
+  });
+
+  it("builds an API provider request without any credential field", () => {
+    const request = buildEvaluationRequest({
+      ...baseValues,
+      adapter: "openai-compatible",
+      providerId: "deepseek",
+      model: "deepseek-v4-pro",
+      baseUrl: "https://api.deepseek.com",
+    });
+
+    expect(request).toMatchObject({
+      adapter: "openai-compatible",
+      provider_id: "deepseek",
+      model: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+    });
+    expect(request).not.toHaveProperty("api_key");
+  });
+
+  it("requires a provider and model for API evaluation", () => {
+    expect(
+      validateEvaluation({
+        ...baseValues,
+        adapter: "openai-compatible",
+        providerId: null,
+        model: "",
+      }),
+    ).toEqual({
+      provider: "请选择模型服务商",
+      model: "请输入模型 ID",
     });
   });
 

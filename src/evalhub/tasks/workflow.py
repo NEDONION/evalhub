@@ -106,6 +106,8 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
                     "protocol_fingerprint": protocol_fingerprint,
                     "model": request.model,
                     "adapter": request.adapter,
+                    "provider_id": request.provider_id,
+                    "base_url": request.base_url,
                     "sample_mode": request.sample_mode,
                     "subject": (
                         "all"

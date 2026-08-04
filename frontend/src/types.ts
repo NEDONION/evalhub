@@ -1,6 +1,6 @@
 export type DatasetName = string;
 export type BenchmarkExecutor = "native" | "lm_eval" | "sandboxed_code";
-export type AdapterType = "ollama" | "oracle";
+export type AdapterType = "ollama" | "oracle" | "openai-compatible";
 export type SampleMode = "all" | "quick" | "custom";
 export type EvaluationType = "model" | "agent";
 export type AgentFramework = "pi";
@@ -77,6 +77,32 @@ export interface EvaluationRequest {
   subject?: string;
   limit?: number;
   suite_id?: string;
+  provider_id?: string;
+}
+
+export type ModelProviderKind = "builtin" | "custom";
+
+export interface ModelProvider {
+  id: string;
+  name: string;
+  kind: ModelProviderKind;
+  base_url: string;
+  key_configured: boolean;
+  key_hint: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ModelProviderInput {
+  name: string;
+  base_url: string;
+  api_key: string;
+}
+
+export interface ModelProviderDeleteResponse {
+  ok: true;
+  provider_id: string;
+  reset: boolean;
 }
 
 export interface BenchmarkReadiness {

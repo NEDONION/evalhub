@@ -2,15 +2,20 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ApiError,
+  createModelProvider,
+  deleteModelProvider,
   getBenchmarks,
   getEvaluationNode,
   getEvaluationNodeSamples,
   getHealth,
   getModelPerformance,
+  getModelProviders,
   getOllamaStatus,
   getSuites,
   retryEvaluationNode,
   runEvaluation,
+  testModelProvider,
+  updateModelProvider,
 } from "./api";
 
 function jsonResponse(body: unknown, status = 200) {
@@ -153,5 +158,53 @@ describe("EvalHub API", () => {
     expect(fetchMock.mock.calls[4]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("uses stable provider CRUD and model discovery endpoints", async () => {
+    const provider = {
+      id: "deepseek",
+      name: "DeepSeek",
+      kind: "builtin",
+      base_url: "https://api.deepseek.com",
+      key_configured: true,
+      key_hint: "1234",
+      created_at: null,
+      updated_at: null,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ providers: [provider] }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, provider }, 201))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, provider }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true, models: ["deepseek-v4-pro"] }))
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, provider_id: "provider/custom", reset: false }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getModelProviders();
+    await createModelProvider({
+      name: "Gateway",
+      base_url: "https://gateway.example.com/v1",
+      api_key: "sk-secret",
+    });
+    await updateModelProvider("provider/custom", { api_key: "" });
+    await testModelProvider("provider/custom");
+    await deleteModelProvider("provider/custom");
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/model-providers",
+      "/api/model-providers",
+      "/api/model-providers/provider%2Fcustom",
+      "/api/model-providers/provider%2Fcustom/test",
+      "/api/model-providers/provider%2Fcustom",
+    ]);
+    expect(fetchMock.mock.calls.map(([, options]) => options?.method)).toEqual([
+      undefined,
+      "POST",
+      "PUT",
+      "POST",
+      "DELETE",
+    ]);
   });
 });
