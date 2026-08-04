@@ -38,6 +38,17 @@ class NormalizedSourceRow:
     source_metadata: dict[str, object]
 
 
+@dataclass(frozen=True)
+class HumanEvalSourceRow:
+    """保存仅供 Docker 评分边界使用的选中 HumanEval 官方执行字段。"""
+
+    source_key: str
+    prompt: str
+    canonical_solution: str
+    test: str
+    entry_point: str
+
+
 PINNED_SOURCES = (
     PinnedSource(
         "hexagon-mmlu",
@@ -481,6 +492,55 @@ def parse_humaneval_rows(path: Path) -> dict[str, NormalizedSourceRow]:
                 rows,
                 NormalizedSourceRow(source_key, prompt, canonical, "pass@1", metadata),
             )
+    return rows
+
+
+def load_selected_humaneval_rows(
+    path: Path, source_keys: Iterable[str]
+) -> dict[str, HumanEvalSourceRow]:
+    """从 gzip 流中只保留固定选择的 HumanEval 执行记录，不解压到磁盘。
+
+    Args:
+        path: 已通过固定摘要校验的官方 HumanEval gzip JSONL 路径。
+        source_keys: 冻结清单要求加载的唯一官方 ``HumanEval/N`` 标识。
+
+    Returns:
+        仅包含选中 ID 的执行记录映射；标准实现和隐藏测试不会进入领域样本元数据。
+
+    Raises:
+        ValueError: 选择器重复、来源记录无效、选中记录重复或缺失必填执行字段时抛出。
+        OSError: gzip 来源文件不可读时保留底层文件系统错误。
+    """
+    requested = tuple(source_keys)
+    if len(requested) != len(set(requested)):
+        raise ValueError("duplicate HumanEval source selectors")
+    selected = set(requested)
+    rows: dict[str, HumanEvalSourceRow] = {}
+
+    # 逐行只暂存命中的十条记录，避免完整测试集的标准实现和隐藏测试长期驻留内存。
+    with gzip.open(path, "rt", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"HumanEval row {line_number} must be an object")
+            source_key = _required_text(payload, "task_id", str(line_number))
+            if source_key not in selected:
+                continue
+            if source_key in rows:
+                raise ValueError(f"duplicate HumanEval source key: {source_key}")
+            # 隐藏字段只写入专用记录，现有文本样本规范化路径继续看不到 ``test``。
+            rows[source_key] = HumanEvalSourceRow(
+                source_key=source_key,
+                prompt=_required_text(payload, "prompt", source_key),
+                canonical_solution=_required_text(payload, "canonical_solution", source_key),
+                test=_required_text(payload, "test", source_key),
+                entry_point=_required_text(payload, "entry_point", source_key),
+            )
+
+    # 缺失选择器必须在模型调用前失败，不能用其他题目或空测试静默补位。
+    missing = selected.difference(rows)
+    if missing:
+        raise ValueError(f"missing HumanEval source selectors: {', '.join(sorted(missing))}")
     return rows
 
 
