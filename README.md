@@ -229,14 +229,16 @@ cd /Users/nedonion/PycharmProjects/evalhub
 ./scripts/start_local.sh
 ```
 
-模型和评分器只接收、只评分英文 `input` 与官方 `reference`。控制台中的 `input_zh`、
-`reference_zh` 和中文能力标签是非官方、仅展示的翻译，绝不进入模型提示、评分器或 HumanEval
-容器。HumanEval 必须同时具备 Docker daemon 与本地 `evalhub-humaneval:1.0.0` 镜像；缺少任一
+模型适配器只接收官方英文 `input`，绝不接收中文展示字段。文本评分器可使用官方 `reference` 和
+规则元数据（例如 IFEval）；HumanEval 在生成后只在 Docker 内使用官方隐藏测试评分。控制台中的
+`input_zh`、`reference_zh` 和中文能力标签是非官方、仅供人工显示的翻译，绝不影响模型提示或得分。
+HumanEval 必须同时具备 Docker daemon 与本地 `evalhub-humaneval:1.0.0` 镜像；缺少任一
 条件会阻塞代码节点，响应会给出 `./scripts/build_humaneval_image.sh`。其他已经成功的节点仍会保留
 为 `partial` 结果，但不完整的 Hexagon 运行不会进入模型成绩比较。
 
-每次准备都会校验固定 revision 和完整文件 SHA-256；工作流还保存清单 SHA-256、来源 revision、
-提示模板版本和生成配置，作为结果的 `reproducibility` 合同。七个官方来源如下：
+固定 URL、revision 和 SHA-256 共同构成来源合同。`prepare-dataset` 下载固定 URL 并校验缓存或
+下载文件的 SHA-256；工作流预检会拒绝已安装来源合同漂移。工作流还保存清单 SHA-256、来源
+revision、提示模板版本和生成配置，作为结果的 `reproducibility` 合同。七个官方来源如下：
 
 | Benchmark | 官方来源 | 固定 revision | SHA-256 |
 | --- | --- | --- | --- |
