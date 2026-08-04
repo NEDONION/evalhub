@@ -32,7 +32,7 @@
 - Produces: `run_harness_benchmark(..., on_sample_result: Callable) -> dict[str, object]`
 - Produces: `benchmark_readiness(spec: BenchmarkSpec, model: str | None = None) -> tuple[bool, str | None]`
 
-- [ ] **Step 1: Write failing tests** for 13 registry entries, MATH-500 task name `math500`, tokenizer mapping, `lm-eval` result/sample conversion, and Docker security arguments.
+- [ ] **Step 1: Write failing tests** for 13 registry entries, `lm-eval==0.4.12` task names, tokenizer mapping, result/sample conversion, and Docker security arguments.
 - [ ] **Step 2: Run** `.venv/bin/python -m pytest tests/test_benchmark_harness.py tests/test_benchmark_registry.py -q` and confirm missing module/task-name failures.
 - [ ] **Step 3: Implement minimal adapter** using lazy `lm_eval` imports, `simple_evaluate(model="local-completions", ...)`, a fixed tokenizer mapping, and `subprocess.run([...], check=True)` for Docker code tasks.
 - [ ] **Step 4: Run the same tests** and confirm PASS.
