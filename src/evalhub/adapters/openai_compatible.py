@@ -11,18 +11,29 @@ from evalhub.adapters.base import ModelAdapter
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 3
+_FINAL_ONLY_SYSTEM_PROMPT = (
+    "Follow the requested answer format exactly. Do not show reasoning or explanations."
+)
 
 
 class OpenAICompatibleAdapter(ModelAdapter):
     """把统一文本生成接口映射到非流式 Chat Completions 请求。"""
 
-    def __init__(self, model: str, base_url: str, api_key: str) -> None:
+    def __init__(
+        self,
+        model: str,
+        base_url: str,
+        api_key: str,
+        *,
+        provider_id: str | None = None,
+    ) -> None:
         """固定单次评测使用的模型、服务地址和短生命周期凭据。
 
         Args:
             model: 服务商公开的模型 ID。
             base_url: 已由服务商仓储校验的 API 根地址。
             api_key: 仅保存在当前适配器实例中的完整访问凭据。
+            provider_id: 内置服务商标识；用于启用厂商明确支持的协议参数。
 
         Raises:
             ValueError: 模型、地址或凭据为空。
@@ -33,6 +44,7 @@ class OpenAICompatibleAdapter(ModelAdapter):
         self.model = model.strip()
         self.base_url = base_url.rstrip("/")
         self._api_key = api_key
+        self.provider_id = provider_id
 
     def generate(self, prompt: str, **kwargs: object) -> str:
         """发送单轮用户消息并返回首个助手响应文本。
@@ -52,6 +64,13 @@ class OpenAICompatibleAdapter(ModelAdapter):
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }
+        # DeepSeek V4 默认思考会占用 Benchmark 的短输出预算；评测只需要协议要求的最终答案。
+        if self.provider_id == "deepseek":
+            payload["messages"] = [
+                {"role": "system", "content": _FINAL_ONLY_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ]
+            payload["thinking"] = {"type": "disabled"}
         # 评测配置只透传协议明确支持的采样字段，并转换 Ollama 的长度字段名。
         for key in ("temperature", "top_p", "seed"):
             if key in kwargs and kwargs[key] is not None:

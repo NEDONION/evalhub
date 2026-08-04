@@ -65,7 +65,12 @@ def build_model_adapter(
         # 任务只保存服务商引用，Worker 在真正发起请求前解析最新轮换后的凭据。
         repository = provider_repository or default_model_provider_repository()
         api_key = repository.resolve_api_key(provider_id)
-        return OpenAICompatibleAdapter(model=model, base_url=base_url, api_key=api_key)
+        return OpenAICompatibleAdapter(
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            provider_id=provider_id,
+        )
     raise ValueError("adapter must be one of: ollama, oracle, openai-compatible")
 
 

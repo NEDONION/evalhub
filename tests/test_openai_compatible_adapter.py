@@ -96,6 +96,59 @@ def test_generate_maps_evalhub_options_to_chat_completions() -> None:
     assert result == "42"
 
 
+def test_deepseek_generate_disables_thinking_and_enforces_requested_format(
+    tmp_path: Path,
+) -> None:
+    """DeepSeek 评测应关闭默认思考并用系统消息约束只返回最终答案。"""
+    repository = ModelProviderRepository(
+        tmp_path / "providers.sqlite3",
+        CredentialCipher.from_runtime(tmp_path, env={}),
+    )
+    repository.save(
+        "deepseek",
+        name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-secret",
+    )
+    response = _Response(
+        b'{"id":"chat-1","object":"chat.completion","created":1,'
+        b'"model":"deepseek-v4-pro","choices":[{"index":0,"message":'
+        b'{"role":"assistant","content":"C","reasoning_content":null},'
+        b'"logprobs":null,"finish_reason":"stop"}],"usage":'
+        b'{"prompt_tokens":104,"completion_tokens":1,"total_tokens":105}}'
+    )
+
+    with patch("evalhub.adapters.openai_compatible.urlopen", return_value=response) as opener:
+        adapter = build_model_adapter(
+            "openai-compatible",
+            model="deepseek-v4-pro",
+            base_url="https://api.deepseek.com",
+            oracle_responses={},
+            provider_id="deepseek",
+            provider_repository=repository,
+        )
+        result = adapter.generate("Return only one letter: A, B, C, or D.", num_predict=256)
+
+    request = opener.call_args.args[0]
+    assert json.loads(request.data) == {
+        "model": "deepseek-v4-pro",
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Follow the requested answer format exactly. "
+                    "Do not show reasoning or explanations."
+                ),
+            },
+            {"role": "user", "content": "Return only one letter: A, B, C, or D."},
+        ],
+        "stream": False,
+        "max_tokens": 256,
+        "thinking": {"type": "disabled"},
+    }
+    assert result == "C"
+
+
 def test_generate_retries_rate_limit_then_returns_success() -> None:
     """429 应遵循数字型 Retry-After 并在第二次请求成功后停止重试。"""
     limited = _http_error(429, '{"error":{"message":"busy"}}', retry_after="0")
