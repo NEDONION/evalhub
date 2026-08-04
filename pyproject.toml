@@ -35,6 +35,9 @@ evalhub = "evalhub.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"evalhub.datasets" = ["manifests/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

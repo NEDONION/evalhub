@@ -326,6 +326,9 @@ def _validate_manifest(rows: tuple[HexagonSampleSpec, ...]) -> None:
     """
     if len(rows) != 60 or len({row.id for row in rows}) != 60:
         raise ValueError("manifest must contain exactly 60 unique sample IDs")
+    selectors = [(row.benchmark_id, row.source_key) for row in rows]
+    if len(selectors) != len(set(selectors)):
+        raise ValueError("manifest must contain unique source selectors per benchmark")
     benchmark_counts = Counter(row.benchmark_id for row in rows)
     if benchmark_counts != _EXPECTED_COUNTS:
         raise ValueError("manifest source slice counts do not match Hexagon protocol")

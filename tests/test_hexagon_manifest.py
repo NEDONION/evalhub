@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from evalhub.datasets.hexagon_manifest import load_hexagon_manifest
+from evalhub.datasets.hexagon_manifest import hexagon_manifest, load_hexagon_manifest
 
 
 def _digest(value: str) -> str:
@@ -254,3 +254,25 @@ def test_hexagon_manifest_rejects_mmlu_source_key_without_exact_stratum_prefix(
 
     with pytest.raises(ValueError, match="source_key does not match stratum"):
         load_hexagon_manifest(path)
+
+
+def test_hexagon_manifest_rejects_duplicate_source_selectors(tmp_path: Path) -> None:
+    """同一来源切片中的选择器必须唯一，避免一条官方记录被重复计入能力分。"""
+    path = tmp_path / "manifest.json"
+    payload = _manifest_payload()
+    samples = payload["samples"]
+    assert isinstance(samples, list)
+    samples[11]["source_key"] = samples[10]["source_key"]
+    _write_manifest(path, payload)
+
+    with pytest.raises(ValueError, match="unique source selectors"):
+        load_hexagon_manifest(path)
+
+
+def test_packaged_hexagon_manifest_contains_sixty_verified_translations() -> None:
+    """发布包必须携带冻结的 60 行清单，且每条中文辅助翻译均非空并通过摘要校验。"""
+    rows = hexagon_manifest()
+
+    assert len(rows) == 60
+    assert all(row.input_zh.strip() for row in rows)
+    assert all(row.translation_version == "evalhub-zh-v1" for row in rows)

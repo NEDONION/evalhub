@@ -1,17 +1,26 @@
-"""负责下载、校验并把 GSM8K 与 MMLU 原始文件转换为领域样本。"""
+"""负责下载、校验并把公开数据集与 Hexagon 固定来源转换为领域样本。"""
 
 import csv
+import hashlib
 import json
-import re
 import shutil
 import tarfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.request import urlretrieve
 
 from evalhub.datasets.catalog import DatasetSpec, get_dataset_spec
-from evalhub.datasets.hexagon_sources import prepare_hexagon_dataset
+from evalhub.datasets.hexagon_manifest import HexagonSampleSpec, hexagon_manifest
+from evalhub.datasets.hexagon_sources import (
+    NormalizedSourceRow,
+    extract_gsm8k_answer,
+    gsm8k_prompt,
+    hexagon_source_specs,
+    load_hexagon_source_rows,
+    mmlu_prompt,
+    prepare_hexagon_dataset,
+)
 from evalhub.domain import EvaluationSample
 
 # MMLU 官方测试集的完整学科列表用于 ``subject=all`` 的确定性遍历。
@@ -129,6 +138,8 @@ def load_samples(
     """
     # 统一根路径类型后按数据集格式分派，并在生成器外层应用相同数量限制。
     root_path = Path(root)
+    if name.startswith("hexagon-"):
+        return load_hexagon_samples(name, root=root_path, limit=limit)
     if name == "gsm8k":
         return _limited(_load_gsm8k(root_path), limit)
     if name == "mmlu":
@@ -136,6 +147,112 @@ def load_samples(
         subjects = MMLU_SUBJECTS if subject in (None, "all") else [subject]
         return _limited(_load_mmlu(root_path, subjects), limit)
     raise KeyError(f"unsupported dataset: {name}")
+
+
+def load_hexagon_samples(
+    name: str,
+    root: Path | str = ".",
+    limit: int | None = None,
+    *,
+    manifest: tuple[HexagonSampleSpec, ...] | None = None,
+) -> list[EvaluationSample]:
+    """按冻结清单顺序加载一个 Hexagon 来源切片的英文领域样本。
+
+    Args:
+        name: 七个固定 Hexagon Benchmark ID 之一。
+        root: 已准备原始资产相对的项目根目录或测试临时目录。
+        limit: 在完整清单顺序建立后最多返回的样本数量。
+        manifest: 测试可注入的已解析清单；缺省读取随包发布的 v1 清单。
+
+    Returns:
+        仅英文进入 ``input`` 和 ``reference``、中文只在元数据中的样本列表。
+
+    Raises:
+        KeyError: Benchmark ID 未注册时抛出。
+        FileNotFoundError: 固定来源资产尚未准备时抛出。
+        ValueError: 清单选择器缺失、重复或英文内容摘要发生漂移时抛出。
+    """
+    source = hexagon_source_specs()[name]
+    source_path = Path(root) / source.cache_path
+    if not source_path.exists():
+        raise FileNotFoundError(f"Hexagon source is not prepared: {source_path}")
+    frozen = hexagon_manifest() if manifest is None else manifest
+    # TruthfulQA 的输入摘要取决于清单冻结的二选一排列，解析前先建立来源键映射。
+    option_orders = {
+        item.source_key: item.option_order
+        for item in frozen
+        if item.benchmark_id == "hexagon-truthfulqa" and item.option_order is not None
+    }
+    rows = load_hexagon_source_rows(name, source_path, option_orders=option_orders)
+    return _limited(_selected_samples(name, rows, frozen), limit)
+
+
+def _selected_samples(
+    benchmark_id: str,
+    rows: Mapping[str, NormalizedSourceRow],
+    manifest: tuple[HexagonSampleSpec, ...],
+) -> list[EvaluationSample]:
+    """按冻结清单顺序组装英文样本，并拒绝重复或缺失的来源选择器。
+
+    Args:
+        benchmark_id: 当前加载的 Hexagon 来源切片 ID。
+        rows: 已由对应固定来源解析器生成的来源键映射。
+        manifest: 包含当前来源选择器和双语展示元数据的冻结清单。
+
+    Returns:
+        顺序与清单一致、内容摘要已经复核的领域评测样本列表。
+
+    Raises:
+        ValueError: 当前来源清单键重复、缺失或英文摘要不匹配时抛出。
+    """
+    selected = [item for item in manifest if item.benchmark_id == benchmark_id]
+    keys = [item.source_key for item in selected]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"duplicate source selectors for {benchmark_id}")
+    output: list[EvaluationSample] = []
+    for item in selected:
+        row = rows.get(item.source_key)
+        if row is None:
+            raise ValueError(f"missing source selector: {item.source_key}")
+        output.append(_to_evaluation_sample(item, row))
+    return output
+
+
+def _to_evaluation_sample(
+    spec: HexagonSampleSpec, row: NormalizedSourceRow
+) -> EvaluationSample:
+    """复核英文正文摘要并把中文辅助内容限制在领域样本元数据中。
+
+    Args:
+        spec: 冻结清单中与官方来源键匹配的样本规格。
+        row: 从已校验固定资产解析得到的英文规范化记录。
+
+    Returns:
+        可送入模型和评分器的英文样本；中文字段只存在于 ``metadata``。
+
+    Raises:
+        ValueError: 规范化英文输入或参考答案与清单摘要不一致时抛出。
+    """
+    input_digest = hashlib.sha256(row.input.encode("utf-8")).hexdigest()
+    if input_digest != spec.input_sha256:
+        raise ValueError(f"input SHA-256 mismatch for {spec.source_key}")
+    reference_digest = hashlib.sha256(row.reference.encode("utf-8")).hexdigest()
+    if reference_digest != spec.reference_sha256:
+        raise ValueError(f"reference SHA-256 mismatch for {spec.source_key}")
+    # 来源元数据先复制，随后由清单字段覆盖同名键，保证展示溯源不可被上游对象伪造。
+    metadata = dict(row.source_metadata)
+    metadata.update(
+        {
+            "dataset": spec.benchmark_id,
+            "source_key": spec.source_key,
+            "selection_stratum": spec.selection_stratum,
+            "evaluator_type": row.evaluator_type,
+            "input_zh": spec.input_zh,
+            "reference_zh": spec.reference_zh,
+            "translation_version": spec.translation_version,
+        }
+    )
+    return EvaluationSample(id=spec.id, input=row.input, reference=row.reference, metadata=metadata)
 
 
 def _prepare_gsm8k(spec: DatasetSpec, root: Path, *, force: bool) -> Path:
@@ -233,7 +350,7 @@ def _validate_gsm8k_cache(path: Path) -> None:
                     raise ValueError("GSM8K row is missing a question")
                 if not isinstance(answer, str):
                     raise ValueError("GSM8K row is missing an answer")
-                _extract_gsm8k_answer(answer)
+                extract_gsm8k_answer(answer)
                 count += 1
     except (json.JSONDecodeError, OSError, TypeError) as exc:
         raise ValueError(f"invalid GSM8K cache: {exc}") from exc
@@ -344,13 +461,9 @@ def _load_gsm8k(root: Path) -> Iterable[EvaluationSample]:
     with path.open("r", encoding="utf-8") as file:
         for index, line in enumerate(file, start=1):
             row = json.loads(line)
-            reference = _extract_gsm8k_answer(row["answer"])
-            # 提示词明确约束只返回数值，减少本地模型输出格式对评测器的干扰。
-            prompt = (
-                "Solve the following grade-school math problem. "
-                "Return the final answer as a single number.\n\n"
-                f"Problem: {row['question']}\n\nFinal answer:"
-            )
+            reference = extract_gsm8k_answer(row["answer"])
+            # 提示格式与 Hexagon 共享同一函数，防止两条入口产生不同的模型输入。
+            prompt = gsm8k_prompt(row["question"])
             # 原始问题保存在元数据中，便于失败样本报告展示而无需重读源文件。
             yield EvaluationSample(
                 id=f"gsm8k_test_{index}",
@@ -358,19 +471,6 @@ def _load_gsm8k(root: Path) -> Iterable[EvaluationSample]:
                 reference=reference,
                 metadata={"dataset": "gsm8k", "raw_question": row["question"]},
             )
-
-
-def _extract_gsm8k_answer(answer: str) -> str:
-    """提取 GSM8K 官方 ``####`` 标记后的标准数值答案。
-
-    Raises:
-        ValueError: 文本中不存在符合官方格式的最终数值。
-    """
-    # 正则兼容正负数、千位分隔符和小数，并要求官方最终答案标记存在。
-    match = re.search(r"####\s*([-+]?\d[\d,]*(?:\.\d+)?)", answer)
-    if not match:
-        raise ValueError(f"cannot extract GSM8K final answer: {answer[:120]}")
-    return match.group(1).replace(",", "")
 
 
 def _load_mmlu(root: Path, subjects: list[str]) -> Iterable[EvaluationSample]:
@@ -400,19 +500,10 @@ def _load_mmlu(root: Path, subjects: list[str]) -> Iterable[EvaluationSample]:
                 # 非完整行无法提供四个选项和答案，按坏数据跳过而不生成错误样本。
                 if len(row) < 6:
                     continue
-                question, option_a, option_b, option_c, option_d, answer = row[:6]
-                # 统一提示格式并限制返回单个字母，提高不同本地模型输出的可比性。
-                prompt = (
-                    "Answer the multiple-choice question. "
-                    "Return only one letter: A, B, C, or D.\n\n"
-                    f"Subject: {subject.replace('_', ' ')}\n"
-                    f"Question: {question}\n"
-                    f"A. {option_a}\n"
-                    f"B. {option_b}\n"
-                    f"C. {option_c}\n"
-                    f"D. {option_d}\n\n"
-                    "Answer:"
-                )
+                question = row[0]
+                answer = row[5]
+                # 提示格式与 Hexagon 共享同一函数，保持旧 MMLU 行为不变。
+                prompt = mmlu_prompt(subject, row[:6])
                 # 保存学科和原题元数据，使报告能够在不依赖 CSV 的情况下解释失败样本。
                 yield EvaluationSample(
                     id=f"mmlu_{subject}_{index}",

@@ -6,7 +6,7 @@ from evalhub.datasets.hexagon_sources import (
     hexagon_source_specs,
     prepare_hexagon_dataset,
 )
-from evalhub.datasets.loaders import load_samples, prepare_dataset
+from evalhub.datasets.loaders import load_hexagon_samples, load_samples, prepare_dataset
 
 # 显式导出调用方所需能力，隐藏具体数据集格式转换和下载辅助函数。
 __all__ = [
@@ -15,6 +15,7 @@ __all__ = [
     "dataset_catalog",
     "get_dataset_spec",
     "hexagon_source_specs",
+    "load_hexagon_samples",
     "load_samples",
     "prepare_dataset",
     "prepare_hexagon_dataset",
