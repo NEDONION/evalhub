@@ -72,7 +72,7 @@ export function OllamaPanel({
   const facts = [
     { icon: Command, label: "命令", value: status?.command || "未检测到" },
     { icon: RadioTower, label: "服务地址", value: status?.base_url || "http://127.0.0.1:11434" },
-    { icon: Bot, label: "目标模型", value: status?.model || "qwen2.5:0.5b" },
+    { icon: Bot, label: "目标模型", value: status?.model || "granite4.1:3b" },
     { icon: Box, label: "本地模型", value: status ? `${status.models.length} 个` : "—" },
   ];
 

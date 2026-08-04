@@ -180,13 +180,13 @@ cd /Users/nedonion/PycharmProjects/evalhub
 
 ```bash
 ollama serve
-ollama pull qwen2.5:0.5b
+ollama pull granite4.1:3b
 
 cd /Users/nedonion/PycharmProjects/evalhub
 .venv/bin/python run_evalhub.py run-benchmark \
   --dataset gsm8k \
   --adapter ollama \
-  --model qwen2.5:0.5b \
+  --model granite4.1:3b \
   --limit 5
 ```
 
@@ -196,7 +196,7 @@ cd /Users/nedonion/PycharmProjects/evalhub
 .venv/bin/python run_evalhub.py run-benchmark \
   --dataset gsm8k \
   --adapter ollama \
-  --model qwen2.5:0.5b
+  --model granite4.1:3b
 ```
 
 使用 Ollama 本地模型跑 MMLU：
@@ -205,7 +205,7 @@ cd /Users/nedonion/PycharmProjects/evalhub
 .venv/bin/python run_evalhub.py run-benchmark \
   --dataset mmlu \
   --adapter ollama \
-  --model qwen2.5:0.5b \
+  --model granite4.1:3b \
   --subject abstract_algebra \
   --limit 5
 ```

@@ -12,7 +12,7 @@ import { SidebarNav, type WorkspaceView } from "./components/dashboard/SidebarNa
 import { useEvalHub } from "./hooks/useEvalHub";
 import { formatScore } from "./lib/evaluation";
 
-const DEFAULT_MODEL = "qwen2.5:0.5b";
+const DEFAULT_MODEL = "granite4.1:3b";
 const DEFAULT_BASE_URL = "http://127.0.0.1:11434";
 
 const pageCopy: Record<WorkspaceView, { eyebrow: string; title: string; description: string }> = {

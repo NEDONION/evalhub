@@ -80,15 +80,15 @@ const ollamaFixture = {
   model_present: true,
   command: "/usr/local/bin/ollama",
   base_url: "http://127.0.0.1:11434",
-  model: "qwen2.5:0.5b",
-  models: ["qwen2.5:0.5b"],
+  model: "granite4.1:3b",
+  models: ["granite4.1:3b"],
   model_options: [
     {
-      name: "qwen2.5:0.5b",
-      label: "Qwen2.5 0.5B",
-      description: "默认轻量模型",
+      name: "granite4.1:3b",
+      label: "Granite 4.1 3B",
+      description: "默认轻量 Agent 模型",
       installed: true,
-      size_bytes: 397_000_000,
+      size_bytes: 2_100_000_000,
       size_kind: "actual" as const,
     },
     {
@@ -491,7 +491,7 @@ describe("EvalHub console", () => {
 
     expect(startModelPull).not.toHaveBeenCalled();
     await user.click(navigationButton("发起评测"));
-    expect(modelSelect).toHaveValue("qwen2.5:0.5b");
+    expect(modelSelect).toHaveValue("granite4.1:3b");
   });
 
   it("shows real pull telemetry and allows cancellation", async () => {
@@ -670,7 +670,7 @@ describe("EvalHub console", () => {
       agent_framework: "codex",
       dataset: "coding_mini",
       adapter: "ollama",
-      model: "qwen2.5:0.5b",
+      model: "granite4.1:3b",
       base_url: "http://127.0.0.1:11434",
       sample_mode: "all",
       agent_difficulty: "hard",
