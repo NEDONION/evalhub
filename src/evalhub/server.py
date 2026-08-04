@@ -288,7 +288,6 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                     samples = load_samples(
                         dataset,
                         limit=100000,
-                        subject="abstract_algebra" if dataset == "mmlu" else None,
                     )
                     sample_count = len(samples)
                 else:
@@ -321,7 +320,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                     model=str(payload.get("model", "qwen2.5:0.5b")),
                     base_url=str(payload.get("base_url", "http://127.0.0.1:11434")),
                     limit=limit,
-                    subject=str(payload.get("subject", "abstract_algebra")),
+                    subject=str(payload.get("subject", "all")),
                 )
                 # 成功响应把报告放在 ``result`` 下，为前端保留统一的 ``ok`` 判定字段。
                 self._json({"ok": True, "result": result})
@@ -391,15 +390,12 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             if prepared and native is not None:
                 try:
                     # 当前公开测试集规模可控，上限用于防止异常缓存导致无界读取。
-                    sample_count = len(
-                        load_samples(
-                            benchmark.id,
-                            limit=100000,
-                            subject=(
-                                "abstract_algebra" if benchmark.id == "mmlu" else None
-                            ),
+                        sample_count = len(
+                            load_samples(
+                                benchmark.id,
+                                limit=100000,
+                            )
                         )
-                    )
                 except Exception:
                     # 状态接口应继续展示损坏或不完整的数据集，由空样本数提示需要重新准备。
                     sample_count = None
@@ -703,7 +699,7 @@ def _task_request(payload: object) -> TaskRequest:
         base_url=str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
         sample_mode=sample_mode,
         subject=(
-            "all" if suite_id is not None else str(payload.get("subject", "abstract_algebra"))
+            "all" if suite_id is not None else str(payload.get("subject", "all"))
         ),
         limit=limit,
         evaluation_type=evaluation_type,

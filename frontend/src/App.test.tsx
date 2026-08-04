@@ -455,7 +455,7 @@ describe("EvalHub console", () => {
     expect(screen.queryByLabelText("MMLU 学科")).not.toBeInTheDocument();
 
     await user.selectOptions(datasetSelect, "mmlu");
-    expect(screen.getByLabelText("MMLU 学科")).toBeInTheDocument();
+    expect(screen.getByLabelText("MMLU 学科")).toHaveValue("all");
 
     await user.click(screen.getByRole("radio", { name: "自定义" }));
     expect(screen.getByLabelText("自定义样本数量")).toBeInTheDocument();

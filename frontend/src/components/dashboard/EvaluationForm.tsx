@@ -76,7 +76,7 @@ export function EvaluationForm({
   const [targetMode, setTargetMode] = useState<"single" | "suite">("single");
   const [suiteId, setSuiteId] = useState("llm-industry-core-v1");
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
-  const [subject, setSubject] = useState("abstract_algebra");
+  const [subject, setSubject] = useState("all");
   const [adapter, setAdapter] = useState<AdapterType>("ollama");
   const [sampleMode, setSampleMode] = useState<SampleMode>("all");
   const [agentDifficulty, setAgentDifficulty] = useState<AgentDifficulty>("all");

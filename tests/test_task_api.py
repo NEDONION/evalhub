@@ -31,7 +31,7 @@ def request_fixture() -> TaskRequest:
         model="local-test",
         base_url="http://127.0.0.1:11434",
         sample_mode="quick",
-        subject="abstract_algebra",
+        subject="all",
         limit=None,
     )
 
