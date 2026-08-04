@@ -1,7 +1,6 @@
 import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type {
   AdapterType,
@@ -18,6 +17,7 @@ import type {
 import { Button } from "../ui/Button";
 import { FieldMessage } from "../ui/FieldMessage";
 import { Panel } from "../ui/Panel";
+import { ModelSelector } from "./ModelSelector";
 
 interface EvaluationFormProps {
   datasets: Dataset[];
@@ -116,7 +116,7 @@ export function EvaluationForm({
   const selectedBenchmark = benchmarkOptions.find((item) => item.id === dataset) || null;
   const selectedSuite = suites.find((item) => item.id === suiteId) || suites[0] || null;
 
-  const availableModels =
+  const availableModels: ModelOption[] =
     modelOptions.length > 0
       ? modelOptions
       : [
@@ -127,9 +127,12 @@ export function EvaluationForm({
             installed: false,
             size_bytes: null,
             size_kind: "unknown" as const,
+            evaluation_types: ["model", "agent"],
+            capability_label: "当前模型",
           },
         ];
-  const selectedModelOption = availableModels.find((option) => option.name === model);
+  const applicableModels = availableModels.filter((option) => option.evaluation_types.includes(evaluationType));
+  const selectedModelOption = applicableModels.find((option) => option.name === model);
   const missingOllamaModel = (evaluationType === "agent" || adapter === "ollama") && !selectedModelOption?.installed;
 
   const values: EvaluationFormValues = {
@@ -167,8 +170,12 @@ export function EvaluationForm({
    */
   function changeEvaluationType(event: React.ChangeEvent<HTMLInputElement>) {
     const nextType = event.target.value as EvaluationType;
+    const nextModels = availableModels.filter((option) => option.evaluation_types.includes(nextType));
+    const currentModel = nextModels.find((option) => option.name === model);
+    const fallbackModel = nextModels.find((option) => option.installed) || nextModels[0];
     setEvaluationType(nextType);
     setErrors({});
+    if (!currentModel && fallbackModel) onModelChange(fallbackModel.name);
     if (nextType === "agent") {
       setAdapter("ollama");
       setSampleMode("all");
@@ -354,21 +361,14 @@ export function EvaluationForm({
           )}
 
           <div>
-            <label htmlFor="model" className="mb-1.5 block text-xs font-medium text-muted">
-              {evaluationType === "agent" ? "Agent 基模" : "模型"}
-            </label>
-            <select
+            <ModelSelector
               id="model"
-              className={controlClass}
+              label={evaluationType === "agent" ? "Agent 基模" : "模型"}
+              options={applicableModels}
               value={model}
-              onChange={(event) => onModelChange(event.target.value)}
-            >
-              {availableModels.map((option) => (
-                <option key={option.name} value={option.name}>
-                  {option.label} · {formatBytes(option.size_bytes)} · {option.installed ? "已安装" : "未下载"}
-                </option>
-              ))}
-            </select>
+              describedBy={missingOllamaModel ? "model-error" : undefined}
+              onChange={onModelChange}
+            />
             {missingOllamaModel ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
