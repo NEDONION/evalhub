@@ -8,26 +8,35 @@ from urllib.error import URLError
 class OllamaStatusTest(unittest.TestCase):
     """通过替换命令探测和 HTTP 边界测试所有本地状态分支。"""
 
-    def test_recommended_catalog_contains_five_small_agent_models(self) -> None:
-        """推荐目录应固定为五个不超过 5 GB 的工具型 Agent 模型。"""
+    def test_recommended_catalog_separates_model_and_agent_candidates(self) -> None:
+        """推荐目录应覆盖答题与 Agent 候选，并隔离不兼容工具模型。"""
         from evalhub.ollama import DEFAULT_OLLAMA_MODEL, RECOMMENDED_OLLAMA_MODELS
 
-        # 名称、顺序和预估容量共同构成控制台下拉框的稳定目录契约。
-        catalog = [
-            (item["name"], item["estimated_size_bytes"])
-            for item in RECOMMENDED_OLLAMA_MODELS
-        ]
+        # 目录顺序决定下拉框推荐顺序，用手写期望约束两种评测的真实候选边界。
+        catalog = {str(item["name"]): item for item in RECOMMENDED_OLLAMA_MODELS}
         self.assertEqual(DEFAULT_OLLAMA_MODEL, "granite4.1:3b")
         self.assertEqual(
-            catalog,
+            list(catalog),
             [
-                ("granite4.1:3b", 2_100_000_000),
-                ("qwen2.5-coder:7b", 4_700_000_000),
-                ("granite3.3:8b", 4_900_000_000),
-                ("phi4-mini:3.8b", 2_500_000_000),
-                ("llama3.2:3b", 2_000_000_000),
+                "granite4.1:3b",
+                "qwen3:4b",
+                "qwen3:8b",
+                "qwen3:14b",
+                "ministral-3:8b",
+                "gemma4:12b",
+                "lfm2.5:8b",
+                "north-mini-code-1.0:q4_K_M",
+                "qwen2.5:0.5b",
+                "qwen2.5:1.5b",
+                "deepseek-r1:1.5b",
+                "qwen2.5-coder:7b",
             ],
         )
+        self.assertEqual(catalog["qwen2.5-coder:7b"]["evaluation_types"], ["model"])
+        self.assertEqual(
+            catalog["ministral-3:8b"]["evaluation_types"], ["model", "agent"]
+        )
+        self.assertEqual(catalog["north-mini-code-1.0:q4_K_M"]["capability_label"], "Agent 编码")
 
     def test_status_reports_not_installed_when_command_missing(self) -> None:
         """找不到可执行命令时应报告未安装且不得尝试服务请求。"""
@@ -68,19 +77,23 @@ class OllamaStatusTest(unittest.TestCase):
         from evalhub.ollama import get_ollama_status
 
         # 仅返回一个本机模型，以便同时断言已安装和未安装推荐项的状态。
-        response = _Response(b'{"models":[{"name":"qwen2.5:0.5b"}]}')
+        response = _Response(b'{"models":[{"name":"custom-local:latest"}]}')
         with (
             patch("evalhub.ollama.find_ollama_command", return_value="/usr/local/bin/ollama"),
             patch("evalhub.ollama.urlopen", return_value=response),
         ):
-            status = get_ollama_status(model="llama3.2:3b")
+            status = get_ollama_status(model="ministral-3:8b")
 
         # 按名称建立临时索引，让断言不依赖推荐列表中其他模型的展示顺序。
         options = status["model_options"]
         option_by_name = {option["name"]: option for option in options}
-        self.assertEqual(option_by_name["qwen2.5:0.5b"]["installed"], True)
-        self.assertEqual(option_by_name["llama3.2:3b"]["installed"], False)
-        self.assertIn("轻量", option_by_name["llama3.2:3b"]["description"])
+        self.assertEqual(option_by_name["custom-local:latest"]["installed"], True)
+        self.assertEqual(
+            option_by_name["custom-local:latest"]["evaluation_types"], ["model", "agent"]
+        )
+        self.assertEqual(option_by_name["custom-local:latest"]["capability_label"], "本机模型")
+        self.assertEqual(option_by_name["ministral-3:8b"]["installed"], False)
+        self.assertIn("函数调用", option_by_name["ministral-3:8b"]["description"])
 
     def test_installed_model_size_overrides_catalog_estimate(self) -> None:
         """已安装模型必须展示 Ollama 返回的真实磁盘大小。"""

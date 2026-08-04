@@ -29,6 +29,7 @@ import type {
   EvaluationTaskDetail,
   EvaluationTaskSummary,
   ModelPerformanceResponse,
+  OllamaStatus,
 } from "./types";
 
 vi.mock("./lib/api", () => ({
@@ -76,7 +77,7 @@ const mmluFixture = {
   sample_count: null,
 };
 
-const ollamaFixture = {
+const ollamaFixture: OllamaStatus = {
   installed: true,
   running: true,
   model_present: true,
@@ -91,7 +92,9 @@ const ollamaFixture = {
       description: "默认轻量 Agent 模型",
       installed: true,
       size_bytes: 2_100_000_000,
-      size_kind: "actual" as const,
+      size_kind: "actual",
+      evaluation_types: ["model", "agent"],
+      capability_label: "Agent 基线",
     },
     {
       name: "qwen2.5:1.5b",
@@ -99,7 +102,9 @@ const ollamaFixture = {
       description: "轻量中文能力更好",
       installed: false,
       size_bytes: 986_000_000,
-      size_kind: "estimated" as const,
+      size_kind: "estimated",
+      evaluation_types: ["model"],
+      capability_label: "轻量答题",
     },
   ],
   message: "Ollama 已就绪。",
