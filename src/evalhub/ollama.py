@@ -10,37 +10,115 @@ from urllib.request import urlopen
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "granite4.1:3b"
 
-# 推荐列表提供未安装模型的展示信息，已安装模型仍会在最终选项中优先出现。
+# 推荐列表同时服务答题与 Agent 评测；已安装模型仍会在最终选项中优先出现。
 RECOMMENDED_OLLAMA_MODELS = [
+    # 已在本机真实 Pi 链路验证工具调用，作为两类评测的默认轻量基线。
     {
         "name": "granite4.1:3b",
         "label": "Granite 4.1 3B",
-        "description": "默认轻量 Agent 模型，兼顾编码、工具调用和结构化输出。",
+        "description": "已验证的轻量工具调用基线，适合快速试跑。",
         "estimated_size_bytes": 2_100_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "Agent 基线",
     },
+    # Qwen 3 小档用于观察紧凑模型能否完成工作区探索与工具编排。
+    {
+        "name": "qwen3:4b",
+        "label": "Qwen 3 4B",
+        "description": "小体积工具模型，适合低成本 Agent 与通用答题。",
+        "estimated_size_bytes": 2_500_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "紧凑工具",
+    },
+    # 8B 档在容量和代码理解之间取平衡，适合作为本机主力对照。
+    {
+        "name": "qwen3:8b",
+        "label": "Qwen 3 8B",
+        "description": "平衡工具调用、中文与代码理解的通用 Agent 模型。",
+        "estimated_size_bytes": 5_200_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "均衡 Agent",
+    },
+    # 14B 档提高多步推理和实现正确率，64 GB 统一内存机器仍可本地运行。
+    {
+        "name": "qwen3:14b",
+        "label": "Qwen 3 14B",
+        "description": "更高能力的工具与推理档，适合复杂答题和 Agent 任务。",
+        "estimated_size_bytes": 9_300_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "高能力 Agent",
+    },
+    # Ministral 官方定位包含原生函数调用，作为非 Qwen 的平衡工具模型。
+    {
+        "name": "ministral-3:8b",
+        "label": "Ministral 3 8B",
+        "description": "原生函数调用与 Agent 工作流，适合平衡速度和任务完成率。",
+        "estimated_size_bytes": 6_000_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "Agent 工具",
+    },
+    # Gemma 中档强调推理与编码，为 Coding Mini 提供更强实现能力候选。
+    {
+        "name": "gemma4:12b",
+        "label": "Gemma 4 12B",
+        "description": "面向推理、编码与 Agent 工作流的中型高能力模型。",
+        "estimated_size_bytes": 7_600_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "Agent 编码",
+    },
+    # LFM 的稀疏架构用于快速连续工具调用，作为吞吐量取向的对照。
+    {
+        "name": "lfm2.5:8b",
+        "label": "LFM 2.5 8B-A1B",
+        "description": "面向本地设备的快速连续工具调用模型。",
+        "estimated_size_bytes": 5_200_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "工具链",
+    },
+    # North Mini Code 专门训练终端与软件工程任务，提供容量更高的上限档。
+    {
+        "name": "north-mini-code-1.0:q4_K_M",
+        "label": "North Mini Code 1.0",
+        "description": "专门面向 Agent 编码、仓库理解和终端任务。",
+        "estimated_size_bytes": 19_000_000_000,
+        "evaluation_types": ["model", "agent"],
+        "capability_label": "Agent 编码",
+    },
+    # 以下轻量模型只承担生成式答题基线，不作为 Coding Mini Agent 推荐项。
+    {
+        "name": "qwen2.5:0.5b",
+        "label": "Qwen 2.5 0.5B",
+        "description": "极小型通用答题基线，适合快速验证评测链路。",
+        "estimated_size_bytes": 397_000_000,
+        "evaluation_types": ["model"],
+        "capability_label": "极小答题",
+    },
+    # 1.5B 通用档保留极低资源成本，并比 0.5B 提供更稳定的文本生成。
+    {
+        "name": "qwen2.5:1.5b",
+        "label": "Qwen 2.5 1.5B",
+        "description": "轻量通用答题模型，适合小样本与基础能力测试。",
+        "estimated_size_bytes": 986_000_000,
+        "evaluation_types": ["model"],
+        "capability_label": "轻量答题",
+    },
+    # DeepSeek 小档用于补充推理型答题对照，但不承诺结构化工具调用。
+    {
+        "name": "deepseek-r1:1.5b",
+        "label": "DeepSeek R1 1.5B",
+        "description": "轻量推理答题对照，适合数学与逻辑类样本。",
+        "estimated_size_bytes": 1_100_000_000,
+        "evaluation_types": ["model"],
+        "capability_label": "推理答题",
+    },
+    # 本机实测该 Ollama 模板不返回结构化工具调用，因此只保留代码答题用途。
     {
         "name": "qwen2.5-coder:7b",
-        "label": "Qwen2.5 Coder 7B",
-        "description": "5 GB 内的代码专项能力档，适合比较实现与修复能力。",
+        "label": "Qwen 2.5 Coder 7B",
+        "description": "代码生成与修复答题模型，不用于当前 Pi Agent 链路。",
         "estimated_size_bytes": 4_700_000_000,
-    },
-    {
-        "name": "granite3.3:8b",
-        "label": "Granite 3.3 8B",
-        "description": "非 Qwen 高能力档，支持代码任务和函数调用。",
-        "estimated_size_bytes": 4_900_000_000,
-    },
-    {
-        "name": "phi4-mini:3.8b",
-        "label": "Phi-4 Mini 3.8B",
-        "description": "轻量推理与函数调用模型，适合作为通用 Agent 对照。",
-        "estimated_size_bytes": 2_500_000_000,
-    },
-    {
-        "name": "llama3.2:3b",
-        "label": "Llama 3.2 3B",
-        "description": "轻量通用工具模型，适合低成本 Agent 试跑。",
-        "estimated_size_bytes": 2_000_000_000,
+        "evaluation_types": ["model"],
+        "capability_label": "代码答题",
     },
 ]
 
@@ -227,6 +305,14 @@ def _model_option(
     else:
         size_bytes = None
         size_kind = "unknown"
+
+    # 推荐目录控制用途与短标签；未知本机模型保持两种评测均可选择的兼容行为。
+    evaluation_types = (
+        list(recommended["evaluation_types"]) if recommended else ["model", "agent"]
+    )
+    capability_label = (
+        str(recommended["capability_label"]) if recommended else "本机模型"
+    )
     # 容量来源显式返回给前端，界面才能正确区分“约 986 MB”和已安装实际值。
     return {
         "name": name,
@@ -235,6 +321,8 @@ def _model_option(
         "installed": installed,
         "size_bytes": size_bytes,
         "size_kind": size_kind,
+        "evaluation_types": evaluation_types,
+        "capability_label": capability_label,
     }
 
 

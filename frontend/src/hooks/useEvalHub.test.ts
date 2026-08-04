@@ -61,6 +61,8 @@ const ollamaStatus: OllamaStatus = {
       installed: false,
       size_bytes: 986_000_000,
       size_kind: "estimated",
+      evaluation_types: ["model"],
+      capability_label: "轻量答题",
     },
   ],
   message: "缺少模型",

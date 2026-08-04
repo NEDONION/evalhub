@@ -31,6 +31,8 @@ export interface ModelOption {
   installed: boolean;
   size_bytes: number | null;
   size_kind: "actual" | "estimated" | "unknown";
+  evaluation_types: EvaluationType[];
+  capability_label: string;
 }
 
 export type PullStatus = "pending" | "pulling" | "verifying" | "success" | "failed" | "canceled";

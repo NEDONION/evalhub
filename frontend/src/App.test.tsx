@@ -29,6 +29,7 @@ import type {
   EvaluationTaskDetail,
   EvaluationTaskSummary,
   ModelPerformanceResponse,
+  OllamaStatus,
 } from "./types";
 
 vi.mock("./lib/api", () => ({
@@ -76,7 +77,7 @@ const mmluFixture = {
   sample_count: null,
 };
 
-const ollamaFixture = {
+const ollamaFixture: OllamaStatus = {
   installed: true,
   running: true,
   model_present: true,
@@ -91,7 +92,9 @@ const ollamaFixture = {
       description: "默认轻量 Agent 模型",
       installed: true,
       size_bytes: 2_100_000_000,
-      size_kind: "actual" as const,
+      size_kind: "actual",
+      evaluation_types: ["model", "agent"],
+      capability_label: "Agent 基线",
     },
     {
       name: "qwen2.5:1.5b",
@@ -99,7 +102,29 @@ const ollamaFixture = {
       description: "轻量中文能力更好",
       installed: false,
       size_bytes: 986_000_000,
-      size_kind: "estimated" as const,
+      size_kind: "estimated",
+      evaluation_types: ["model"],
+      capability_label: "轻量答题",
+    },
+    {
+      name: "ministral-3:8b",
+      label: "Ministral 3 8B",
+      description: "紧凑工具调用模型",
+      installed: false,
+      size_bytes: 6_000_000_000,
+      size_kind: "estimated",
+      evaluation_types: ["model", "agent"],
+      capability_label: "Agent 工具",
+    },
+    {
+      name: "qwen2.5-coder:7b",
+      label: "Qwen2.5 Coder 7B",
+      description: "代码答题模型",
+      installed: false,
+      size_bytes: 4_700_000_000,
+      size_kind: "estimated",
+      evaluation_types: ["model"],
+      capability_label: "代码答题",
     },
   ],
   message: "Ollama 已就绪。",
@@ -336,6 +361,17 @@ function navigationButton(name: "概览" | "发起评测" | "资产管理" | "�
   });
 }
 
+async function chooseModel(
+  user: ReturnType<typeof userEvent.setup>,
+  label: "模型" | "Agent 基模",
+  optionName: RegExp,
+) {
+  const trigger = await screen.findByRole("button", { name: label });
+  await user.click(trigger);
+  await user.click(screen.getByRole("option", { name: optionName }));
+  return trigger;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
@@ -466,8 +502,7 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
-    const modelSelect = await screen.findByLabelText("模型");
-    await user.selectOptions(modelSelect, "qwen2.5:1.5b");
+    await chooseModel(user, "模型", /Qwen2\.5 1\.5B/);
     await user.click(screen.getByRole("button", { name: "前往资产管理" }));
 
     expect(await screen.findByText("约 986 MB")).toBeInTheDocument();
@@ -484,8 +519,7 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
-    const modelSelect = await screen.findByLabelText("模型");
-    await user.selectOptions(modelSelect, "qwen2.5:1.5b");
+    const modelSelect = await chooseModel(user, "模型", /Qwen2\.5 1\.5B/);
     await user.click(screen.getByRole("button", { name: "前往资产管理" }));
     await user.click(
       await screen.findByRole("button", { name: "暂不下载 qwen2.5:1.5b" }),
@@ -493,7 +527,7 @@ describe("EvalHub console", () => {
 
     expect(startModelPull).not.toHaveBeenCalled();
     await user.click(navigationButton("发起评测"));
-    expect(modelSelect).toHaveValue("granite4.1:3b");
+    expect(modelSelect).toHaveTextContent("Granite 4.1 3B");
   });
 
   it("shows real pull telemetry and allows cancellation", async () => {
@@ -501,7 +535,7 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
-    await user.selectOptions(await screen.findByLabelText("模型"), "qwen2.5:1.5b");
+    await chooseModel(user, "模型", /Qwen2\.5 1\.5B/);
     await user.click(screen.getByRole("button", { name: "前往资产管理" }));
     await user.click(
       await screen.findByRole("button", { name: "下载 qwen2.5:1.5b" }),
@@ -523,13 +557,28 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("发起评测"));
-    await user.selectOptions(await screen.findByLabelText("模型"), "qwen2.5:1.5b");
+    await chooseModel(user, "模型", /Qwen2\.5 1\.5B/);
     expect(await screen.findByText("先下载模型或选择已安装模型")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "发起评测" })).toBeDisabled();
     expect(createEvaluation).not.toHaveBeenCalled();
 
     await user.selectOptions(screen.getByLabelText("模型适配器"), "oracle");
     expect(screen.getByRole("button", { name: "发起评测" })).toBeEnabled();
+  });
+
+  it("按评测类型过滤模型并在当前模型不适用时回退到已安装项", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(navigationButton("发起评测"));
+    await chooseModel(user, "模型", /Qwen2\.5 Coder 7B/);
+    await user.click(screen.getByRole("radio", { name: "Agent 评测" }));
+
+    const trigger = screen.getByRole("button", { name: "Agent 基模" });
+    expect(trigger).toHaveTextContent("Granite 4.1 3B");
+    await user.click(trigger);
+    expect(screen.getByRole("option", { name: /Ministral 3 8B/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /Qwen2\.5 Coder 7B/ })).not.toBeInTheDocument();
   });
 
   it("blocks an invalid custom sample count before calling the API", async () => {
