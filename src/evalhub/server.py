@@ -617,6 +617,7 @@ def _task_request(payload: object) -> TaskRequest:
     if adapter not in {"ollama", "oracle"}:
         raise ValueError("adapter must be one of: ollama, oracle")
     agent_framework: str | None = None
+    agent_difficulty: str | None = None
     if evaluation_type == "agent":
         # Agent MVP 只接受已实现的 Codex 与 Coding Mini 组合，拒绝虚假可用选项。
         agent_framework = str(payload.get("agent_framework", ""))
@@ -626,7 +627,12 @@ def _task_request(payload: object) -> TaskRequest:
             raise ValueError("agent dataset must be coding_mini")
         if adapter != "ollama":
             raise ValueError("agent adapter must be ollama")
+        agent_difficulty = str(payload.get("agent_difficulty", "all"))
+        if agent_difficulty not in {"all", "easy", "medium", "hard"}:
+            raise ValueError("agent_difficulty must be one of: all, easy, medium, hard")
     else:
+        if "agent_difficulty" in payload:
+            raise ValueError("agent_difficulty is only valid for agent evaluations")
         try:
             get_benchmark_spec(dataset)
         except KeyError as exc:
@@ -634,6 +640,8 @@ def _task_request(payload: object) -> TaskRequest:
     sample_mode = str(payload.get("sample_mode", "custom"))
     if sample_mode not in {"all", "quick", "custom"}:
         raise ValueError("sample_mode must be one of: all, quick, custom")
+    if evaluation_type == "agent" and sample_mode != "all":
+        raise ValueError("agent sample_mode must be all")
 
     # 预设模式由执行器统一解释；只有自定义模式要求并持久化显式正整数。
     limit = None
@@ -659,6 +667,7 @@ def _task_request(payload: object) -> TaskRequest:
         evaluation_type=evaluation_type,
         agent_framework=agent_framework,
         suite_id=suite_id,
+        agent_difficulty=agent_difficulty,
     )
 
 

@@ -83,25 +83,24 @@ def _evaluation_process(
         event_queue.put({"type": "trace_event", "event": event})
 
     try:
-        # 两类评测的 quick 规模不同；显式分派避免把 Agent 语义塞进模型 Runner。
-        if request.sample_mode == "all":
-            limit = None
-        elif request.sample_mode == "quick":
-            limit = 3 if request.evaluation_type == "agent" else 5
-        else:
-            limit = request.limit
-
-        # Agent MVP 固定 Coding Mini 与 Codex 壳；普通评测完整保留原有恢复回调。
+        # Agent 样本由难度目录筛选；不再复用模型评测的条数限制语义。
         if request.evaluation_type == "agent":
             result = run_codex_agent_benchmark(
                 job_id=task_id,
                 model=request.model,
                 base_url=request.base_url,
-                limit=limit,
+                difficulty=request.agent_difficulty or "all",
                 on_progress=report_progress,
                 on_trace=report_trace,
             )
         else:
+            # 模型评测继续沿用已有 all、quick 与自定义条数规则。
+            if request.sample_mode == "all":
+                limit = None
+            elif request.sample_mode == "quick":
+                limit = 5
+            else:
+                limit = request.limit
             result = run_real_benchmark(
                 dataset=request.dataset,
                 adapter_type=request.adapter,

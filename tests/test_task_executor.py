@@ -69,13 +69,15 @@ def test_evaluation_process_reports_progress_and_result(monkeypatch: pytest.Monk
 
 
 def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Codex Agent 请求应进入 Coding Mini，并把 quick 映射为三条编码样本。"""
+    """Codex Agent 请求应把难度原样交给 Coding Mini，且不再传旧 limit。"""
     request = replace(
         request_fixture(),
         evaluation_type="agent",
         agent_framework="codex",
         dataset="coding_mini",
         adapter="ollama",
+        sample_mode="all",
+        agent_difficulty="hard",
     )
     event_queue = RecordingQueue()
     observed: dict[str, object] = {}
@@ -95,14 +97,15 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
         return {
             "job_id": kwargs["job_id"],
             "evaluation_type": "agent",
-            "total_samples": 3,
+            "total_samples": 2,
         }
 
     monkeypatch.setattr(executor_module, "run_codex_agent_benchmark", fake_agent_benchmark)
     _evaluation_process("job_agent", asdict(request), event_queue)
 
     assert observed["job_id"] == "job_agent"
-    assert observed["limit"] == 3
+    assert observed["difficulty"] == "hard"
+    assert "limit" not in observed
     assert observed["model"] == "local-test"
     assert event_queue.events[-2] == {
         "type": "trace_event",

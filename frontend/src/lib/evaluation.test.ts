@@ -16,6 +16,7 @@ const baseValues: EvaluationFormValues = {
   model: "qwen2.5:0.5b",
   baseUrl: "http://127.0.0.1:11434",
   sampleMode: "all",
+  agentDifficulty: "all",
   limit: "20",
   suiteId: null,
 };
@@ -28,6 +29,7 @@ it("builds the fixed Codex Coding Mini request for Agent evaluation", () => {
       dataset: "mmlu",
       adapter: "oracle",
       sampleMode: "custom",
+      agentDifficulty: "hard",
       limit: "99",
     }),
   ).toEqual({
@@ -37,7 +39,8 @@ it("builds the fixed Codex Coding Mini request for Agent evaluation", () => {
     adapter: "ollama",
     model: baseValues.model,
     base_url: baseValues.baseUrl,
-    sample_mode: "quick",
+    sample_mode: "all",
+    agent_difficulty: "hard",
   });
 });
 

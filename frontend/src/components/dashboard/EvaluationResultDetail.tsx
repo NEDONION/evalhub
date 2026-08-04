@@ -2,7 +2,7 @@ import { Braces } from "lucide-react";
 import type { JSX } from "react";
 
 import { formatPassRate, formatScore } from "../../lib/evaluation";
-import type { EvaluationResult } from "../../types";
+import type { AgentDifficulty, EvaluationResult } from "../../types";
 import { Badge } from "../ui/Badge";
 import { AgentCapabilityHexagon } from "./AgentCapabilityHexagon";
 import { CapabilityRadar } from "./CapabilityRadar";
@@ -10,6 +10,13 @@ import { CapabilityRadar } from "./CapabilityRadar";
 interface EvaluationResultDetailProps {
   result: EvaluationResult;
 }
+
+const difficultyLabels: Record<AgentDifficulty, string> = {
+  all: "全部",
+  easy: "简单",
+  medium: "中等",
+  hard: "困难",
+};
 
 /**
  * 在已成功任务内部展示聚合指标、失败样例和默认折叠的原始结果。
@@ -65,6 +72,30 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
 
       {result.capability_profile ? <CapabilityRadar profile={result.capability_profile} /> : null}
 
+      {result.difficulty_report && result.difficulty_report.length > 0 ? (
+        <section aria-labelledby="difficulty-report-title" className="border-b border-border px-5 py-5 sm:px-6">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <h4 id="difficulty-report-title" className="text-sm font-semibold text-ink">
+              难度分层
+            </h4>
+            <span className="text-xs text-muted">
+              题集 {result.benchmark_version || "—"} · 请求 {difficultyLabels[result.requested_difficulty || "all"]}
+            </span>
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+            {result.difficulty_report.map((tier) => (
+              <article key={tier.difficulty} className="rounded-md border border-border bg-slate-50/60 px-3 py-3">
+                <span className="text-xs font-medium text-muted">{difficultyLabels[tier.difficulty]}</span>
+                <strong className="mt-1 block text-sm font-semibold text-ink">
+                  {tier.passed} / {tier.total}
+                </strong>
+                <span className="text-xs text-primary">{formatPassRate(tier.passed, tier.total)}</span>
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {result.failed_examples.length > 0 ? (
         <div className="border-b border-border px-5 py-5 sm:px-6">
           <div className="mb-3 flex items-center justify-between gap-3">
@@ -78,6 +109,11 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
                   <code className="truncate font-mono text-[11px] text-slate-500">{example.sample_id}</code>
                   <Badge tone="danger">得分 {formatScore(example.score)}</Badge>
                 </div>
+                {example.difficulty ? (
+                  <p className="mt-2 text-xs text-slate-500">
+                    {difficultyLabels[example.difficulty]} · {example.difficulty_reason}
+                  </p>
+                ) : null}
                 <p className="mt-3 line-clamp-2 text-xs leading-5 text-muted">{example.input}</p>
                 <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
                   <span className="rounded border border-red-100 bg-red-50 px-2 py-1.5 text-red-700">

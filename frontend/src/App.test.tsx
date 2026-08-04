@@ -216,12 +216,12 @@ const agentTask: EvaluationTaskSummary = {
       peak_memory_bytes: 3_500_000_000,
     },
   },
-  progress: { completed_samples: 3, total_samples: 3, percent: 100 },
+  progress: { completed_samples: 2, total_samples: 2, percent: 100 },
   result_summary: {
     benchmark: "EvalHub Coding Mini",
-    total_samples: 3,
-    passed_samples: 2,
-    average_score: 0.6667,
+    total_samples: 2,
+    passed_samples: 1,
+    average_score: 0.5,
   },
 };
 
@@ -233,7 +233,7 @@ const agentNodeSummary: EvaluationNodeSummary = {
   depends_on: [],
   status: "success",
   attempt: { count: 1, max: 1 },
-  progress: { completed_samples: 3, total_samples: 3, percent: 100 },
+  progress: { completed_samples: 2, total_samples: 2, percent: 100 },
   timing: {
     created_at: "2026-08-04T02:00:00+00:00",
     started_at: "2026-08-04T02:00:01+00:00",
@@ -246,8 +246,8 @@ const agentNodeSummary: EvaluationNodeSummary = {
 const agentNodeDetail: EvaluationNodeDetail = {
   ...agentNodeSummary,
   input: { benchmark_id: "coding_mini" },
-  checkpoint: { completed_samples: 3, total_samples: 3 },
-  output: { passed_samples: 2, total_samples: 3 },
+  checkpoint: { completed_samples: 2, total_samples: 2 },
+  output: { passed_samples: 1, total_samples: 2 },
   events: [],
 };
 
@@ -260,7 +260,8 @@ const agentTaskDetail: EvaluationTaskDetail = {
     adapter: "ollama",
     model: "qwen2.5:0.5b",
     base_url: "http://127.0.0.1:11434",
-    sample_mode: "quick",
+    sample_mode: "all",
+    agent_difficulty: "hard",
   },
   nodes: [agentNodeSummary],
   result: {
@@ -272,11 +273,25 @@ const agentTaskDetail: EvaluationTaskDetail = {
     model: "qwen2.5:0.5b",
     adapter: "ollama",
     metric: "hidden_verifier_pass_rate",
-    total_samples: 3,
-    passed_samples: 2,
-    average_score: 0.6667,
-    failed_sample_ids: ["pricing_total"],
-    failed_examples: [],
+    total_samples: 2,
+    passed_samples: 1,
+    average_score: 0.5,
+    failed_sample_ids: ["batch_reservation_atomicity"],
+    failed_examples: [
+      {
+        sample_id: "batch_reservation_atomicity",
+        difficulty: "hard",
+        difficulty_reason: "需要理解两文件调用关系和原子性",
+        score: 0,
+        input: "batch_reservation_atomicity",
+        prediction: "",
+        reference: "hidden verifier passed",
+        reason: "hidden verifier failed",
+      },
+    ],
+    benchmark_version: "coding-mini-v2",
+    requested_difficulty: "hard",
+    difficulty_report: [{ difficulty: "hard", total: 2, passed: 1, pass_rate: 0.5 }],
     agent: {
       framework: "codex",
       cli_version: "codex-cli 0.test",
@@ -629,7 +644,9 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("发起评测"));
     await user.click(await screen.findByRole("radio", { name: "Agent 评测" }));
     expect(screen.getByText("EvalHub Coding Mini")).toBeInTheDocument();
+    expect(screen.getByText("6 个三级难度隐藏校验任务")).toBeInTheDocument();
     expect(screen.getByText("Codex CLI")).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "困难" }));
     await user.click(screen.getByRole("button", { name: "发起 Agent 评测" }));
 
     expect(createEvaluation).toHaveBeenCalledWith({
@@ -639,7 +656,8 @@ describe("EvalHub console", () => {
       adapter: "ollama",
       model: "qwen2.5:0.5b",
       base_url: "http://127.0.0.1:11434",
-      sample_mode: "quick",
+      sample_mode: "all",
+      agent_difficulty: "hard",
     });
 
     vi.mocked(getEvaluationTasks).mockResolvedValue([agentTask]);
@@ -647,6 +665,9 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("概览"));
     await user.click(navigationButton("评测结果"));
     expect(await screen.findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "难度分层" })).toBeInTheDocument();
+    expect(screen.getByText("题集 coding-mini-v2 · 请求 困难")).toBeInTheDocument();
+    expect(screen.getByText("困难 · 需要理解两文件调用关系和原子性")).toBeInTheDocument();
     expect(await screen.findByText("Agent 实时过程")).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
     expect(screen.getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();

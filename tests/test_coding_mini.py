@@ -1,10 +1,67 @@
 """验证内置 Coding Mini 的隐藏校验、进度和六维能力聚合。"""
 
 import json
+from collections import Counter
 from pathlib import Path
 
+import pytest
+
 from evalhub.agent.codex import AgentTraceEvent, CodexAgentError, CodexRunResult, TraceCallback
-from evalhub.benchmarks.coding_mini import CAPABILITY_DIMENSIONS, run_codex_agent_benchmark
+from evalhub.benchmarks.coding_mini import (
+    CAPABILITY_DIMENSIONS,
+    _create_workspace,
+    _run_sample,
+    _select_samples,
+    coding_mini_samples,
+    run_codex_agent_benchmark,
+)
+
+
+def test_coding_mini_catalog_has_two_explained_samples_per_difficulty() -> None:
+    """内置题集应提供稳定、无重复且每档两道的三级难度样本。"""
+    samples = coding_mini_samples()
+
+    assert len(samples) == 6
+    assert len({sample.id for sample in samples}) == 6
+    assert Counter(sample.difficulty for sample in samples) == {
+        "easy": 2,
+        "medium": 2,
+        "hard": 2,
+    }
+    assert all(sample.difficulty_reason.strip() for sample in samples)
+
+
+@pytest.mark.parametrize(
+    ("difficulty", "expected_ids"),
+    [
+        (
+            "all",
+            [
+                "pricing_total",
+                "cart_quantity",
+                "slug_normalization",
+                "inventory_reservation",
+                "batch_reservation_atomicity",
+                "retry_state_machine",
+            ],
+        ),
+        ("easy", ["pricing_total", "cart_quantity"]),
+        ("medium", ["slug_normalization", "inventory_reservation"]),
+        ("hard", ["batch_reservation_atomicity", "retry_state_machine"]),
+    ],
+)
+def test_coding_mini_selects_stable_difficulty_groups(
+    difficulty: str,
+    expected_ids: list[str],
+) -> None:
+    """全部和单档选择都应返回固定顺序，保证报告可复现。"""
+    assert [sample.id for sample in _select_samples(difficulty)] == expected_ids
+
+
+def test_coding_mini_rejects_unknown_difficulty() -> None:
+    """未知难度不得静默退化为全部题目。"""
+    with pytest.raises(ValueError, match="difficulty must be one of"):
+        _select_samples("expert")
 
 
 class EditingFakeRunner:
@@ -55,6 +112,12 @@ class EditingFakeRunner:
                 "    return round(sum(prices) * (1 + tax_rate), 2)\n",
                 encoding="utf-8",
             )
+        elif sample_id == "cart_quantity":
+            (workspace / "cart.py").write_text(
+                "def total_quantity(lines):\n"
+                "    return sum(line['quantity'] for line in lines)\n",
+                encoding="utf-8",
+            )
         elif sample_id == "slug_normalization":
             (workspace / "slug.py").write_text(
                 "import re\n\n"
@@ -69,6 +132,34 @@ class EditingFakeRunner:
                 "    if quantity <= 0 or stock.get(item, 0) < quantity:\n"
                 "        return False\n"
                 "    stock[item] -= quantity\n"
+                "    return True\n",
+                encoding="utf-8",
+            )
+        elif sample_id == "batch_reservation_atomicity":
+            (workspace / "batch.py").write_text(
+                "from inventory import reserve\n\n"
+                "def reserve_batch(stock, requests):\n"
+                "    candidate = stock.copy()\n"
+                "    for item, quantity in requests:\n"
+                "        if not reserve(candidate, item, quantity):\n"
+                "            return False\n"
+                "    stock.clear()\n"
+                "    stock.update(candidate)\n"
+                "    return True\n",
+                encoding="utf-8",
+            )
+        elif sample_id == "retry_state_machine":
+            (workspace / "retry.py").write_text(
+                "from states import TERMINAL_STATUSES\n\n"
+                "def record_failure(job, max_attempts, error):\n"
+                "    if job['status'] in TERMINAL_STATUSES:\n"
+                "        return False\n"
+                "    job['attempts'] += 1\n"
+                "    job['last_error'] = error\n"
+                "    if job['attempts'] >= max_attempts:\n"
+                "        job['status'] = 'failed'\n"
+                "        return False\n"
+                "    job['status'] = 'retrying'\n"
                 "    return True\n",
                 encoding="utf-8",
             )
@@ -144,15 +235,32 @@ def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Pa
         job_id="job_agent",
         model="local-test",
         base_url="http://127.0.0.1:11434",
-        limit=3,
+        difficulty="all",
         on_progress=lambda completed, total: progress.append((completed, total)),
         runner=runner,
         runtime_root=tmp_path,
     )
 
     # Fake 只负责修改文件，真实隐藏 Verifier 决定样本是否通过。
-    assert progress == [(0, 3), (1, 3), (2, 3), (3, 3)]
-    assert result["passed_samples"] == 3
+    assert progress == [(0, 6), (1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]
+    assert result["passed_samples"] == 6
+    assert result["benchmark_version"] == "coding-mini-v2"
+    assert result["requested_difficulty"] == "all"
+    assert result["difficulty_report"] == [
+        {"difficulty": "easy", "total": 2, "passed": 2, "pass_rate": 1.0},
+        {"difficulty": "medium", "total": 2, "passed": 2, "pass_rate": 1.0},
+        {"difficulty": "hard", "total": 2, "passed": 2, "pass_rate": 1.0},
+    ]
+    assert [
+        (item["sample_id"], item["difficulty"]) for item in result["sample_results"]
+    ] == [
+        ("pricing_total", "easy"),
+        ("cart_quantity", "easy"),
+        ("slug_normalization", "medium"),
+        ("inventory_reservation", "medium"),
+        ("batch_reservation_atomicity", "hard"),
+        ("retry_state_machine", "hard"),
+    ]
     capability_report = result["capability_report"]
     assert len(capability_report["dimensions"]) == 6
     assert all(item["score"] == 1.0 for item in capability_report["dimensions"])
@@ -170,32 +278,34 @@ def test_coding_mini_scores_failed_sample_by_declared_capability_weights(
         job_id="job_partial",
         model="local-test",
         base_url="http://127.0.0.1:11434",
-        limit=3,
+        difficulty="easy",
         runner=EditingFakeRunner(skip_sample="pricing_total"),
         runtime_root=tmp_path,
     )
 
     # 定价样本失败不应影响仅由其他样本覆盖的工具、验证和稳健性能力。
-    assert result["passed_samples"] == 2
+    assert result["passed_samples"] == 1
     assert result["failed_sample_ids"] == ["pricing_total"]
     dimension_scores = {
         item["key"]: item["score"] for item in result["capability_report"]["dimensions"]
     }
     assert dimension_scores == {
         "planning": 0.0,
-        "code_understanding": 0.3333,
-        "implementation": 0.6364,
+        "code_understanding": 0.0,
+        "implementation": 0.0,
         "tool_use": 1.0,
         "verification": 1.0,
         "robustness": 1.0,
     }
     failed_result = result["sample_results"][0]
     assert failed_result["status"] == "failed"
+    assert failed_result["difficulty"] == "easy"
     assert failed_result["verifier_message"]
     failed_example = result["failed_examples"][0]
     assert failed_example["input"] == "pricing_total"
     assert failed_example["prediction"] == "fixed"
     assert failed_example["reference"] == "hidden verifier passed"
+    assert failed_example["difficulty"] == "easy"
 
 
 def test_coding_mini_classifies_passed_no_action_wrong_solution_and_runtime_error(
@@ -213,15 +323,17 @@ def test_coding_mini_classifies_passed_no_action_wrong_solution_and_runtime_erro
     for index, (outcome, runner, changed_files, final_message, verifier, tool_count) in enumerate(
         cases
     ):
-        result = run_codex_agent_benchmark(
-            job_id=f"job_outcome_{index}",
+        sample = coding_mini_samples()[0]
+        workspace = _create_workspace(tmp_path / f"job_outcome_{index}", sample)
+        sample_result = _run_sample(
+            sample=sample,
+            workspace=workspace,
             model="local-test",
             base_url="http://127.0.0.1:11434",
-            limit=1,
             runner=runner,
-            runtime_root=tmp_path,
+            on_trace=None,
         )
-        diagnostics = result["sample_results"][0]["diagnostics"]
+        diagnostics = sample_result["diagnostics"]
         assert diagnostics == {
             "outcome": outcome,
             "tool_call_count": tool_count,
@@ -241,7 +353,7 @@ def test_coding_mini_emits_auditable_stages_without_hidden_verifier_code(
         job_id="job_trace",
         model="local-test",
         base_url="http://127.0.0.1:11434",
-        limit=1,
+        difficulty="easy",
         runner=EditingFakeRunner(),
         runtime_root=tmp_path,
         on_trace=events.append,
@@ -253,8 +365,16 @@ def test_coding_mini_emits_auditable_stages_without_hidden_verifier_code(
         "workspace_changed",
         "verifier_finished",
         "sample_finished",
+        "sample_started",
+        "tool_started",
+        "workspace_changed",
+        "verifier_finished",
+        "sample_finished",
     ]
     assert events[1]["payload"]["sample_id"] == "pricing_total"
+    assert events[0]["payload"]["difficulty"] == "easy"
+    assert events[0]["payload"]["difficulty_reason"] == "单文件纯函数，缺陷定位直接"
+    assert events[0]["message"].startswith("[简单]")
     serialized = json.dumps(events, ensure_ascii=False)
     assert "Fix pricing.total_with_tax" in serialized
     assert "assert total_with_tax" not in serialized

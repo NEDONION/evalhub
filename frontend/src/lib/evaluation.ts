@@ -1,4 +1,11 @@
-import type { AdapterType, DatasetName, EvaluationRequest, EvaluationType, SampleMode } from "../types";
+import type {
+  AdapterType,
+  AgentDifficulty,
+  DatasetName,
+  EvaluationRequest,
+  EvaluationType,
+  SampleMode,
+} from "../types";
 
 export interface EvaluationFormValues {
   evaluationType: EvaluationType;
@@ -8,6 +15,7 @@ export interface EvaluationFormValues {
   model: string;
   baseUrl: string;
   sampleMode: SampleMode;
+  agentDifficulty: AgentDifficulty;
   limit: string;
   suiteId: string | null;
 }
@@ -15,8 +23,8 @@ export interface EvaluationFormValues {
 /**
  * 把页面表单状态转换为后端任务请求，并在 Agent 模式锁定首版可执行组合。
  *
- * @param values 用户当前可见的模型、数据集和样本范围表单值。
- * @returns 模型模式保留用户选项；Agent 模式固定为 Codex、Coding Mini 和 Ollama。
+ * @param values 用户当前可见的模型、数据集、样本范围和 Agent 难度表单值。
+ * @returns 模型模式保留用户选项；Agent 模式固定运行环境并保留用户选择的难度。
  */
 export function buildEvaluationRequest(values: EvaluationFormValues): EvaluationRequest {
   if (values.evaluationType === "agent") {
@@ -27,7 +35,8 @@ export function buildEvaluationRequest(values: EvaluationFormValues): Evaluation
       adapter: "ollama",
       model: values.model,
       base_url: values.baseUrl,
-      sample_mode: "quick",
+      sample_mode: "all",
+      agent_difficulty: values.agentDifficulty,
     };
   }
 
