@@ -102,3 +102,24 @@ it("keeps raw JSON for legacy non-Hexagon results", () => {
 
   expect(screen.getByText("原始 JSON")).toBeInTheDocument();
 });
+
+it.each([undefined, null, 7, {}])("does not crash on malformed legacy Hexagon predicate fields: %p", (value) => {
+  render(
+    <EvaluationResultDetail
+      result={{ ...result, dataset: value, benchmark: value } as unknown as EvaluationResult}
+    />,
+  );
+
+  expect(screen.getByText("原始 JSON")).toBeInTheDocument();
+});
+
+it("suppresses raw JSON from a safe parent Hexagon signal despite malformed result fields", () => {
+  render(
+    <EvaluationResultDetail
+      result={{ ...result, dataset: null, benchmark: {} } as unknown as EvaluationResult}
+      isHexagon
+    />,
+  );
+
+  expect(screen.queryByText("原始 JSON")).toBeNull();
+});

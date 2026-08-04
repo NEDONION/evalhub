@@ -181,8 +181,8 @@ function isHexagonResult(result: EvaluationResult, isHexagon: boolean): boolean 
   return (
     isHexagon ||
     result.suite_id === "evalhub-hexagon-v1" ||
-    result.dataset.startsWith("hexagon-") ||
-    result.benchmark.includes("六边形")
+    (typeof result.dataset === "string" && result.dataset.startsWith("hexagon-")) ||
+    (typeof result.benchmark === "string" && result.benchmark.includes("六边形"))
   );
 }
 
@@ -197,7 +197,7 @@ function LedgerRow({ label, value, mono = false }: { label: string; value?: stri
 
 interface ResultMetricProps {
   label: string;
-  value: string;
+  value: unknown;
   meta?: string;
   mono?: boolean;
   accent?: boolean;
@@ -216,14 +216,16 @@ function ResultMetric({
   mono = false,
   accent = false,
 }: ResultMetricProps): JSX.Element {
+  const displayValue = typeof value === "string" ? value : "—";
+
   return (
     <div className="min-w-0 border-b border-border px-5 py-4 last:border-b-0 sm:nth-[2n]:border-l lg:border-b-0 lg:border-l lg:first:border-l-0 sm:px-6">
       <span className="block text-xs font-medium text-muted">{label}</span>
       <strong
         className={`${mono ? "font-mono text-xs" : "text-base"} ${accent ? "text-primary" : "text-ink"} mt-2 block truncate font-semibold tracking-tight`}
-        title={value}
+        title={displayValue}
       >
-        {value}
+        {displayValue}
       </strong>
       {meta ? <span className="mt-1 block text-xs font-medium text-blue-600">{meta}</span> : null}
     </div>
