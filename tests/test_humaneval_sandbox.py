@@ -130,12 +130,11 @@ def _problem(*, test: str = "SECRET_HIDDEN_TEST") -> HumanEvalProblem:
     """
     return HumanEvalProblem(
         sample_id="hexagon_humaneval_01",
-        source_key="HumanEval/1",
         prompt="def one():\n",
         canonical_solution="    return 1\n",
         test=test,
         entry_point="one",
-        input_zh="实现返回 1 的函数。",
+        metadata={"source_key": "HumanEval/1", "input_zh": "实现返回 1 的函数。"},
     )
 
 
@@ -1173,9 +1172,9 @@ def test_resume_summary_separates_evaluated_and_skipped_samples() -> None:
     second = replace(
         first,
         sample_id="hexagon_humaneval_02",
-        source_key="HumanEval/2",
         prompt="def two():\n",
         entry_point="two",
+        metadata={"source_key": "HumanEval/2", "input_zh": "实现返回 2 的函数。"},
     )
     sandbox = FakeSandbox(SandboxResult(passed=True))
     progress: list[tuple[int, int]] = []
@@ -1202,7 +1201,11 @@ def test_resume_summary_separates_evaluated_and_skipped_samples() -> None:
 def test_resume_summary_uses_none_average_when_every_sample_is_skipped() -> None:
     """全量命中恢复缓存时不得伪造零分平均值，并应报告零条本轮评测。"""
     first = _problem()
-    second = replace(first, sample_id="hexagon_humaneval_02", source_key="HumanEval/2")
+    second = replace(
+        first,
+        sample_id="hexagon_humaneval_02",
+        metadata={"source_key": "HumanEval/2", "input_zh": "实现返回 2 的函数。"},
+    )
     sandbox = FakeSandbox(SandboxResult(passed=True))
 
     result = run_humaneval_benchmark(
@@ -1260,18 +1263,47 @@ def test_loader_keeps_only_manifest_selected_humaneval_ids_in_memory(tmp_path: P
     )
 
     problems = load_humaneval_problems(path, manifest=(spec,))
+    expected_metadata = {
+        "dataset": "hexagon-humaneval",
+        "source_key": "HumanEval/1",
+        "selection_stratum": "HumanEval/1",
+        "evaluator_type": "pass@1",
+        "entry_point": "one",
+        "input_zh": "实现返回 1 的函数。",
+        "reference_zh": None,
+        "translation_version": "evalhub-zh-v1",
+        "input_sha256": _digest("def one():\n"),
+        "reference_sha256": _digest("    return 1\n"),
+        "input_zh_sha256": _digest("实现返回 1 的函数。"),
+        "reference_zh_sha256": None,
+    }
+
+    assert getattr(problems[0], "metadata", None) == expected_metadata
 
     assert problems == [
         HumanEvalProblem(
             sample_id="hexagon_humaneval_01",
-            source_key="HumanEval/1",
             prompt="def one():\n",
             canonical_solution="    return 1\n",
             test="def check(candidate):\n    assert candidate() == 1\n",
             entry_point="one",
-            input_zh="实现返回 1 的函数。",
+            metadata=expected_metadata,
         )
     ]
+    emitted: list[dict[str, object]] = []
+    result = run_humaneval_benchmark(
+        job_id="job_provenance",
+        adapter=StaticMappingAdapter({"def one():\n": "    return 2\n"}),
+        problems=problems,
+        sandbox=FakeSandbox(SandboxResult(passed=True)),
+        on_sample_result=lambda sample, completed, total: emitted.append(sample),
+    )
+
+    assert emitted[0]["metadata"] == expected_metadata
+    assert result["sample_results"][0]["metadata"] == expected_metadata
+    serialized = json.dumps({"result": result, "emitted": emitted}, ensure_ascii=False)
+    assert "def check(candidate)" not in serialized
+    assert "    return 1\\n" not in serialized
     assert list(tmp_path.iterdir()) == [path]
 
 

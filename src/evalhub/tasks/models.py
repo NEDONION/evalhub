@@ -29,6 +29,8 @@ class TaskRequest:
     agent_framework: str | None = None
     suite_id: str | None = None
     agent_difficulty: str | None = None
+    generation_config: dict[str, object] | None = None
+    evaluator_type: str | None = None
 
 
 @dataclass(frozen=True)

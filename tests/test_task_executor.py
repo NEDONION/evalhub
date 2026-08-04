@@ -209,12 +209,19 @@ def test_evaluation_process_dispatches_only_hexagon_humaneval_to_specialized_run
     )
     problem = HumanEvalProblem(
         sample_id="hexagon_humaneval_01",
-        source_key="HumanEval/1",
         prompt="def one():\n",
         canonical_solution="    return 1\n",
         test="def check(candidate):\n    assert candidate() == 1\n",
         entry_point="one",
-        input_zh="实现 one",
+        metadata={
+            "dataset": "hexagon-humaneval",
+            "source_key": "HumanEval/1",
+            "selection_stratum": "HumanEval/1",
+            "evaluator_type": "pass@1",
+            "input_zh": "实现 one",
+            "reference_zh": None,
+            "translation_version": "evalhub-zh-v1",
+        },
     )
     event_queue = RecordingQueue()
     observed: dict[str, object] = {}
@@ -234,7 +241,7 @@ def test_evaluation_process_dispatches_only_hexagon_humaneval_to_specialized_run
                 "metric": "pass@1",
                 "score": 1.0,
                 "reason": None,
-                "metadata": {"source_key": problem.source_key, "input_zh": problem.input_zh},
+                "metadata": problem.metadata,
             },
             1,
             1,
@@ -265,10 +272,7 @@ def test_evaluation_process_dispatches_only_hexagon_humaneval_to_specialized_run
     assert observed["job_id"] == "job_humaneval"
     assert observed["oracle_prediction"] == problem.canonical_solution
     assert observed["problems"] == [problem]
-    assert event_queue.events[0]["sample"]["metadata"] == {
-        "source_key": "HumanEval/1",
-        "input_zh": "实现 one",
-    }
+    assert event_queue.events[0]["sample"]["metadata"] == problem.metadata
     assert event_queue.events[-1]["type"] == "result"
 
 

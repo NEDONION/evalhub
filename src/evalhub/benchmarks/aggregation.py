@@ -2,7 +2,12 @@
 
 from datetime import UTC, datetime
 
-from evalhub.benchmarks.models import BenchmarkSuiteSpec, Capability, NormalizationKind
+from evalhub.benchmarks.models import (
+    BenchmarkSpec,
+    BenchmarkSuiteSpec,
+    Capability,
+    NormalizationKind,
+)
 from evalhub.benchmarks.registry import get_benchmark_spec
 
 CAPABILITY_LABELS = {
@@ -33,19 +38,29 @@ def normalize_score(
 def aggregate_capability_profile(
     suite: BenchmarkSuiteSpec,
     benchmark_outputs: list[dict[str, object]],
+    *,
+    benchmark_specs: tuple[BenchmarkSpec, ...] | None = None,
 ) -> dict[str, object]:
-    """聚合成功结果并为失败或缺失能力保留未评测语义。"""
+    """聚合成功结果并为失败或缺失能力保留未评测语义。
+
+    Args:
+        suite: 本次评测冻结的 Suite 身份、版本和成员顺序。
+        benchmark_outputs: 各成员成功结果或类型化失败摘要。
+        benchmark_specs: 创建任务时冻结的成员规格；缺省时兼容直接调用方查询当前 Registry。
+
+    Returns:
+        含六维得分、覆盖率和各 Benchmark 诊断行的能力画像。
+    """
     supplied = {
         str(item["benchmark_id"]): item for item in benchmark_outputs if "benchmark_id" in item
     }
+    frozen_specs = benchmark_specs or tuple(
+        get_benchmark_spec(item) for item in suite.benchmark_ids
+    )
     capabilities: dict[str, object] = {}
 
     for capability in Capability:
-        specs = [
-            get_benchmark_spec(item)
-            for item in suite.benchmark_ids
-            if get_benchmark_spec(item).capability == capability
-        ]
+        specs = [spec for spec in frozen_specs if spec.capability == capability]
         total_weight = sum(item.weight for item in specs)
         successful_weight = 0.0
         weighted_score = 0.0

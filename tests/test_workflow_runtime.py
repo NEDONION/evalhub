@@ -1,13 +1,21 @@
 """验证系统生成工作流、节点执行、自动重试和部分能力画像。"""
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
 import pytest
 
+import evalhub.tasks.runtime as runtime_module
+import evalhub.tasks.workflow as workflow_module
 from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
-from evalhub.tasks import ResourceUsage, SQLiteTaskRepository, TaskRequest
+from evalhub.tasks import (
+    EvaluationSampleCheckpoint,
+    ResourceUsage,
+    SQLiteTaskRepository,
+    TaskRequest,
+)
 from evalhub.tasks.executor import TaskExecutionError
 from evalhub.tasks.runtime import PersistentWorkflowExecutor, WorkflowIncompleteError
 from evalhub.tasks.workflow import build_workflow
@@ -245,6 +253,23 @@ class HexagonBenchmarkExecutor(FakeBenchmarkExecutor):
             sample_id = f"{task_request.dataset}-{index + 1}"
             if sample_id in skipped:
                 continue
+            metadata: dict[str, object] = {
+                "input_zh": f"中文题目 {index + 1}",
+                "source_key": f"{task_request.dataset}:{index + 1}",
+            }
+            # HumanEval 假执行器镜像真实安全溯源形状，验证通用检查点不会截断可展示字段。
+            if task_request.dataset == "hexagon-humaneval":
+                metadata.update(
+                    {
+                        "dataset": "hexagon-humaneval",
+                        "selection_stratum": f"HumanEval/{index + 1}",
+                        "evaluator_type": "pass@1",
+                        "reference_zh": None,
+                        "translation_version": "evalhub-zh-v1",
+                        "input_sha256": "a" * 64,
+                        "reference_sha256": "b" * 64,
+                    }
+                )
             callback(
                 {
                     "sample_id": sample_id,
@@ -254,10 +279,7 @@ class HexagonBenchmarkExecutor(FakeBenchmarkExecutor):
                     "metric": spec.metric,
                     "score": 1.0,
                     "reason": None,
-                    "metadata": {
-                        "input_zh": f"中文题目 {index + 1}",
-                        "source_key": f"{task_request.dataset}:{index + 1}",
-                    },
+                    "metadata": metadata,
                 },
                 index + 1,
                 total,
@@ -314,6 +336,289 @@ def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_sixty_samples
     assert ifeval.input["dataset_revision"] == "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
 
 
+def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清单、Suite、提示或生成配置变化都必须产生不同的完整协议指纹。"""
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    real_suite = workflow_module.get_suite_spec("evalhub-hexagon-v1")
+    real_get_benchmark = workflow_module.get_benchmark_spec
+
+    def fingerprint() -> str:
+        """读取新建工作流七个 Benchmark 共享的冻结协议指纹。"""
+        graph = workflow_module.build_workflow(task_request)
+        fingerprints = {
+            str(node.input.get("protocol_fingerprint"))
+            for node in graph
+            if node.kind == "benchmark"
+        }
+        assert len(fingerprints) == 1
+        return fingerprints.pop()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_hexagon_manifest_sha256",
+        lambda: "a" * 64,
+        raising=False,
+    )
+    baseline = fingerprint()
+    monkeypatch.setattr(workflow_module, "_hexagon_manifest_sha256", lambda: "b" * 64)
+    changed_manifest = fingerprint()
+    monkeypatch.setattr(workflow_module, "_hexagon_manifest_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(
+        workflow_module,
+        "get_suite_spec",
+        lambda suite_id: replace(real_suite, version="1.0.1"),
+    )
+    changed_suite = fingerprint()
+    monkeypatch.setattr(workflow_module, "get_suite_spec", lambda suite_id: real_suite)
+
+    def changed_prompt(benchmark_id: str):
+        """只改变 IFEval 提示模板，其他 Benchmark 保持真实冻结规格。"""
+        spec = real_get_benchmark(benchmark_id)
+        if benchmark_id == "hexagon-ifeval":
+            return replace(spec, prompt_template_version="evalhub-v2")
+        return spec
+
+    monkeypatch.setattr(workflow_module, "get_benchmark_spec", changed_prompt)
+    changed_prompt_fingerprint = fingerprint()
+
+    def changed_generation(benchmark_id: str):
+        """只改变 HumanEval 生成上限，验证不可变生成配置参与指纹。"""
+        spec = real_get_benchmark(benchmark_id)
+        if benchmark_id == "hexagon-humaneval":
+            return replace(spec, generation_config={"temperature": 0, "num_predict": 512})
+        return spec
+
+    monkeypatch.setattr(workflow_module, "get_benchmark_spec", changed_generation)
+    changed_generation_fingerprint = fingerprint()
+
+    assert len(
+        {
+            baseline,
+            changed_manifest,
+            changed_suite,
+            changed_prompt_fingerprint,
+            changed_generation_fingerprint,
+        }
+    ) == 5
+
+
+def test_runtime_reruns_same_bytes_checkpoint_when_protocol_fingerprint_changed(
+    tmp_path: Path,
+) -> None:
+    """来源字节未变但协议指纹不同时，旧样本不得进入跳过集合或最终聚合。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    prepare, benchmark = repository.list_nodes(task.id)[:2]
+    frozen_fingerprint = benchmark.input.get("protocol_fingerprint")
+    assert isinstance(frozen_fingerprint, str)
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                "gsm8k": {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": f"sha256:{content_sha256}",
+                }
+            }
+        },
+    )
+    running = repository.start_node(benchmark.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="gsm8k-sample-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"input": "1 + 1", "protocol_fingerprint": "stale-protocol"},
+            result={
+                "sample_id": "gsm8k-sample-1",
+                "metric": "exact_match",
+                "score": 1.0,
+                "protocol_fingerprint": "stale-protocol",
+            },
+        ),
+        completed=1,
+        total=1,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    fake = FakeBenchmarkExecutor(score=0.0)
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    restored = repository.list_samples(running.id).items
+
+    assert fake.seen_skips == [set()]
+    assert result["average_score"] == 0.0
+    assert len(restored) == 1
+    assert restored[0].result["protocol_fingerprint"] == frozen_fingerprint
+
+
+def test_runtime_uses_creation_frozen_protocol_after_registry_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务创建后 Registry 变化时，执行产物和最终复现信息仍使用冻结事实。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    created_nodes = repository.list_nodes(task.id)
+    finalizer = next(node for node in created_nodes if node.kind == "workflow_finalize")
+    frozen_reproducibility = finalizer.input.get("reproducibility")
+    frozen_fingerprint = finalizer.input.get("protocol_fingerprint")
+    assert isinstance(frozen_reproducibility, dict)
+    assert isinstance(frozen_fingerprint, str)
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    real_runtime_get = get_benchmark_spec
+    current_suite = workflow_module.get_suite_spec("evalhub-hexagon-v1")
+
+    def changed_spec(benchmark_id: str):
+        """模拟部署升级后 Registry 中同 ID 的来源与提示协议发生变化。"""
+        spec = real_runtime_get(benchmark_id)
+        return replace(
+            spec,
+            version="9.9.9",
+            dataset_revision="future-source-revision",
+            prompt_template_version="future-prompt",
+            generation_config={"temperature": 0, "num_predict": 999},
+        )
+
+    monkeypatch.setattr(runtime_module, "get_benchmark_spec", changed_spec, raising=False)
+    monkeypatch.setattr(
+        runtime_module,
+        "workflow_suite",
+        lambda request: replace(current_suite, version="9.9.9", display_name="Future Suite"),
+        raising=False,
+    )
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=HexagonBenchmarkExecutor(),
+        asset_preparer=lambda benchmark_id: asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    benchmark_outputs = [
+        node.output
+        for node in repository.list_nodes(task.id)
+        if node.kind == "benchmark"
+    ]
+
+    assert result["reproducibility"] == frozen_reproducibility
+    assert result["comparison_fingerprint"] == frozen_fingerprint
+    assert result["benchmark"] == "EvalHub 专业六边形套件 v1"
+    assert result["capability_profile"]["suite_version"] == "1.0.0"
+    assert all(output["protocol_fingerprint"] == frozen_fingerprint for output in benchmark_outputs)
+    assert all(output["prompt_template_version"] == "evalhub-v1" for output in benchmark_outputs)
+
+
+def test_runtime_blocks_same_bytes_resume_when_packaged_manifest_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """来源字节未变但包内清单漂移时，旧检查点必须清空且不得送入跳过集合。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmarks = [node for node in nodes if node.kind == "benchmark"]
+    first = benchmarks[0]
+    frozen_fingerprint = str(first.input["protocol_fingerprint"])
+    frozen_reproducibility = next(
+        node for node in nodes if node.kind == "workflow_finalize"
+    ).input["reproducibility"]
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                str(node.input["benchmark_id"]): {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": node.input["dataset_revision"],
+                }
+                for node in benchmarks
+            }
+        },
+    )
+    running = repository.start_node(first.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="hexagon-mmlu-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"protocol_fingerprint": frozen_fingerprint},
+            result={
+                "sample_id": "hexagon-mmlu-1",
+                "score": 1.0,
+                "protocol_fingerprint": frozen_fingerprint,
+            },
+        ),
+        completed=1,
+        total=10,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    fake = FakeBenchmarkExecutor()
+    monkeypatch.setattr(
+        runtime_module,
+        "_hexagon_manifest_sha256",
+        lambda: "f" * 64,
+        raising=False,
+    )
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    assert fake.seen_skips == []
+    assert repository.list_samples(first.id).items == ()
+    finalizer = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "workflow_finalize"
+    )
+    assert finalizer.output["reproducibility"] == frozen_reproducibility
+    assert finalizer.output["total_samples"] == 0
+
+
 def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
     tmp_path: Path,
 ) -> None:
@@ -347,6 +652,16 @@ def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
     assert len(samples) == 60
     assert all((sample.result or {})["metadata"]["input_zh"] for sample in samples)
     assert all((sample.input or {})["metadata"]["source_key"] for sample in samples)
+    humaneval = next(
+        node for node in benchmarks if node.input["benchmark_id"] == "hexagon-humaneval"
+    )
+    humaneval_sample = repository.list_samples(humaneval.id).items[0]
+    humaneval_metadata = humaneval_sample.result["metadata"]
+    assert humaneval_metadata["dataset"] == "hexagon-humaneval"
+    assert humaneval_metadata["reference_zh"] is None
+    assert humaneval_metadata["translation_version"] == "evalhub-zh-v1"
+    assert "canonical_solution" not in humaneval_metadata
+    assert "test" not in humaneval_metadata
     assert result["total_samples"] == 60
     assert result["capability_profile"]["status"] == "complete"
     assert {

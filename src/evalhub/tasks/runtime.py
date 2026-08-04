@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable
 from dataclasses import replace
 from importlib.resources import files
@@ -12,11 +11,13 @@ from threading import Event
 
 from evalhub.benchmarks import (
     BenchmarkSpec,
+    BenchmarkSuiteSpec,
+    Capability,
     ExecutorKind,
     ExecutorReadiness,
+    NormalizationKind,
     aggregate_capability_profile,
     benchmark_readiness,
-    get_benchmark_spec,
 )
 from evalhub.datasets import prepare_dataset
 from evalhub.tasks.executor import (
@@ -31,7 +32,6 @@ from evalhub.tasks.models import (
     TaskRequest,
 )
 from evalhub.tasks.repository import SQLiteTaskRepository
-from evalhub.tasks.workflow import workflow_suite
 
 TERMINAL_NODE_STATUSES = frozenset({"success", "failed", "blocked", "canceled"})
 
@@ -161,7 +161,7 @@ class PersistentWorkflowExecutor:
                     cancel_event=cancel_event,
                 )
             elif running.kind == "capability_aggregate":
-                output = self._aggregate(running.task_id, request)
+                output = self._aggregate(running.task_id)
             elif running.kind == "workflow_finalize":
                 output = self._finalize(running.task_id, request)
             else:
@@ -190,8 +190,13 @@ class PersistentWorkflowExecutor:
             每个成员的数据路径、摘要、revision 和执行器就绪或失败状态。
         """
         assets: dict[str, object] = {}
+        benchmarks = {
+            str(item.input["benchmark_id"]): item
+            for item in self._repository.list_nodes(node.task_id)
+            if item.kind == "benchmark"
+        }
         for benchmark_id in node.input.get("benchmark_ids", []):
-            spec = get_benchmark_spec(str(benchmark_id))
+            spec = _frozen_benchmark_spec(benchmarks[str(benchmark_id)])
             readiness = self._readiness_checker(spec)
             supported_source = (
                 spec.executor == ExecutorKind.NATIVE or spec.id == "hexagon-humaneval"
@@ -253,7 +258,8 @@ class PersistentWorkflowExecutor:
             RuntimeBlockedError: 执行器未就绪或执行期间数据资产发生变化时抛出。
         """
         benchmark_id = str(node.input["benchmark_id"])
-        spec = get_benchmark_spec(benchmark_id)
+        spec = _frozen_benchmark_spec(node)
+        protocol_fingerprint = str(node.input["protocol_fingerprint"])
         prepare_node = next(
             item
             for item in self._repository.list_nodes(node.task_id)
@@ -265,11 +271,28 @@ class PersistentWorkflowExecutor:
                 str(asset.get("error_type", "executor_not_ready")),
                 str(asset.get("message", f"{spec.display_name} 当前不可运行")),
             )
+        frozen_manifest_sha256 = node.input.get("manifest_sha256")
+        if (
+            frozen_manifest_sha256 is not None
+            and frozen_manifest_sha256 != _hexagon_manifest_sha256()
+        ):
+            message = "包内 Hexagon 清单与任务创建时冻结摘要不一致，不能安全恢复"
+            self._repository.clear_node_samples(node.id, message)
+            raise RuntimeBlockedError("manifest_revision_changed", message)
 
         execution_digest_before = _content_sha256(asset.get("path"))
         prepared_digest = asset.get("content_sha256")
         checkpoint_digest = (node.checkpoint or {}).get("content_sha256")
         baseline_digest = checkpoint_digest or prepared_digest
+        existing_samples = self._all_samples(node.id)
+        if any(
+            not _sample_matches_protocol(sample, protocol_fingerprint)
+            for sample in existing_samples
+        ):
+            self._repository.clear_node_samples(
+                node.id,
+                "样本检查点协议指纹与任务创建时冻结值不一致，旧结果已失效",
+            )
         if baseline_digest and baseline_digest != execution_digest_before:
             self._repository.clear_node_samples(
                 node.id,
@@ -281,6 +304,8 @@ class PersistentWorkflowExecutor:
             dataset=benchmark_id,
             suite_id=None,
             subject=str(node.input.get("subject", request.subject)),
+            generation_config=dict(spec.generation_config),
+            evaluator_type=str(node.input["evaluator_type"]),
         )
 
         def report_progress(completed: int, total: int) -> None:
@@ -299,6 +324,7 @@ class PersistentWorkflowExecutor:
             # 已完成评分的样本都可在断点恢复时跳过；未通过样本仍保留失败状态供调试。
             sample_status = "success" if float(sample.get("score", 0.0)) >= 1.0 else "failed"
             # 样本结果与节点进度在仓储内一次提交，避免恢复时读到不一致检查点。
+            persisted_result = {**sample, "protocol_fingerprint": protocol_fingerprint}
             self._repository.record_sample(
                 node.id,
                 EvaluationSampleCheckpoint(
@@ -311,8 +337,9 @@ class PersistentWorkflowExecutor:
                         "input": sample.get("input"),
                         "reference": sample.get("reference"),
                         "metadata": sample.get("metadata", {}),
+                        "protocol_fingerprint": protocol_fingerprint,
                     },
-                    result=sample,
+                    result=persisted_result,
                 ),
                 completed=completed,
                 total=total,
@@ -334,26 +361,24 @@ class PersistentWorkflowExecutor:
             message = "数据资产在 Benchmark 执行期间发生变化，请重试该节点"
             self._repository.clear_node_samples(node.id, message)
             raise RuntimeBlockedError("dataset_revision_changed", message)
-        samples = self._all_samples(node.id)
+        samples = [
+            sample
+            for sample in self._all_samples(node.id)
+            if _sample_matches_protocol(sample, protocol_fingerprint)
+        ]
         scores = [float((sample.result or {}).get("score", 0.0)) for sample in samples]
-        metric = (
-            str((samples[0].result or {}).get("metric", spec.metric)) if samples else spec.metric
-        )
         return {
             "benchmark_id": benchmark_id,
             "benchmark": spec.display_name,
             "status": "success",
             "model": request.model,
-            "metric": metric,
+            "metric": spec.metric,
             "dataset_source": spec.dataset_source,
-            "dataset_revision": (
-                f"sha256:{execution_digest_after}"
-                if execution_digest_after
-                else asset.get("dataset_revision", spec.dataset_revision)
-            ),
+            "dataset_revision": _resolved_dataset_revision(spec, execution_digest_after),
             "expected_sample_count": spec.expected_sample_count,
             "prompt_template_version": spec.prompt_template_version,
             "generation_config": dict(spec.generation_config),
+            "protocol_fingerprint": protocol_fingerprint,
             "raw_score": round(sum(scores) / len(scores), 6) if scores else 0.0,
             "score_sum": round(sum(scores), 6),
             "total_samples": len(samples),
@@ -371,23 +396,34 @@ class PersistentWorkflowExecutor:
             "protocol_scope": "evalhub_generation",
         }
 
-    def _aggregate(self, task_id: str, request: TaskRequest) -> dict[str, object]:
-        """只读取持久化 Benchmark 输出并生成固定六维能力画像。"""
+    def _aggregate(self, task_id: str) -> dict[str, object]:
+        """只聚合与创建时冻结协议完全匹配的持久化 Benchmark 输出。"""
         outputs: list[dict[str, object]] = []
-        for node in self._repository.list_nodes(task_id):
-            if node.kind != "benchmark":
-                continue
-            if node.output is not None:
+        nodes = self._repository.list_nodes(task_id)
+        aggregate = next(node for node in nodes if node.kind == "capability_aggregate")
+        benchmarks = [node for node in nodes if node.kind == "benchmark"]
+        fingerprint = str(aggregate.input["protocol_fingerprint"])
+        for node in benchmarks:
+            if node.output is not None and node.output.get("protocol_fingerprint") == fingerprint:
                 outputs.append(node.output)
             else:
+                # 成功节点若带有其他协议的旧输出，只作为阻塞诊断，不能进入当前画像。
+                mismatched = node.output is not None
                 outputs.append(
                     {
                         "benchmark_id": node.input["benchmark_id"],
-                        "status": node.status,
-                        "error_type": node.error_type,
+                        "status": "blocked" if mismatched else node.status,
+                        "error_type": "protocol_mismatch" if mismatched else node.error_type,
                     }
                 )
-        return aggregate_capability_profile(workflow_suite(request), outputs)
+        suite = BenchmarkSuiteSpec(
+            id=str(aggregate.input["suite_id"]),
+            version=str(aggregate.input["suite_version"]),
+            display_name=str(aggregate.input["suite_display_name"]),
+            benchmark_ids=tuple(str(item) for item in aggregate.input["benchmark_ids"]),
+        )
+        specs = tuple(_frozen_benchmark_spec(node) for node in benchmarks)
+        return aggregate_capability_profile(suite, outputs, benchmark_specs=specs)
 
     def _finalize(self, task_id: str, request: TaskRequest) -> dict[str, object]:
         """把节点产物收敛为兼容任务结果，并附加固定协议复现信息。
@@ -401,38 +437,30 @@ class PersistentWorkflowExecutor:
         """
         nodes = self._repository.list_nodes(task_id)
         benchmarks = [node for node in nodes if node.kind == "benchmark"]
-        successful = [node.output for node in benchmarks if node.output is not None]
         aggregate = next(node for node in nodes if node.kind == "capability_aggregate")
+        finalizer = next(node for node in nodes if node.kind == "workflow_finalize")
+        comparison_fingerprint = str(finalizer.input["protocol_fingerprint"])
+        successful = [
+            node.output
+            for node in benchmarks
+            if node.output is not None
+            and node.output.get("protocol_fingerprint") == comparison_fingerprint
+        ]
         total = sum(int(item.get("total_samples", 0)) for item in successful)
         passed = sum(int(item.get("passed_samples", 0)) for item in successful)
         score_sum = sum(float(item.get("score_sum", 0.0)) for item in successful)
-        suite = workflow_suite(request)
-        reproducibility = {
-            "suite_version": suite.version,
-            "manifest_sha256": (
-                _hexagon_manifest_sha256() if suite.id == "evalhub-hexagon-v1" else None
-            ),
-            "source_revisions": {
-                str(node.input["benchmark_id"]): node.input["dataset_revision"]
-                for node in benchmarks
-            },
-            "prompt_template_versions": {
-                str(node.input["benchmark_id"]): node.input["prompt_template_version"]
-                for node in benchmarks
-            },
-            "generation_config": (
-                dict(benchmarks[0].input.get("generation_config", {})) if benchmarks else {}
-            ),
-        }
-        comparison_fingerprint = _comparison_fingerprint(reproducibility)
+        reproducibility = dict(finalizer.input["reproducibility"])
         return {
             "job_id": task_id,
             "status": (
-                "success" if all(node.status == "success" for node in benchmarks) else "partial"
+                "success"
+                if len(successful) == len(benchmarks)
+                and all(node.status == "success" for node in benchmarks)
+                else "partial"
             ),
             "dataset": request.dataset,
             "suite_id": request.suite_id,
-            "benchmark": suite.display_name,
+            "benchmark": str(finalizer.input["suite_display_name"]),
             "model": request.model,
             "adapter": request.adapter,
             "metric": "capability_profile",
@@ -545,28 +573,86 @@ def _content_sha256(value: object) -> str | None:
 
 
 def _hexagon_manifest_sha256() -> str:
-    """返回随包发布的 Hexagon v1 清单文件摘要，供最终结果复现校验。
+    """读取当前包内 Hexagon 清单摘要，仅用于拒绝跨清单继续执行。
 
     Returns:
-        随包发布的固定清单原始字节摘要，用于最终结果的复现审计。
+        当前安装包清单原始字节的 SHA-256；最终结果不会使用这一动态值。
     """
     resource = files("evalhub.datasets").joinpath("manifests/hexagon_v1.json")
     return hashlib.sha256(resource.read_bytes()).hexdigest()
 
 
-def _comparison_fingerprint(reproducibility: dict[str, object]) -> str:
-    """把完整复现协议编码为可在轻量成绩摘要中比较的稳定指纹。
+def _frozen_benchmark_spec(node: EvaluationNode) -> BenchmarkSpec:
+    """从节点输入恢复任务创建时冻结的完整 Benchmark 规格。
 
     Args:
-        reproducibility: Suite 版本、清单、来源、提示和生成配置组成的协议快照。
+        node: 包含工作流创建时完整协议字段的 Benchmark 节点。
 
     Returns:
-        对规范 JSON 字节计算的 SHA-256 十六进制摘要。
+        不依赖当前 Registry 的不可变执行与归一化规格。
     """
-    payload = json.dumps(
-        reproducibility,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    payload = node.input
+    return BenchmarkSpec(
+        id=str(payload["benchmark_id"]),
+        version=str(payload["benchmark_version"]),
+        display_name=str(payload["benchmark_display_name"]),
+        capability=Capability(str(payload["capability"])),
+        dataset_source=str(payload["dataset_source"]),
+        dataset_revision=str(payload["dataset_revision"]),
+        homepage=str(payload["homepage"]),
+        license=str(payload["license"]),
+        expected_sample_count=(
+            int(payload["expected_sample_count"])
+            if payload.get("expected_sample_count") is not None
+            else None
+        ),
+        executor=ExecutorKind(str(payload["executor"])),
+        task_name=str(payload["task_name"]),
+        metric=str(payload["metric"]),
+        normalization=NormalizationKind(str(payload["normalization"])),
+        random_baseline=(
+            float(payload["random_baseline"])
+            if payload.get("random_baseline") is not None
+            else None
+        ),
+        weight=float(payload["weight"]),
+        prompt_template_version=str(payload["prompt_template_version"]),
+        few_shot=int(payload["few_shot"]),
+        generation_config=dict(payload["generation_config"]),
+        requirements=tuple(str(item) for item in payload["requirements"]),
+    )
+
+
+def _sample_matches_protocol(
+    sample: EvaluationSampleCheckpoint,
+    protocol_fingerprint: str,
+) -> bool:
+    """检查样本输入和结果是否都属于节点冻结的同一协议。
+
+    Args:
+        sample: 从 SQLite 恢复的单条样本检查点。
+        protocol_fingerprint: 当前节点创建时冻结的完整协议摘要。
+
+    Returns:
+        两个 JSON 边界均精确匹配时返回 ``True``；旧行或混合行返回 ``False``。
+    """
+    result = sample.result or {}
+    return (
+        sample.input.get("protocol_fingerprint") == protocol_fingerprint
+        and result.get("protocol_fingerprint") == protocol_fingerprint
+    )
+
+
+def _resolved_dataset_revision(spec: BenchmarkSpec, content_sha256: str | None) -> str:
+    """为运行时解析型旧数据集补摘要，并保持固定来源 revision 不变。
+
+    Args:
+        spec: 创建任务时冻结的 Benchmark 来源规格。
+        content_sha256: 执行结束时重新计算的本地资产摘要。
+
+    Returns:
+        固定来源使用创建时 revision；旧解析型来源在可用时使用实际文件摘要。
+    """
+    if spec.dataset_revision == "resolved-at-runtime:sha256" and content_sha256:
+        return f"sha256:{content_sha256}"
+    return spec.dataset_revision

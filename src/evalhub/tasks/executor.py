@@ -153,6 +153,7 @@ def _evaluation_process(
                     skip_sample_ids=frozenset(skip_sample_ids),
                     on_progress=report_progress,
                     on_sample_result=report_sample,
+                    generation_config=request.generation_config,
                 )
             else:
                 result = run_real_benchmark(
@@ -166,6 +167,8 @@ def _evaluation_process(
                     on_progress=report_progress,
                     skip_sample_ids=frozenset(skip_sample_ids),
                     on_sample_result=report_sample,
+                    generation_config=request.generation_config,
+                    evaluator_type=request.evaluator_type,
                 )
         event_queue.put({"type": "result", "result": result})
     except SandboxInfrastructureError as exc:

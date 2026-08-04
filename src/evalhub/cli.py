@@ -167,6 +167,8 @@ def run_real_benchmark(
     on_progress: ProgressCallback | None = None,
     skip_sample_ids: set[str] | frozenset[str] = frozenset(),
     on_sample_result: SampleResultCallback | None = None,
+    generation_config: dict[str, object] | None = None,
+    evaluator_type: str | None = None,
 ) -> dict[str, object]:
     """准备真实数据集并使用指定模型适配器执行同步评测。
 
@@ -181,6 +183,8 @@ def run_real_benchmark(
         on_progress: 接收已完成样本数与总样本数的可选进度回调。
         skip_sample_ids: 恢复执行时已经完成推理和评分的样本标识。
         on_sample_result: 新样本完成评分后接收完整结果的可选回调。
+        generation_config: 工作流创建时冻结的模型生成参数；缺省保持历史确定性配置。
+        evaluator_type: 工作流创建时冻结的评分器类型；缺省使用当前数据集目录值。
 
     Returns:
         包含任务状态、汇总指标和最多五条失败示例的 JSON 兼容字典。
@@ -225,7 +229,11 @@ def run_real_benchmark(
             name=spec.display_name,
             dataset_id=dataset_record.id,
             evaluator_type=spec.evaluator_type,
-            config={"temperature": 0, "num_predict": 256},
+            config=(
+                dict(generation_config)
+                if generation_config is not None
+                else {"temperature": 0, "num_predict": 256}
+            ),
         )
     )
     # 调度层提供任务标识时沿用同一 ID，CLI 直接运行则继续使用领域默认值。
@@ -248,7 +256,7 @@ def run_real_benchmark(
     )
 
     # 评测器由 Benchmark 类型动态创建，Runner 只负责统一编排与状态转换。
-    evaluator = default_evaluator_registry().create(benchmark.evaluator_type)
+    evaluator = default_evaluator_registry().create(evaluator_type or benchmark.evaluator_type)
     runner = EvaluationRunner(adapter, evaluator)
     results, report = runner.run(
         job=job,

@@ -1,12 +1,19 @@
 """验证同步评测执行器的样本结果、任务状态和报告聚合。"""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 
 import evalhub.cli as cli_module
 from evalhub.adapters import StaticMappingAdapter
-from evalhub.domain import BenchmarkRecord, EvaluationJob, EvaluationSample, MetricResult
+from evalhub.domain import (
+    BenchmarkRecord,
+    EvaluationJob,
+    EvaluationSample,
+    EvaluationSampleResult,
+    MetricResult,
+)
 from evalhub.domain.enums import JobStatus
 from evalhub.engine import EvaluationRunner
 from evalhub.evaluators import ExactMatchEvaluator
@@ -72,6 +79,28 @@ class RecordingEvaluator(ExactMatchEvaluator):
             input_text=input_text,
             metadata=metadata,
         )
+
+
+def test_sample_result_keeps_legacy_optional_positional_arguments() -> None:
+    """旧调用方按位置传入 id 和 created_at 时不得被新增 metadata 字段截断。"""
+    created_at = datetime(2026, 8, 4, 12, 0, tzinfo=UTC)
+
+    result = EvaluationSampleResult(
+        "job_1",
+        "sample_1",
+        "input",
+        "prediction",
+        "reference",
+        "exact_match",
+        1.0,
+        None,
+        "result_legacy",
+        created_at,
+    )
+
+    assert result.id == "result_legacy"
+    assert result.created_at == created_at
+    assert result.metadata == {}
 
 
 def test_runner_generates_sample_results_and_report() -> None:

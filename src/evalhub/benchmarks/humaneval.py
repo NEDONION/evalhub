@@ -35,6 +35,22 @@ _INFRASTRUCTURE_REASONS = frozenset({"invalid_payload", "execution_failed"})
 _PUBLIC_FAILURE_REASONS = _VERIFICATION_FAILURE_REASONS | frozenset(
     {"executor_not_ready", "sandbox_failed", "invalid_result"}
 )
+_PUBLIC_METADATA_KEYS = frozenset(
+    {
+        "dataset",
+        "source_key",
+        "selection_stratum",
+        "evaluator_type",
+        "entry_point",
+        "input_zh",
+        "reference_zh",
+        "translation_version",
+        "input_sha256",
+        "reference_sha256",
+        "input_zh_sha256",
+        "reference_zh_sha256",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -42,12 +58,29 @@ class HumanEvalProblem:
     """保存一条选中题目的模型提示和只允许发送给 Docker 的官方校验字段。"""
 
     sample_id: str
-    source_key: str
     prompt: str
     canonical_solution: str
     test: str
     entry_point: str
-    input_zh: str
+    metadata: dict[str, object]
+
+    @property
+    def source_key(self) -> str:
+        """返回兼容调用方使用的公开 HumanEval 来源键。
+
+        Returns:
+            清单元数据中经过加载器校验的稳定来源键。
+        """
+        return str(self.metadata["source_key"])
+
+    @property
+    def input_zh(self) -> str:
+        """返回兼容展示调用方使用的中文题面翻译。
+
+        Returns:
+            清单元数据中只供展示、不会进入模型或 Docker 的中文文本。
+        """
+        return str(self.metadata["input_zh"])
 
 
 @dataclass(frozen=True)
@@ -375,12 +408,24 @@ def load_humaneval_problems(
         problems.append(
             HumanEvalProblem(
                 sample_id=item.id,
-                source_key=item.source_key,
                 prompt=row.prompt,
                 canonical_solution=row.canonical_solution,
                 test=row.test,
                 entry_point=row.entry_point,
-                input_zh=item.input_zh,
+                metadata={
+                    "dataset": item.benchmark_id,
+                    "source_key": item.source_key,
+                    "selection_stratum": item.selection_stratum,
+                    "evaluator_type": "pass@1",
+                    "entry_point": row.entry_point,
+                    "input_zh": item.input_zh,
+                    "reference_zh": item.reference_zh,
+                    "translation_version": item.translation_version,
+                    "input_sha256": item.input_sha256,
+                    "reference_sha256": item.reference_sha256,
+                    "input_zh_sha256": item.input_zh_sha256,
+                    "reference_zh_sha256": item.reference_zh_sha256,
+                },
             )
         )
     return problems
@@ -395,6 +440,7 @@ def run_humaneval_benchmark(
     skip_sample_ids: frozenset[str] = frozenset(),
     on_progress: ProgressCallback | None = None,
     on_sample_result: SampleDictCallback | None = None,
+    generation_config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """为每题生成一次代码并在 Docker 中评分，返回 Pass@1 兼容摘要。
 
@@ -406,6 +452,7 @@ def run_humaneval_benchmark(
         skip_sample_ids: 恢复执行时已经持久化、无需再次生成的样本标识。
         on_progress: 接收已完成数量和固定总题数的可选回调。
         on_sample_result: 每条新样本判定完成后接收脱敏结果的可选回调。
+        generation_config: 工作流创建时冻结的模型生成参数；缺省使用 v1 确定性配置。
 
     Returns:
         包含本轮增量属性、评测/跳过计数、Pass@1 和脱敏样本结果的字典。
@@ -421,12 +468,17 @@ def run_humaneval_benchmark(
     if on_progress is not None:
         on_progress(completed, len(problems))
     sample_results: list[dict[str, object]] = []
+    runtime_config = (
+        dict(generation_config)
+        if generation_config is not None
+        else {"temperature": 0, "num_predict": 256}
+    )
 
     # 每题只生成一个确定性候选；中文翻译和官方答案都不会进入模型调用参数。
     for problem in problems:
         if problem.sample_id in skip_sample_ids:
             continue
-        completion = adapter.generate(problem.prompt, temperature=0, num_predict=256)
+        completion = adapter.generate(problem.prompt, **runtime_config)
         verdict = sandbox.run(problem, completion)
         sample_result = _sample_result(problem, completion, verdict)
         sample_results.append(sample_result)
@@ -552,5 +604,9 @@ def _sample_result(
         "metric": "pass@1",
         "score": 1.0 if verdict.passed else 0.0,
         "reason": None if verdict.passed else reason,
-        "metadata": {"source_key": problem.source_key, "input_zh": problem.input_zh},
+        "metadata": {
+            key: value
+            for key, value in problem.metadata.items()
+            if key in _PUBLIC_METADATA_KEYS
+        },
     }
