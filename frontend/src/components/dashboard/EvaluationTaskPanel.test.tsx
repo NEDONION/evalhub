@@ -2,7 +2,11 @@ import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 
-import type { EvaluationTaskSummary, EvaluationType } from "../../types";
+import type {
+  EvaluationTaskDetail,
+  EvaluationTaskSummary,
+  EvaluationType,
+} from "../../types";
 import { EvaluationTaskPanel } from "./EvaluationTaskPanel";
 
 function taskFixture(id: string, evaluationType: EvaluationType): EvaluationTaskSummary {
@@ -42,6 +46,71 @@ function taskFixture(id: string, evaluationType: EvaluationType): EvaluationTask
     error_message: null,
   };
 }
+
+/** 构造无需结果正文也能呈现任务进度与资源的完整详情。 */
+function taskDetailFixture(id: string, evaluationType: EvaluationType): EvaluationTaskDetail {
+  return {
+    ...taskFixture(id, evaluationType),
+    request: {
+      evaluation_type: evaluationType,
+      agent_framework: evaluationType === "agent" ? "pi" : undefined,
+      agent_difficulty: evaluationType === "agent" ? "all" : undefined,
+      dataset: evaluationType === "agent" ? "coding_mini" : "gsm8k",
+      adapter: "ollama",
+      model: evaluationType === "agent" ? "qwen-coder" : "qwen",
+      base_url: "http://127.0.0.1:11434",
+      sample_mode: "all",
+    },
+    result: null,
+    nodes: [],
+  };
+}
+
+it("opens the selected job in a dismissible side drawer", async () => {
+  const user = userEvent.setup();
+  render(
+    <EvaluationTaskPanel
+      tasks={[taskFixture("model-task", "model")]}
+      selectedTaskId="model-task"
+      selectedTask={taskDetailFixture("model-task", "model")}
+      error={null}
+      onSelect={vi.fn()}
+      onCancel={vi.fn()}
+      retryingNodeId={null}
+      onRetryNode={vi.fn()}
+    />,
+  );
+
+  expect(screen.queryByRole("dialog", { name: "任务详情" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "查看任务 model-task" }));
+
+  expect(screen.getByRole("dialog", { name: "任务详情" })).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "关闭任务详情" }));
+  expect(screen.queryByRole("dialog", { name: "任务详情" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "查看任务 model-task" })).toBeInTheDocument();
+});
+
+it("shows loading instead of stale details while the next job is being fetched", async () => {
+  const user = userEvent.setup();
+  const staleDetail = { ...taskDetailFixture("old-task", "model"), error_message: "旧任务错误" };
+  render(
+    <EvaluationTaskPanel
+      tasks={[taskFixture("new-task", "model")]}
+      selectedTaskId="new-task"
+      selectedTask={staleDetail}
+      error={null}
+      onSelect={vi.fn()}
+      onCancel={vi.fn()}
+      retryingNodeId={null}
+      onRetryNode={vi.fn()}
+    />,
+  );
+
+  await user.click(screen.getByRole("button", { name: "查看任务 new-task" }));
+  const drawer = screen.getByRole("dialog", { name: "任务详情" });
+  expect(within(drawer).getByText("正在读取任务详情")).toBeInTheDocument();
+  expect(within(drawer).queryByText("旧任务错误")).not.toBeInTheDocument();
+});
 
 it("filters model and Agent jobs without mixing their task rows", async () => {
   const user = userEvent.setup();

@@ -7,10 +7,11 @@ import {
   Cpu,
   ListChecks,
   MemoryStick,
+  PanelRightClose,
   X,
 } from "lucide-react";
 import type { JSX } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type {
   EvaluationTaskDetail,
@@ -54,10 +55,10 @@ const statusTones: Record<EvaluationTaskStatus, BadgeProps["tone"]> = {
 type TaskTypeFilter = "all" | EvaluationType;
 
 /**
- * 展示持久化评测任务列表及当前任务详情，并将选择和取消操作交还页面状态层。
+ * 展示持久化评测任务列表，并在用户选择任务后用右侧抽屉承载详情。
  *
  * @param props 任务摘要、当前详情、错误状态以及用户操作回调。
- * @returns 包含空状态、活动进度、资源遥测和结果详情的任务中心面板。
+ * @returns 包含任务筛选、摘要列表和模态详情抽屉的任务中心面板。
  */
 export function EvaluationTaskPanel({
   tasks,
@@ -70,6 +71,8 @@ export function EvaluationTaskPanel({
   onRetryNode,
 }: EvaluationTaskPanelProps): JSX.Element {
   const [typeFilter, setTypeFilter] = useState<TaskTypeFilter>("all");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLDialogElement>(null);
   const activeCount = tasks.filter((task) => task.status === "pending" || task.status === "running").length;
   const modelCount = tasks.filter((task) => taskType(task) === "model").length;
   const agentCount = tasks.filter((task) => taskType(task) === "agent").length;
@@ -77,7 +80,11 @@ export function EvaluationTaskPanel({
   const selectedIndex = tasks.findIndex((task) => task.id === selectedTaskId);
   const selectedTasksAhead = countActiveTasksAhead(tasks, selectedIndex);
   const visibleSelectedTask =
-    selectedTask && (typeFilter === "all" || taskType(selectedTask) === typeFilter) ? selectedTask : null;
+    selectedTask?.id === selectedTaskId && (typeFilter === "all" || taskType(selectedTask) === typeFilter)
+      ? selectedTask
+      : null;
+  const canCancelSelectedTask =
+    visibleSelectedTask?.status === "pending" || visibleSelectedTask?.status === "running";
 
   const filters: Array<{ value: TaskTypeFilter; label: string; count: number }> = [
     { value: "all", label: "全部", count: tasks.length },
@@ -85,10 +92,24 @@ export function EvaluationTaskPanel({
     { value: "agent", label: "Agent 评测", count: agentCount },
   ];
 
+  // 使用浏览器原生模态能力处理焦点约束、Escape 关闭和页面滚动锁定。
+  useEffect(() => {
+    const drawer = drawerRef.current;
+    if (!drawer) return;
+    if (drawerOpen && !drawer.open) drawer.showModal();
+    if (!drawerOpen && drawer.open) drawer.close();
+  }, [drawerOpen]);
+
+  /** 选择任务后打开详情抽屉；详情未返回时由抽屉展示加载态。 */
+  function selectTask(nextTaskId: string): void {
+    onSelect(nextTaskId);
+    setDrawerOpen(true);
+  }
+
   function selectFilter(nextFilter: TaskTypeFilter): void {
     setTypeFilter(nextFilter);
     const firstTask = tasks.find((task) => nextFilter === "all" || taskType(task) === nextFilter);
-    if (firstTask && firstTask.id !== selectedTaskId) onSelect(firstTask.id);
+    if (firstTask) selectTask(firstTask.id);
   }
 
   return (
@@ -177,25 +198,73 @@ export function EvaluationTaskPanel({
                   tasks.findIndex((item) => item.id === task.id),
                 )}
                 selected={task.id === selectedTaskId}
-                onSelect={onSelect}
+                onSelect={selectTask}
               />
             ))}
           </div>
 
-          {visibleSelectedTask ? (
-            <TaskDetail
-              task={visibleSelectedTask}
-              tasksAhead={selectedTasksAhead}
-              retryingNodeId={retryingNodeId}
-              onCancel={onCancel}
-              onRetryNode={onRetryNode}
-            />
-          ) : (
-            <div className="flex min-h-28 items-center justify-center gap-2 px-5 py-8 text-sm text-muted">
-              <CircleDashed className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
-              正在读取任务详情
+          <dialog
+            ref={drawerRef}
+            aria-labelledby="task-drawer-title"
+            onClose={() => setDrawerOpen(false)}
+            onClick={(event) => event.target === event.currentTarget && setDrawerOpen(false)}
+            className="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-[840px] overflow-hidden border-0 bg-transparent p-0 shadow-2xl backdrop:bg-slate-950/35"
+          >
+            <div className="flex h-full flex-col bg-white">
+              <div className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-white px-5 py-4 sm:px-6">
+                <div className="min-w-0">
+                  <p className="text-[10px] font-semibold tracking-[0.12em] text-slate-400 uppercase">
+                    Task detail
+                  </p>
+                  <h2 id="task-drawer-title" className="mt-1 text-sm font-semibold text-ink">
+                    任务详情
+                  </h2>
+                  {visibleSelectedTask ? (
+                    <code className="mt-1 block truncate font-mono text-[11px] text-muted">
+                      {visibleSelectedTask.id}
+                    </code>
+                  ) : null}
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  {canCancelSelectedTask && visibleSelectedTask ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => onCancel(visibleSelectedTask.id)}
+                      aria-label={`取消任务 ${visibleSelectedTask.id}`}
+                    >
+                      <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      取消任务
+                    </Button>
+                  ) : null}
+                  <button
+                    type="button"
+                    aria-label="关闭任务详情"
+                    onClick={() => setDrawerOpen(false)}
+                    className="grid h-9 w-9 place-items-center rounded-md border border-border text-muted transition-colors hover:bg-slate-50 hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    <PanelRightClose className="h-4 w-4" aria-hidden="true" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {visibleSelectedTask ? (
+                  <TaskDetail
+                    task={visibleSelectedTask}
+                    tasksAhead={selectedTasksAhead}
+                    retryingNodeId={retryingNodeId}
+                    onRetryNode={onRetryNode}
+                  />
+                ) : (
+                  <div className="flex min-h-28 items-center justify-center gap-2 px-5 py-8 text-sm text-muted">
+                    <CircleDashed className="h-4 w-4 animate-spin text-primary" aria-hidden="true" />
+                    正在读取任务详情
+                  </div>
+                )}
+              </div>
             </div>
-          )}
+          </dialog>
         </>
       )}
     </Panel>
@@ -264,7 +333,6 @@ function taskType(task: EvaluationTaskSummary | EvaluationTaskDetail): Evaluatio
 interface TaskDetailProps {
   task: EvaluationTaskDetail;
   tasksAhead: number;
-  onCancel: (taskId: string) => void;
   retryingNodeId: string | null;
   onRetryNode: (taskId: string, nodeId: string) => Promise<unknown> | void;
 }
@@ -272,36 +340,20 @@ interface TaskDetailProps {
 /**
  * 渲染选中任务的运行轨道、进程资源、失败信息和可选完整结果。
  *
- * @param props 当前任务详情与取消操作回调。
- * @returns 随任务状态变化的详情区域；只有活动任务提供取消入口。
+ * @param props 当前任务详情、排队位置和失败节点重试回调。
+ * @returns 随任务状态变化的进度、资源、节点和评测结果区域。
  */
 function TaskDetail({
   task,
   tasksAhead,
   retryingNodeId,
-  onCancel,
   onRetryNode,
 }: TaskDetailProps): JSX.Element {
-  const canCancel = task.status === "pending" || task.status === "running";
   const waitingForResources = task.status === "pending";
   return (
     <div aria-live="polite">
       <div className="px-5 py-5 sm:px-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <p className="text-[10px] font-semibold tracking-[0.12em] text-slate-400 uppercase">Task detail</p>
-            <h3 className="mt-1 text-sm font-semibold text-ink">任务详情</h3>
-            <code className="mt-1 block truncate font-mono text-[11px] text-muted">{task.id}</code>
-          </div>
-          {canCancel ? (
-            <Button variant="secondary" size="sm" onClick={() => onCancel(task.id)} aria-label={`取消任务 ${task.id}`}>
-              <X className="h-3.5 w-3.5" aria-hidden="true" />
-              取消任务
-            </Button>
-          ) : null}
-        </div>
-
-        <div className="mt-5 rounded-lg border border-blue-100 bg-blue-50/45 p-4">
+        <div className="rounded-lg border border-blue-100 bg-blue-50/45 p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-xs font-medium text-blue-900">
               <Activity className="h-3.5 w-3.5" aria-hidden="true" />

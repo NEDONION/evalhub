@@ -752,8 +752,10 @@ describe("EvalHub console", () => {
     render(<App />);
 
     await user.click(navigationButton("评测结果"));
+    await user.click(await screen.findByRole("button", { name: "查看任务 job_pending" }));
+    const drawer = await screen.findByRole("dialog", { name: "任务详情" });
 
-    expect(await screen.findByText("等待 Worker · 前方 1 个任务")).toBeInTheDocument();
+    expect(await within(drawer).findByText("等待 Worker · 前方 1 个任务")).toBeInTheDocument();
   });
 
   it("labels suite tasks without presenting the first benchmark as the task name", async () => {
@@ -781,9 +783,11 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("评测结果"));
 
     const resultPanel = await screen.findByRole("region", { name: "评测任务" });
-    expect(await within(resultPanel).findByText("0.8000")).toBeInTheDocument();
-    expect(within(resultPanel).getAllByText("4 / 5").length).toBeGreaterThan(0);
-    const details = within(resultPanel).getByText("原始 JSON").closest("details");
+    await user.click(within(resultPanel).getByRole("button", { name: "查看任务 job_success" }));
+    const drawer = await screen.findByRole("dialog", { name: "任务详情" });
+    expect(await within(drawer).findByText("0.8000")).toBeInTheDocument();
+    expect(within(drawer).getAllByText("4 / 5").length).toBeGreaterThan(0);
+    const details = within(drawer).getByText("原始 JSON").closest("details");
     expect(details).not.toHaveAttribute("open");
   });
 
@@ -818,14 +822,16 @@ describe("EvalHub console", () => {
     vi.mocked(getEvaluationTask).mockResolvedValue(agentTaskDetail);
     await user.click(navigationButton("概览"));
     await user.click(navigationButton("评测结果"));
-    expect(await screen.findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "难度分层" })).toBeInTheDocument();
-    expect(screen.getByText("题集 coding-mini-v2 · 请求 困难")).toBeInTheDocument();
-    expect(screen.getByText("困难 · 需要理解两文件调用关系和原子性")).toBeInTheDocument();
-    expect(await screen.findByText("Agent 实时过程")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
-    expect(screen.getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();
-    expect(screen.getByText(/系统级 · 设备内存/)).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "查看任务 job_agent_success" }));
+    const drawer = await screen.findByRole("dialog", { name: "任务详情" });
+    expect(await within(drawer).findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
+    expect(within(drawer).getByRole("heading", { name: "难度分层" })).toBeInTheDocument();
+    expect(within(drawer).getByText("题集 coding-mini-v2 · 请求 困难")).toBeInTheDocument();
+    expect(within(drawer).getByText("困难 · 需要理解两文件调用关系和原子性")).toBeInTheDocument();
+    expect(await within(drawer).findByText("Agent 实时过程")).toBeInTheDocument();
+    expect(within(drawer).getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
+    expect(within(drawer).getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();
+    expect(within(drawer).getByText(/系统级 · 设备内存/)).toBeInTheDocument();
   });
 
   it("keeps dataset content available when only Ollama status fails", async () => {
