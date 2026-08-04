@@ -68,13 +68,16 @@ class IFEvalStrictEvaluator(Evaluator):
         Raises:
             ValueError: 规则元数据缺失、类型错误、长度不一致或包含未支持规则时抛出。
         """
-        instruction_ids, arguments = _validated_rules(metadata)
+        instruction_ids, arguments = validate_ifeval_rules(metadata)
         # 每项检查保留原始清单顺序，确保规则失败能够定位到官方稳定标识。
-        checks = {
-            instruction_id: _RULES[instruction_id](prediction, item_arguments)
+        checks = [
+            {
+                "instruction_id": instruction_id,
+                "passed": _RULES[instruction_id](prediction, item_arguments),
+            }
             for instruction_id, item_arguments in zip(instruction_ids, arguments, strict=True)
-        }
-        passed = bool(prediction.strip()) and all(checks.values())
+        ]
+        passed = bool(prediction.strip()) and all(item["passed"] for item in checks)
         # 空回答即使偶然满足无逗号等形式规则也不能计为完成该提示。
         return MetricResult(
             metric=self.metric_name,
@@ -84,10 +87,10 @@ class IFEvalStrictEvaluator(Evaluator):
         )
 
 
-def _validated_rules(
-    metadata: dict[str, object] | None,
+def validate_ifeval_rules(
+    metadata: Mapping[str, object] | None,
 ) -> tuple[list[str], list[dict[str, object]]]:
-    """收窄样本规则元数据，并拒绝无法按固定官方语义解释的输入。
+    """验证选中 IFEval 规则及参数，并返回可供加载器和评分器共享的收窄结果。
 
     Args:
         metadata: 加载器从 IFEval 官方 JSONL 传入的样本元数据。
@@ -114,11 +117,14 @@ def _validated_rules(
         raise ValueError(f"unsupported IFEval instruction: {unsupported[0]}")
     if any(not isinstance(item, dict) for item in arguments):
         raise ValueError("IFEval kwargs entries must be objects")
+    # 固定清单只允许这十条规则的原始官方参数形状，加载和评分必须共用同一边界。
+    for instruction_id, item_arguments in zip(instruction_ids, arguments, strict=True):
+        _validate_rule_arguments(instruction_id, item_arguments)
     return instruction_ids, arguments
 
 
-def _argument_int(arguments: Mapping[str, object], name: str) -> int:
-    """读取官方规则需要的非布尔整数参数，拒绝模糊或缺失的来源数据。
+def _validated_int(arguments: Mapping[str, object], name: str) -> int:
+    """读取固定规则需要的非负整数参数，拒绝会触发官方随机回退的越界值。
 
     Args:
         arguments: 当前 IFEval 规则冻结的参数对象。
@@ -128,16 +134,16 @@ def _argument_int(arguments: Mapping[str, object], name: str) -> int:
         官方 JSONL 中提供的整数值。
 
     Raises:
-        ValueError: 参数缺失、是布尔值或不是整数时抛出。
+        ValueError: 参数缺失、是布尔值、不是整数或为负数时抛出。
     """
     value = arguments.get(name)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"IFEval rule requires integer {name}")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("invalid IFEval rule arguments")
     return value
 
 
-def _argument_text(arguments: Mapping[str, object], name: str) -> str:
-    """读取官方规则需要的字符串参数，避免格式检查隐式转换未知类型。
+def _validated_text(arguments: Mapping[str, object], name: str) -> str:
+    """读取固定规则需要的非空字符串参数，避免空值成为无条件匹配的正则。
 
     Args:
         arguments: 当前 IFEval 规则冻结的参数对象。
@@ -147,12 +153,32 @@ def _argument_text(arguments: Mapping[str, object], name: str) -> str:
         按官方构建器语义移除首尾空白后的参数文本。
 
     Raises:
-        ValueError: 参数缺失或不是字符串时抛出。
+        ValueError: 参数缺失、不是字符串或仅含空白时抛出。
     """
     value = arguments.get(name)
-    if not isinstance(value, str):
-        raise ValueError(f"IFEval rule requires string {name}")
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("invalid IFEval rule arguments")
     return value.strip()
+
+
+def _validate_rule_arguments(instruction_id: str, arguments: Mapping[str, object]) -> None:
+    """按固定规则参数表验证名称、非空文本和非负整数，阻止官方随机回退。
+
+    Args:
+        instruction_id: 已确认受支持的 IFEval 官方规则标识。
+        arguments: 当前规则的官方参数对象。
+
+    Raises:
+        ValueError: 参数名、类型、空白文本或负整数不符合固定规则契约时抛出。
+    """
+    names, text_names, integer_names = _RULE_ARGUMENTS[instruction_id]
+    if set(arguments) != names:
+        raise ValueError("invalid IFEval rule arguments")
+    # 同一表同时覆盖无参数规则与带参数规则，避免加载器、评分器维护两套 schema。
+    for name in text_names:
+        _validated_text(arguments, name)
+    for name in integer_names:
+        _validated_int(arguments, name)
 
 
 def _no_comma(value: str, arguments: Mapping[str, object]) -> bool:
@@ -178,7 +204,7 @@ def _postscript(value: str, arguments: Mapping[str, object]) -> bool:
     Returns:
         存在匹配附注标记时返回 ``True``。
     """
-    marker = _argument_text(arguments, "postscript_marker")
+    marker = _validated_text(arguments, "postscript_marker")
     normalized = value.lower()
     # 官方实现对两个默认标记容忍标点后的可选空白，其他标记按原正则拼接。
     if marker == "P.P.S":
@@ -236,7 +262,7 @@ def _number_placeholders(value: str, arguments: Mapping[str, object]) -> bool:
     Returns:
         非贪婪方括号匹配数量不少于要求时返回 ``True``。
     """
-    required = _argument_int(arguments, "num_placeholders")
+    required = _validated_int(arguments, "num_placeholders")
     return len(re.findall(r"\[.*?\]", value)) >= required
 
 
@@ -250,7 +276,7 @@ def _number_bullet_lists(value: str, arguments: Mapping[str, object]) -> bool:
     Returns:
         两种官方正则匹配项目总数恰好等于要求时返回 ``True``。
     """
-    required = _argument_int(arguments, "num_bullets")
+    required = _validated_int(arguments, "num_bullets")
     stars = re.findall(r"^\s*\*[^\*].*$", value, flags=re.MULTILINE)
     hyphens = re.findall(r"^\s*-.*$", value, flags=re.MULTILINE)
     return len(stars) + len(hyphens) == required
@@ -266,7 +292,7 @@ def _number_highlighted_sections(value: str, arguments: Mapping[str, object]) ->
     Returns:
         有效高亮数量不少于要求时返回 ``True``。
     """
-    required = _argument_int(arguments, "num_highlights")
+    required = _validated_int(arguments, "num_highlights")
     highlights = re.findall(r"\*[^\n\*]*\*", value)
     double_highlights = re.findall(r"\*\*[^\n\*]*\*\*", value)
     # 两组匹配独立累加，保留官方实现在双星号文本上的原始计数语义。
@@ -288,8 +314,8 @@ def _multiple_sections(value: str, arguments: Mapping[str, object]) -> bool:
     Returns:
         官方正则分割出的章节数不少于要求时返回 ``True``。
     """
-    splitter = _argument_text(arguments, "section_spliter")
-    required = _argument_int(arguments, "num_sections")
+    splitter = _validated_text(arguments, "section_spliter")
+    required = _validated_int(arguments, "num_sections")
     pattern = r"\s?" + splitter + r"\s?\d+\s?"
     return len(re.split(pattern, value)) - 1 >= required
 
@@ -318,7 +344,7 @@ def _end_checker(value: str, arguments: Mapping[str, object]) -> bool:
     Returns:
         按不区分大小写的官方结尾匹配规则通过时返回 ``True``。
     """
-    ending = _argument_text(arguments, "end_phrase").lower()
+    ending = _validated_text(arguments, "end_phrase").lower()
     return value.strip().strip('"').lower().endswith(ending)
 
 
@@ -333,4 +359,29 @@ _RULES: dict[str, RuleChecker] = {
     "detectable_format:multiple_sections": _multiple_sections,
     "detectable_format:title": _title,
     "startend:end_checker": _end_checker,
+}
+
+_RULE_ARGUMENTS: dict[str, tuple[set[str], set[str], set[str]]] = {
+    "punctuation:no_comma": (set(), set(), set()),
+    "detectable_content:postscript": ({"postscript_marker"}, {"postscript_marker"}, set()),
+    "startend:quotation": (set(), set(), set()),
+    "detectable_format:json_format": (set(), set(), set()),
+    "detectable_content:number_placeholders": (
+        {"num_placeholders"},
+        set(),
+        {"num_placeholders"},
+    ),
+    "detectable_format:number_bullet_lists": ({"num_bullets"}, set(), {"num_bullets"}),
+    "detectable_format:number_highlighted_sections": (
+        {"num_highlights"},
+        set(),
+        {"num_highlights"},
+    ),
+    "detectable_format:multiple_sections": (
+        {"section_spliter", "num_sections"},
+        {"section_spliter"},
+        {"num_sections"},
+    ),
+    "detectable_format:title": (set(), set(), set()),
+    "startend:end_checker": ({"end_phrase"}, {"end_phrase"}, set()),
 }

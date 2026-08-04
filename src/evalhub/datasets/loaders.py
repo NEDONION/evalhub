@@ -22,7 +22,7 @@ from evalhub.datasets.hexagon_sources import (
     prepare_hexagon_dataset,
 )
 from evalhub.domain import EvaluationSample
-from evalhub.evaluators.ifeval import SUPPORTED_RULE_IDS
+from evalhub.evaluators.ifeval import validate_ifeval_rules
 
 # MMLU 官方测试集的完整学科列表用于 ``subject=all`` 的确定性遍历。
 MMLU_SUBJECTS = [
@@ -217,13 +217,8 @@ def _validate_ifeval_selected_rules(
         row = rows.get(item.source_key)
         if row is None:
             continue
-        instruction_ids = row.source_metadata.get("instruction_id_list")
-        if not isinstance(instruction_ids, list):
-            raise ValueError(f"IFEval source key {item.source_key} has invalid rules")
-        # 先拒绝本地不支持的规则，确保它绝不会流入模型执行阶段。
-        unsupported = [rule for rule in instruction_ids if rule not in SUPPORTED_RULE_IDS]
-        if unsupported:
-            raise ValueError(f"unsupported IFEval instruction: {unsupported[0]}")
+        instruction_ids, _ = validate_ifeval_rules(row.source_metadata)
+        # 共享验证器在此先拒绝未支持或参数非法的规则，确保它们不会流入模型执行阶段。
         if instruction_ids != [item.selection_stratum]:
             raise ValueError(
                 f"IFEval source key {item.source_key} must contain exactly rule "

@@ -111,6 +111,27 @@ def test_ifeval_requires_every_instruction_to_pass() -> None:
     assert result.score == 0.0
 
 
+def test_ifeval_counts_duplicate_rules_positionally() -> None:
+    """重复规则的不同参数必须分别参与得分，不能由同名诊断覆盖前项失败。"""
+    result = IFEvalStrictEvaluator().evaluate(
+        "[hotel]",
+        "",
+        metadata={
+            "instruction_id_list": [
+                "detectable_content:number_placeholders",
+                "detectable_content:number_placeholders",
+            ],
+            "kwargs": [{"num_placeholders": 2}, {"num_placeholders": 1}],
+        },
+    )
+
+    assert result.score == 0.0
+    assert result.metadata["checks"] == [
+        {"instruction_id": "detectable_content:number_placeholders", "passed": False},
+        {"instruction_id": "detectable_content:number_placeholders", "passed": True},
+    ]
+
+
 def test_ifeval_rejects_unsupported_rule_metadata() -> None:
     """未知规则不能被悄悄当作通过或失败，必须显式拒绝。"""
     with pytest.raises(ValueError, match="unsupported IFEval instruction"):

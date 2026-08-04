@@ -57,7 +57,7 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
         "hexagon-mmlu": ("multiple_choice", "acc", "https://github.com/hendrycks/test"),
         "hexagon-ifeval": (
             "instruction_following",
-            "prompt_level_strict_acc",
+            "ifeval_strict",
             "https://github.com/google-research/google-research/tree/master/instruction_following_eval",
         ),
         "hexagon-gsm8k": ("math_reasoning", "exact_match", "https://github.com/openai/grade-school-math"),
