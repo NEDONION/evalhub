@@ -88,4 +88,17 @@ it("shows frozen suite reproducibility as a compact disclosure", () => {
   expect(screen.getByText("可复现性账本")).toBeInTheDocument();
   expect(screen.getByText("sha256:manifest")).toBeInTheDocument();
   expect(screen.getByText("hexagon-gsm8k: revision-1")).toBeInTheDocument();
+  expect(screen.getByText("hexagon-gsm8k: evalhub-v1")).toBeInTheDocument();
+});
+
+it("suppresses raw JSON for a Hexagon result without reproducibility", () => {
+  render(<EvaluationResultDetail result={{ ...result, dataset: "hexagon-gsm8k", reproducibility: undefined }} />);
+
+  expect(screen.queryByText("原始 JSON")).toBeNull();
+});
+
+it("keeps raw JSON for legacy non-Hexagon results", () => {
+  render(<EvaluationResultDetail result={result} />);
+
+  expect(screen.getByText("原始 JSON")).toBeInTheDocument();
 });

@@ -202,6 +202,8 @@ describe("EvaluationNodeInspector", () => {
           input: { input: "English prompt", reference: "hidden canonical solution" },
           result: {
             score: 0,
+            prediction: "Model completion",
+            raw_secret_result: "must not render",
             metadata: {
               input_zh: "中文辅助翻译",
               reference_zh: null,
@@ -233,7 +235,10 @@ describe("EvaluationNodeInspector", () => {
     expect(screen.getByText("中文辅助翻译")).toBeInTheDocument();
     expect(screen.getByText("EvalHub 中文辅助翻译，非官方译文")).toBeInTheDocument();
     expect(screen.getByText("HumanEval/7")).toBeInTheDocument();
+    expect(screen.getByText("模型回答")).toBeInTheDocument();
+    expect(screen.getByText("Model completion")).toBeInTheDocument();
     expect(screen.queryByText("hidden canonical solution")).toBeNull();
+    expect(screen.queryByText("must not render")).toBeNull();
     expect(getEvaluationNodeSamples).toHaveBeenCalledWith("task-1", humaneval.id, { limit: 20 });
   });
 });

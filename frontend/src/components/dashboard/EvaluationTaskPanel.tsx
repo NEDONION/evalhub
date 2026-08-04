@@ -390,7 +390,15 @@ function TaskDetail({
         />
       ) : null}
 
-      {task.result ? <EvaluationResultDetail result={task.result} /> : null}
+      {task.result ? (
+        <EvaluationResultDetail
+          result={task.result}
+          isHexagon={
+            task.request.suite_id === "evalhub-hexagon-v1" ||
+            Boolean(task.nodes?.some((node) => node.node_key.startsWith("benchmark:hexagon-")))
+          }
+        />
+      ) : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { CapabilityRadar } from "./CapabilityRadar";
 
 interface EvaluationResultDetailProps {
   result: EvaluationResult;
+  isHexagon?: boolean;
 }
 
 const difficultyLabels: Record<AgentDifficulty, string> = {
@@ -24,7 +25,7 @@ const difficultyLabels: Record<AgentDifficulty, string> = {
  * @param props 后端持久化的完整评测结果。
  * @returns 只属于当前任务详情的结果区，避免列表页一次展开大量原始数据。
  */
-export function EvaluationResultDetail({ result }: EvaluationResultDetailProps): JSX.Element {
+export function EvaluationResultDetail({ result, isHexagon = false }: EvaluationResultDetailProps): JSX.Element {
   return (
     <div className="border-t border-border">
       <div className="flex items-start justify-between gap-3 px-5 py-5 sm:px-6">
@@ -131,7 +132,7 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
         </div>
       ) : null}
 
-      {!result.reproducibility && result.dataset !== "hexagon-humaneval" ? (
+      {!isHexagonResult(result, isHexagon) ? (
         <details className="group">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-3 text-xs font-medium text-muted transition-colors hover:bg-slate-50 hover:text-ink sm:px-6">
             <span className="flex items-center gap-2">
@@ -157,6 +158,7 @@ function ReproducibilityLedger({
   reproducibility: NonNullable<EvaluationResult["reproducibility"]>;
 }): JSX.Element {
   const sourceRevisions = Object.entries(reproducibility.source_revisions || {});
+  const promptTemplates = Object.entries(reproducibility.prompt_template_versions || {});
   const promptConfig = Object.entries(reproducibility.generation_config || {});
 
   return (
@@ -168,9 +170,19 @@ function ReproducibilityLedger({
         <LedgerRow label="套件版本" value={reproducibility.suite_version} />
         <LedgerRow label="清单摘要" value={reproducibility.manifest_sha256} mono />
         <LedgerRow label="来源版本" value={sourceRevisions.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+        <LedgerRow label="提示模板" value={promptTemplates.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
         <LedgerRow label="生成配置" value={promptConfig.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
       </dl>
     </details>
+  );
+}
+
+function isHexagonResult(result: EvaluationResult, isHexagon: boolean): boolean {
+  return (
+    isHexagon ||
+    result.suite_id === "evalhub-hexagon-v1" ||
+    result.dataset.startsWith("hexagon-") ||
+    result.benchmark.includes("六边形")
   );
 }
 

@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from types import MethodType
 from typing import cast
 
-from evalhub.benchmarks import Capability
+from evalhub.benchmarks import Capability, ExecutorReadiness
 from evalhub.server import EvalHubRequestHandler
 from evalhub.tasks import (
     EvaluationNode,
@@ -518,7 +518,7 @@ def test_list_node_samples_preserves_cursor_and_failure_filter() -> None:
 
     assert status == 200
     assert response["samples"][0]["sample_key"] == "sample_5"
-    assert response["samples"][0]["last_error"] == {"message": "timeout"}
+    assert response["samples"][0]["last_error"] is None
     assert response["next_cursor"] == "4:sample_5"
 
 
@@ -536,8 +536,20 @@ def test_retry_failed_node_returns_pending_snapshot() -> None:
     assert response["node"]["status"] == "pending"
 
 
-def test_registry_endpoints_expose_real_readiness_without_false_availability() -> None:
+def test_registry_endpoints_expose_real_readiness_without_false_availability(monkeypatch) -> None:
     """Registry 应列出真实预设，并区分当前已接通与待配置执行器。"""
+    monkeypatch.setattr(
+        "evalhub.server.benchmark_readiness",
+        lambda spec: ExecutorReadiness(
+            ready=spec.executor.value == "native",
+            code="ready" if spec.executor.value == "native" else "executor_not_ready",
+            message=(
+                "lm_eval 执行器尚未配置"
+                if spec.executor.value == "lm_eval"
+                else "fixture readiness"
+            ),
+        ),
+    )
     service = FakeTaskService(task_fixture())
     benchmark_status, benchmark_response = call_handler(
         method="GET",
@@ -559,8 +571,20 @@ def test_registry_endpoints_expose_real_readiness_without_false_availability() -
     assert suite_response["suites"][0]["locally_runnable_count"] == 2
 
 
-def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness() -> None:
+def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness(monkeypatch) -> None:
     """Hexagon 套件应公开固定样本数、六维能力和每个成员的真实就绪状态。"""
+    monkeypatch.setattr(
+        "evalhub.server.benchmark_readiness",
+        lambda spec: ExecutorReadiness(
+            ready=spec.id != "hexagon-humaneval" and spec.executor.value == "native",
+            code=(
+                "ready"
+                if spec.id != "hexagon-humaneval" and spec.executor.value == "native"
+                else "executor_not_ready"
+            ),
+            message="fixture readiness",
+        ),
+    )
     status, response = call_handler(
         method="GET", path="/api/suites", service=FakeTaskService(task_fixture())
     )
@@ -586,9 +610,15 @@ def test_sample_checkpoint_exposes_only_safe_translation_and_source_metadata() -
         sample_index=6,
         status="failed",
         attempt_count=1,
-        input={"input": "English prompt", "reference": "hidden canonical solution"},
+        input={
+            "input": "English prompt",
+            "reference": "hidden canonical solution",
+            "test": "hidden test",
+            "env": "SECRET_ENV",
+        },
         result={
             "score": 0.0,
+            "prediction": "Model completion",
             "metadata": {
                 "input_zh": "中文题目",
                 "reference_zh": None,
@@ -599,12 +629,14 @@ def test_sample_checkpoint_exposes_only_safe_translation_and_source_metadata() -
             },
             "raw_secret_result": "never expose",
         },
+        last_error={"message": "traceback SECRET_TRACE", "test": "hidden test"},
     )
 
     response = sample_checkpoint(sample)
 
     assert response["result"] == {
         "score": 0.0,
+        "prediction": "Model completion",
         "metadata": {
             "input_zh": "中文题目",
             "reference_zh": None,
@@ -612,6 +644,8 @@ def test_sample_checkpoint_exposes_only_safe_translation_and_source_metadata() -
             "source_key": "HumanEval/7",
         },
     }
+    assert response["input"] == {"input": "English prompt"}
+    assert response["last_error"] is None
 
 
 def test_create_suite_evaluation_persists_suite_id() -> None:

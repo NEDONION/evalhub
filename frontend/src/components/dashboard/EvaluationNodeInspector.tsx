@@ -451,6 +451,7 @@ function formatTimestamp(value: string): string {
 function SampleEvidence({ sample }: { sample: EvaluationSampleCheckpoint }): JSX.Element {
   const metadata = sampleMetadata(sample.result?.metadata);
   const input = typeof sample.input.input === "string" ? sample.input.input : "—";
+  const prediction = typeof sample.result?.prediction === "string" ? sample.result.prediction : null;
   const score = typeof sample.result?.score === "number" ? formatScore(sample.result.score) : "—";
   const source = metadata?.source || "—";
   const sourceKey = metadata?.source_key || sample.sample_key;
@@ -462,6 +463,12 @@ function SampleEvidence({ sample }: { sample: EvaluationSampleCheckpoint }): JSX
         <span className="text-muted">得分 {score}</span>
       </div>
       <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-ink">{input}</p>
+      {prediction ? (
+        <div className="mt-3 border-l-2 border-slate-200 bg-slate-50/70 px-3 py-2.5 text-xs leading-5 text-slate-700">
+          <strong className="block font-medium text-ink">模型回答</strong>
+          <p className="mt-1 whitespace-pre-wrap">{prediction}</p>
+        </div>
+      ) : null}
       {metadata?.input_zh ? (
         <div className="mt-3 border-l-2 border-blue-200 bg-blue-50/60 px-3 py-2.5 text-xs leading-5 text-slate-700">
           <strong className="block font-medium text-ink">中文译文</strong>

@@ -179,6 +179,7 @@ export interface EvaluationResult {
   average_score: number;
   failed_sample_ids: string[];
   failed_examples: FailedExample[];
+  suite_id?: string | null;
   benchmark_version?: string;
   requested_difficulty?: AgentDifficulty;
   difficulty_report?: AgentDifficultyResult[];

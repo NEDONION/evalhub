@@ -18,6 +18,8 @@ from evalhub.tasks.performance import (
     PerformanceScope,
 )
 
+_MAX_PUBLIC_PREDICTION_LENGTH = 4096
+
 
 def model_performance_report(report: ModelPerformanceReport) -> dict[str, object]:
     """把模型成绩聚合报告转换为前端可直接消费的 JSON 结构。
@@ -296,13 +298,33 @@ def sample_checkpoint(sample: EvaluationSampleCheckpoint) -> dict[str, object]:
         "sample_index": sample.sample_index,
         "status": sample.status,
         "attempt_count": sample.attempt_count,
-        "input": sample.input,
+        "input": _safe_sample_input(sample.input),
         "result": _safe_sample_result(sample.result),
-        "last_error": sample.last_error,
+        "last_error": None,
         "created_at": sample.created_at.isoformat() if sample.created_at else None,
         "updated_at": sample.updated_at.isoformat() if sample.updated_at else None,
         "finished_at": sample.finished_at.isoformat() if sample.finished_at else None,
     }
+
+
+def _safe_sample_input(input_payload: dict[str, object]) -> dict[str, object]:
+    """白名单化样本输入，只保留可展示的英文题面和来源翻译元数据。
+
+    Args:
+        input_payload: 仓储保存的完整执行输入，可能包含参考答案或隐藏判题材料。
+
+    Returns:
+        仅包含 ``input`` 和安全 metadata 的公开输入字典，不透传 reference、环境或测试字段。
+    """
+    safe: dict[str, object] = {}
+    # 历史执行器有的使用 prompt 命名；统一到 input 让旧客户端继续读取同一字段。
+    value = input_payload.get("input", input_payload.get("prompt"))
+    if isinstance(value, str):
+        safe["input"] = value
+    metadata = _safe_sample_metadata(input_payload.get("metadata"))
+    if metadata:
+        safe["metadata"] = metadata
+    return safe
 
 
 def _safe_sample_result(result: dict[str, object] | None) -> dict[str, object] | None:
@@ -322,6 +344,10 @@ def _safe_sample_result(result: dict[str, object] | None) -> dict[str, object] |
         value = result.get(key)
         if isinstance(value, (str, int, float)) or value is None and key in result:
             safe[key] = value
+    prediction = result.get("prediction")
+    if isinstance(prediction, str):
+        # 回答本身是审计证据，但上限避免意外把超大模型输出嵌入一个样本页面。
+        safe["prediction"] = prediction[:_MAX_PUBLIC_PREDICTION_LENGTH]
     metadata = _safe_sample_metadata(result.get("metadata"))
     if metadata:
         safe["metadata"] = metadata
