@@ -12,6 +12,10 @@ from evalhub.benchmarks import (
     get_suite_spec,
     suite_registry,
 )
+from evalhub.benchmarks.harness import (
+    benchmark_readiness,
+    prepare_harness_benchmark,
+)
 from evalhub.cli import run_real_benchmark
 from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
 from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
@@ -33,6 +37,14 @@ from evalhub.tasks.presentation import (
 )
 
 OLLAMA_PULL_MANAGER = OllamaPullManager()
+CAPABILITY_LABELS = {
+    "knowledge": "知识",
+    "instruction_following": "指令遵循",
+    "mathematics": "数学",
+    "reasoning": "综合推理",
+    "coding": "代码",
+    "safety_trust": "安全可信",
+}
 
 
 def frontend_directory(project_root: Path) -> Path:
@@ -269,14 +281,20 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 return
             # 准备动作在成功前不创建评测任务；失败时保留已有的已验证缓存。
             try:
-                # 下载和缓存由数据集层执行，响应只暴露状态、名称和最终本地路径。
+                spec = get_benchmark_spec(dataset)
                 was_prepared = _dataset_is_prepared(dataset)
-                path = prepare_dataset(dataset, force=force)
-                samples = load_samples(
-                    dataset,
-                    limit=100000,
-                    subject="abstract_algebra" if dataset == "mmlu" else None,
-                )
+                if spec.executor == ExecutorKind.NATIVE:
+                    path = prepare_dataset(dataset, force=force)
+                    samples = load_samples(
+                        dataset,
+                        limit=100000,
+                        subject="abstract_algebra" if dataset == "mmlu" else None,
+                    )
+                    sample_count = len(samples)
+                else:
+                    # Harness validate 负责官方任务和数据缓存，代码任务同时验证 Docker 边界。
+                    path = prepare_harness_benchmark(dataset, force=force)
+                    sample_count = spec.expected_sample_count
                 operation = "updated" if force and was_prepared else "cached"
                 self._json(
                     {
@@ -284,7 +302,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                         "dataset": dataset,
                         "path": str(path),
                         "operation": operation,
-                        "sample_count": len(samples),
+                        "sample_count": sample_count,
                     }
                 )
             except Exception as exc:
@@ -356,37 +374,62 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             含稳定目录顺序、公开来源、本地路径、缓存状态和样本数量的响应对象。
             损坏缓存仍保留 `prepared` 状态，但样本数返回 ``None`` 提示用户更新。
         """
-        # 按目录稳定顺序构建新列表，避免修改不可变的数据集规格对象。
+        # Registry 顺序与 Suite、评测表单保持一致；原生目录只补充专属下载元数据。
         datasets = []
-        for spec in dataset_catalog().values():
-            path = Path(spec.local_path)
+        native_catalog = dataset_catalog()
+        for benchmark in benchmark_registry().values():
+            native = native_catalog.get(benchmark.id)
+            local_path = (
+                native.local_path
+                if native is not None
+                else f".runtime/benchmarks/{benchmark.id}.json"
+            )
+            path = Path(local_path)
             prepared = path.exists() and (path.is_file() or any(path.glob("*")))
             # 未准备的数据集不尝试加载；准备完成后尽可能计算控制台展示用样本数。
-            sample_count = None
-            if prepared:
+            sample_count = benchmark.expected_sample_count
+            if prepared and native is not None:
                 try:
                     # 当前公开测试集规模可控，上限用于防止异常缓存导致无界读取。
                     sample_count = len(
                         load_samples(
-                            spec.name,
+                            benchmark.id,
                             limit=100000,
-                            subject="abstract_algebra" if spec.name == "mmlu" else None,
+                            subject=(
+                                "abstract_algebra" if benchmark.id == "mmlu" else None
+                            ),
                         )
                     )
                 except Exception:
                     # 状态接口应继续展示损坏或不完整的数据集，由空样本数提示需要重新准备。
                     sample_count = None
+            locally_runnable, readiness_reason = benchmark_readiness(benchmark)
             # 响应同时包含来源与本地信息，前端无需再拼接目录规格。
             datasets.append(
                 {
-                    "name": spec.name,
-                    "display_name": spec.display_name,
-                    "task_type": spec.task_type,
-                    "evaluator_type": spec.evaluator_type,
-                    "homepage": spec.homepage,
-                    "source_url": spec.source_url,
-                    "local_path": spec.local_path,
-                    "description": spec.description,
+                    "name": benchmark.id,
+                    "display_name": benchmark.display_name,
+                    "task_type": (
+                        native.task_type if native is not None else benchmark.capability.value
+                    ),
+                    "evaluator_type": (
+                        native.evaluator_type if native is not None else benchmark.metric
+                    ),
+                    "homepage": benchmark.homepage,
+                    "source_url": (
+                        native.source_url if native is not None else benchmark.dataset_source
+                    ),
+                    "local_path": local_path,
+                    "description": (
+                        native.description
+                        if native is not None
+                        else f"{benchmark.display_name} 官方公开 Benchmark。"
+                    ),
+                    "executor": benchmark.executor.value,
+                    "capability": benchmark.capability.value,
+                    "capability_label": CAPABILITY_LABELS[benchmark.capability.value],
+                    "locally_runnable": locally_runnable,
+                    "readiness_reason": readiness_reason,
                     "prepared": prepared,
                     "sample_count": sample_count,
                 }
@@ -477,8 +520,11 @@ def _dataset_is_prepared(dataset: str) -> bool:
     Raises:
         KeyError: 数据集名称未在公开目录注册。
     """
-    spec = dataset_catalog()[dataset]
-    path = Path(spec.local_path)
+    benchmark = get_benchmark_spec(dataset)
+    if benchmark.executor == ExecutorKind.NATIVE:
+        path = Path(dataset_catalog()[dataset].local_path)
+    else:
+        path = Path(f".runtime/benchmarks/{dataset}.json")
     return path.exists() and (path.is_file() or any(path.glob("*")))
 
 
@@ -488,27 +534,10 @@ def _benchmark_catalog() -> dict[str, object]:
     Returns:
         包含稳定 Benchmark 元数据、本地可运行标记和不可用原因的 JSON 对象。
     """
-    # 中文标签属于 API 展示契约，避免前端重复维护能力枚举的翻译映射。
-    capability_labels = {
-        "knowledge": "知识",
-        "instruction_following": "指令遵循",
-        "mathematics": "数学",
-        "reasoning": "综合推理",
-        "coding": "代码",
-        "safety_trust": "安全可信",
-    }
     benchmarks = []
-    # Registry 顺序即套件展示顺序；只把已经接通的原生执行器标记为可运行。
+    # Registry 顺序即套件展示顺序；就绪判断复用实际执行边界探测。
     for spec in benchmark_registry().values():
-        locally_runnable = spec.executor == ExecutorKind.NATIVE
-        reason = None
-        if not locally_runnable:
-            # 未接通执行器仍公开规格，但必须返回可诊断原因，不能伪装成本地可用。
-            executor_name = {
-                ExecutorKind.LM_EVAL: "lm_eval",
-                ExecutorKind.SANDBOXED_CODE: "代码沙箱",
-            }[spec.executor]
-            reason = f"{executor_name} 执行器尚未配置"
+        locally_runnable, reason = benchmark_readiness(spec)
         # 显式选择公开字段，防止内部生成配置或枚举表示意外改变 HTTP 契约。
         benchmarks.append(
             {
@@ -516,7 +545,7 @@ def _benchmark_catalog() -> dict[str, object]:
                 "version": spec.version,
                 "display_name": spec.display_name,
                 "capability": spec.capability.value,
-                "capability_label": capability_labels[spec.capability.value],
+                "capability_label": CAPABILITY_LABELS[spec.capability.value],
                 "dataset_source": spec.dataset_source,
                 "dataset_revision": spec.dataset_revision,
                 "homepage": spec.homepage,
@@ -535,12 +564,11 @@ def _suite_catalog() -> dict[str, object]:
     Returns:
         包含套件版本、成员 ID、总数和本地可运行数量的 JSON 对象。
     """
-    benchmarks = benchmark_registry()
     suites = []
     # 每次从同一 Registry 计算计数，避免套件响应与 Benchmark 就绪状态漂移。
     for spec in suite_registry().values():
         runnable_count = sum(
-            benchmarks[item].executor == ExecutorKind.NATIVE for item in spec.benchmark_ids
+            benchmark_readiness(get_benchmark_spec(item))[0] for item in spec.benchmark_ids
         )
         # 套件可以部分就绪，因此同时暴露总数和可运行数供调用方明确提示。
         suites.append(

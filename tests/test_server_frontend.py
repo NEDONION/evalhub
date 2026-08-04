@@ -228,6 +228,33 @@ class DatasetPrepareRouteTests(unittest.TestCase):
         self.assertEqual(body, {"ok": False, "error": "force must be a boolean"})
         prepare.assert_not_called()
 
+    def test_external_benchmark_prepare_uses_harness_asset_loader(self) -> None:
+        """MMLU-Pro 等外部数据集必须通过 Harness 验证而非原生下载器。"""
+        marker = Path(".runtime/benchmarks/mmlu-pro.json")
+        with (
+            patch("evalhub.server._dataset_is_prepared", return_value=False),
+            patch(
+                "evalhub.server.prepare_harness_benchmark",
+                return_value=marker,
+                create=True,
+            ) as prepare,
+            patch("evalhub.server.prepare_dataset") as native_prepare,
+            running_server(FakePullManager()) as port,
+        ):
+            status, body = request_json(
+                port,
+                "POST",
+                "/api/datasets/prepare",
+                {"dataset": "mmlu-pro", "force": False},
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(body["dataset"], "mmlu-pro")
+        self.assertEqual(body["path"], str(marker))
+        self.assertIsNone(body["sample_count"])
+        prepare.assert_called_once_with("mmlu-pro", force=False)
+        native_prepare.assert_not_called()
+
 
 if __name__ == "__main__":
     # 支持直接运行该文件，快速验证本地静态资源目录约束。

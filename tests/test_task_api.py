@@ -6,6 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from types import MethodType
 from typing import cast
+from unittest.mock import patch
 
 from evalhub.server import EvalHubRequestHandler
 from evalhub.tasks import (
@@ -536,26 +537,51 @@ def test_retry_failed_node_returns_pending_snapshot() -> None:
 
 
 def test_registry_endpoints_expose_real_readiness_without_false_availability() -> None:
-    """Registry 应列出真实预设，并区分当前已接通与待配置执行器。"""
+    """全部依赖就绪时 Registry 与 Suite 应共同报告 13 项本地可运行。"""
     service = FakeTaskService(task_fixture())
-    benchmark_status, benchmark_response = call_handler(
-        method="GET",
-        path="/api/benchmarks",
-        service=service,
-    )
-    suite_status, suite_response = call_handler(
-        method="GET",
-        path="/api/suites",
-        service=service,
-    )
+    with patch(
+        "evalhub.server.benchmark_readiness", return_value=(True, None), create=True
+    ):
+        benchmark_status, benchmark_response = call_handler(
+            method="GET",
+            path="/api/benchmarks",
+            service=service,
+        )
+        suite_status, suite_response = call_handler(
+            method="GET",
+            path="/api/suites",
+            service=service,
+        )
 
     benchmarks = {item["id"]: item for item in benchmark_response["benchmarks"]}
     assert benchmark_status == suite_status == 200
+    assert len(benchmarks) == 13
     assert benchmarks["gsm8k"]["locally_runnable"] is True
-    assert benchmarks["mmlu-pro"]["locally_runnable"] is False
-    assert benchmarks["mmlu-pro"]["readiness_reason"] == "lm_eval 执行器尚未配置"
+    assert benchmarks["mmlu-pro"]["locally_runnable"] is True
+    assert benchmarks["humaneval"]["locally_runnable"] is True
     assert suite_response["suites"][0]["benchmark_count"] == 13
-    assert suite_response["suites"][0]["locally_runnable_count"] == 2
+    assert suite_response["suites"][0]["locally_runnable_count"] == 13
+
+
+def test_dataset_endpoint_lists_all_thirteen_registry_assets() -> None:
+    """资产页数据源必须与行业套件一致，不能继续只返回原生两项。"""
+    service = FakeTaskService(task_fixture())
+    with patch(
+        "evalhub.server.benchmark_readiness", return_value=(True, None), create=True
+    ):
+        status, response = call_handler(
+            method="GET",
+            path="/api/datasets",
+            service=service,
+        )
+
+    datasets = {item["name"]: item for item in response["datasets"]}
+    assert status == 200
+    assert len(datasets) == 13
+    assert datasets["gsm8k"]["executor"] == "native"
+    assert datasets["mmlu-pro"]["executor"] == "lm_eval"
+    assert datasets["humaneval"]["executor"] == "sandboxed_code"
+    assert datasets["bbq"]["capability_label"] == "安全可信"
 
 
 def test_create_suite_evaluation_persists_suite_id() -> None:
