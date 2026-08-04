@@ -47,7 +47,7 @@ def test_harness_result_converts_group_samples_and_metric() -> None:
     """Harness 子任务样本应转换为现有 SQLite 回调和统一 Benchmark 摘要。"""
     spec = get_benchmark_spec("mmlu-pro")
     raw = {
-        "results": {"mmlu_pro": {"acc,none": 0.75}},
+        "results": {"mmlu_pro": {"exact_match,custom-extract": 0.75}},
         "samples": {
             "mmlu_pro_biology": [
                 {
@@ -55,7 +55,7 @@ def test_harness_result_converts_group_samples_and_metric() -> None:
                     "doc": {"question": "Cell?"},
                     "target": "A",
                     "filtered_resps": ["A"],
-                    "acc": 1.0,
+                    "exact_match": 1.0,
                 }
             ],
             "mmlu_pro_math": [
@@ -64,7 +64,7 @@ def test_harness_result_converts_group_samples_and_metric() -> None:
                     "doc": {"question": "1+1?"},
                     "target": "B",
                     "filtered_resps": ["C"],
-                    "acc": 0.0,
+                    "exact_match": 0.0,
                 }
             ],
         },
@@ -128,7 +128,7 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
         """记录传给官方 Harness 的参数并返回一条成功样本。"""
         observed.update(kwargs)
         return {
-            "results": {"arc_challenge": {"acc,none": 1.0}},
+            "results": {"arc_challenge": {"acc_norm,none": 1.0}},
             "samples": {
                 "arc_challenge": [
                     {
@@ -136,7 +136,7 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
                         "doc": {"question": "Q"},
                         "target": "A",
                         "filtered_resps": ["A"],
-                        "acc": 1.0,
+                        "acc_norm": 1.0,
                     }
                 ]
             },

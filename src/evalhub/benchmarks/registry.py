@@ -29,7 +29,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "TIGER-Lab/MMLU-Pro",
         ExecutorKind.LM_EVAL,
         "mmlu_pro",
-        "acc",
+        "exact_match",
         0.1,
     ),
     (
@@ -89,7 +89,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "allenai/ai2_arc",
         ExecutorKind.LM_EVAL,
         "arc_challenge",
-        "acc",
+        "acc_norm",
         0.25,
     ),
     (
@@ -109,7 +109,7 @@ CORE_ROWS: tuple[BenchmarkRow, ...] = (
         "Rowan/hellaswag",
         ExecutorKind.LM_EVAL,
         "hellaswag",
-        "acc",
+        "acc_norm",
         0.25,
     ),
     (

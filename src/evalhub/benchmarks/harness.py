@@ -68,7 +68,8 @@ def _lm_eval_installed() -> bool:
     Returns:
         当前 Python 环境能找到 ``lm_eval`` 时返回 ``True``。
     """
-    return importlib.util.find_spec("lm_eval") is not None
+    packages = ("lm_eval", "transformers")
+    return all(importlib.util.find_spec(package) is not None for package in packages)
 
 
 def _docker_ready() -> bool:

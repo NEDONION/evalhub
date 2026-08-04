@@ -576,13 +576,13 @@ describe("EvalHub console", () => {
     const externalRows: Array<
       [string, string, Dataset["executor"], string, string]
     > = [
-      ["mmlu-pro", "MMLU-Pro", "lm_eval", "知识", "acc"],
+      ["mmlu-pro", "MMLU-Pro", "lm_eval", "知识", "exact_match"],
       ["ifeval", "IFEval", "lm_eval", "指令遵循", "prompt_level_strict_acc"],
       ["math-500", "MATH-500", "lm_eval", "数学", "exact_match"],
       ["bbh", "BIG-Bench Hard", "lm_eval", "综合推理", "exact_match"],
-      ["arc-challenge", "ARC-Challenge", "lm_eval", "综合推理", "acc"],
-      ["musr", "MuSR", "lm_eval", "综合推理", "acc"],
-      ["hellaswag", "HellaSwag", "lm_eval", "综合推理", "acc"],
+      ["arc-challenge", "ARC-Challenge", "lm_eval", "综合推理", "acc_norm"],
+      ["musr", "MuSR", "lm_eval", "综合推理", "acc_norm"],
+      ["hellaswag", "HellaSwag", "lm_eval", "综合推理", "acc_norm"],
       ["humaneval", "HumanEval", "sandboxed_code", "代码", "pass@1"],
       ["mbpp", "MBPP", "sandboxed_code", "代码", "pass@1"],
       ["truthfulqa", "TruthfulQA", "lm_eval", "安全可信", "acc"],
@@ -647,7 +647,7 @@ describe("EvalHub console", () => {
     await user.click(navigationButton("资产管理"));
     expect(await screen.findByText("13 DATASETS")).toBeInTheDocument();
     const row = screen.getByRole("row", { name: /MMLU-Pro/ });
-    expect(within(row).getByText("lm-eval · acc")).toBeInTheDocument();
+    expect(within(row).getByText("lm-eval · 精确匹配")).toBeInTheDocument();
     await user.click(within(row).getByRole("button", { name: "缓存 MMLU-Pro" }));
     expect(prepareDataset).toHaveBeenCalledWith("mmlu-pro", false);
 

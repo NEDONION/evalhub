@@ -26,7 +26,7 @@ if [ ! -d "frontend/node_modules" ]; then
   exit 1
 fi
 
-if ! "${PYTHON}" -c "import lm_eval" >/dev/null 2>&1; then
+if ! "${PYTHON}" -c "import lm_eval, transformers" >/dev/null 2>&1; then
   echo "Installing official Benchmark runtime..."
   "${PYTHON}" -m pip install -e ".[benchmarks]"
 fi
