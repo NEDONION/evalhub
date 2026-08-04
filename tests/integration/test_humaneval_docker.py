@@ -108,3 +108,70 @@ def test_candidate_cannot_forge_pass_by_exiting_with_old_success_code() -> None:
 
     assert result.passed is False
     assert result.reason == "verification_failed"
+
+
+@pytest.mark.parametrize("signal_name", ["SIGKILL", "SIGSTOP"])
+def test_candidate_cannot_signal_trusted_controller(signal_name: str) -> None:
+    """候选向父 controller 发送不可捕获信号时必须得到 EPERM，容器仍返回可信 verdict。
+
+    Args:
+        signal_name: 不能由 Python handler 捕获或忽略的终止、暂停信号名称。
+    """
+    problem = HumanEvalProblem(
+        sample_id=f"integration_signal_{signal_name.lower()}_humaneval",
+        source_key=f"HumanEval/integration-signal-{signal_name.lower()}",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import os, signal\n"
+        "    try:\n"
+        f"        os.kill(os.getppid(), signal.{signal_name})\n"
+        "    except PermissionError:\n"
+        "        return a + b\n"
+        "    return -1\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is True
+    assert result.reason is None
+
+
+def test_candidate_cannot_fork_and_create_an_escaping_session() -> None:
+    """候选 fork/setsid 逃逸必须被 worker 本地策略拒绝，隐藏测试仍能完成判定。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_process_escape_humaneval",
+        source_key="HumanEval/integration-process-escape",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import os\n"
+        "    try:\n"
+        "        child = os.fork()\n"
+        "    except OSError:\n"
+        "        try:\n"
+        "            os.setsid()\n"
+        "        except PermissionError:\n"
+        "            return a + b\n"
+        "        return -1\n"
+        "    if child == 0:\n"
+        "        try:\n"
+        "            os.setsid()\n"
+        "        finally:\n"
+        "            os._exit(0)\n"
+        "    os.waitpid(child, 0)\n"
+        "    return -1\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is True
+    assert result.reason is None

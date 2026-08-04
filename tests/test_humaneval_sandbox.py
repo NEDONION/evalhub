@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import gzip
 import hashlib
 import importlib.util
@@ -35,6 +36,27 @@ _IMAGE_INSPECT_OUTPUT = (
 )
 
 
+def _confirmed_cleanup_result(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """模拟 kill/rm 已让命名容器消失，且 Docker daemon 仍可可靠查询。
+
+    Args:
+        command: 宿主清理阶段的 kill、rm、daemon version 或 container inspect argv。
+
+    Returns:
+        kill/rm 可竞态失败，daemon 探测成功，最终容器检查以非零表示确实不存在。
+
+    Raises:
+        AssertionError: 调用方传入了清理确认协议之外的命令。
+    """
+    if command[1] in {"kill", "rm"}:
+        return subprocess.CompletedProcess(command, 1, "", "")
+    if command[1] == "version":
+        return subprocess.CompletedProcess(command, 0, "26.1", "")
+    if command[1:3] == ["container", "inspect"]:
+        return subprocess.CompletedProcess(command, 1, "", "")
+    raise AssertionError(f"unexpected cleanup command: {command}")
+
+
 def _load_verifier_controller() -> ModuleType:
     """只导入可信 verifier controller，测试不会调用或执行任何候选源码。
 
@@ -48,6 +70,24 @@ def _load_verifier_controller() -> ModuleType:
     spec = importlib.util.spec_from_file_location("hexagon_humaneval_verify", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load HumanEval verifier controller")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_verifier_worker() -> ModuleType:
+    """只导入候选 worker 的安全策略构造函数，不调用 ``main`` 或执行候选源码。
+
+    Returns:
+        从 Docker 构建上下文加载且尚未安装进程策略的 worker 模块。
+
+    Raises:
+        RuntimeError: Python 无法为 worker 文件创建导入规格时抛出。
+    """
+    path = Path("docker/hexagon-humaneval/worker.py")
+    spec = importlib.util.spec_from_file_location("hexagon_humaneval_worker", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load HumanEval verifier worker")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -323,6 +363,113 @@ def test_verifier_controller_classifies_worker_cleanup_failure_as_infrastructure
     assert "SECRET_KERNEL_DETAIL" not in str(raised.value)
 
 
+@pytest.mark.parametrize(
+    ("machine", "expected_arch"),
+    [("x86_64", 0xC000003E), ("aarch64", 0xC00000B7)],
+)
+def test_worker_seccomp_filter_blocks_signal_process_and_session_syscalls(
+    machine: str, expected_arch: int
+) -> None:
+    """两种镜像架构都必须先校验 arch，再以 EPERM 拒绝进程、信号和会话逃逸。
+
+    Args:
+        machine: 固定镜像允许运行的 Linux 机器架构名称。
+        expected_arch: seccomp_data 中必须匹配的 Linux audit arch 常量。
+    """
+    worker = _load_verifier_worker()
+    arch, syscalls = worker._seccomp_policy(machine)
+    required = {
+        "kill",
+        "tkill",
+        "tgkill",
+        "pidfd_send_signal",
+        "fork",
+        "vfork",
+        "clone",
+        "clone3",
+        "setsid",
+        "setpgid",
+    }
+    instructions = worker._seccomp_instructions(machine)
+
+    assert arch == expected_arch
+    assert required <= set(syscalls)
+    assert instructions[:3] == (
+        (0x20, 0, 0, 4),
+        (0x15, 1, 0, expected_arch),
+        (0x06, 0, 0, 0x80000000),
+    )
+    if machine == "x86_64":
+        assert instructions[4:6] == (
+            (0x35, 0, 1, 0x40000000),
+            (0x06, 0, 0, 0x00050000 | errno.EPERM),
+        )
+    # 每个实际 syscall 编号后都必须紧邻 EPERM 返回；最后一条才允许其他系统调用。
+    for syscall_number in set(syscalls.values()):
+        index = instructions.index((0x15, 0, 1, syscall_number))
+        assert instructions[index + 1] == (0x06, 0, 0, 0x00050000 | errno.EPERM)
+    assert instructions[-1] == (0x06, 0, 0, 0x7FFF0000)
+
+
+def test_worker_seccomp_policy_fails_closed_on_unsupported_architecture() -> None:
+    """未知 Linux 架构不得退化为无过滤候选执行。"""
+    worker = _load_verifier_worker()
+
+    with pytest.raises(OSError, match="unsupported worker architecture"):
+        worker._seccomp_policy("riscv64")
+
+
+def test_worker_seccomp_installation_failure_is_fatal() -> None:
+    """no-new-privileges 成功但 seccomp 安装失败时 worker 必须得到可失败关闭的 OSError。"""
+    worker = _load_verifier_worker()
+    calls: list[tuple[object, ...]] = []
+
+    def prctl(*args: object) -> int:
+        """记录两个 prctl 阶段，并只拒绝第二个 seccomp filter 安装。
+
+        Args:
+            *args: worker 传给 Linux prctl 的固定操作和参数。
+
+        Returns:
+            第一次返回零，第二次返回负一以模拟内核拒绝过滤器。
+        """
+        calls.append(args)
+        return 0 if len(calls) == 1 else -1
+
+    with pytest.raises(OSError, match="cannot install worker seccomp policy"):
+        worker._install_seccomp_policy(
+            machine="x86_64",
+            prctl=prctl,
+            errno_reader=lambda: errno.EPERM,
+        )
+
+    assert calls[0] == (38, 1, 0, 0, 0)
+    assert calls[1][0:2] == (22, 2)
+    assert getattr(calls[1][2], "_obj", None) is not None
+
+
+def test_worker_resource_limits_prevent_new_processes_after_spawn() -> None:
+    """worker 启动后必须把文件大小和用户进程数硬限制降到不可恢复的固定值。"""
+    worker = _load_verifier_worker()
+    calls: list[tuple[int, tuple[int, int]]] = []
+
+    def limit_setter(resource_id: int, limits: tuple[int, int]) -> None:
+        """记录 worker 安装的资源硬限制，不修改测试进程本身。
+
+        Args:
+            resource_id: Python ``resource`` 模块的限制类型常量。
+            limits: 同时写入的软限制和硬限制。
+        """
+        calls.append((resource_id, limits))
+
+    worker._limit_worker_resources(limit_setter=limit_setter)
+
+    assert calls == [
+        (worker.resource.RLIMIT_FSIZE, (64 * 1024, 64 * 1024)),
+        (worker.resource.RLIMIT_NPROC, (1, 1)),
+    ]
+
+
 def test_docker_command_has_fixed_isolation_and_no_host_mount() -> None:
     """Docker 命令必须禁网、只读、降权、限额且不允许任何宿主挂载。"""
     command = DockerHumanEvalSandbox().command(
@@ -435,8 +582,11 @@ def test_sandbox_failures_are_closed_and_do_not_echo_process_output(
         del kwargs
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
-        if command[1] in {"kill", "rm"}:
-            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
@@ -452,12 +602,12 @@ def test_sandbox_failures_are_closed_and_do_not_echo_process_output(
     assert len(str(raised.value)) <= 32
 
 
-def test_sandbox_timeout_kills_and_removes_named_container() -> None:
-    """宿主硬超时必须按 controller 生成的名字先 kill 再 rm，且始终抛出基础设施异常。"""
+def test_sandbox_timeout_kills_removes_and_confirms_named_container_absent() -> None:
+    """宿主硬超时必须 kill/rm，并在 daemon 可达时确认命名容器已经不存在。"""
     calls: list[list[str]] = []
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        """模拟容器超时并记录后续两条幂等清理命令。
+        """模拟容器超时并记录后续清理与可达性确认命令。
 
         Args:
             command: 镜像探测、容器执行或固定名字清理命令。
@@ -473,8 +623,11 @@ def test_sandbox_timeout_kills_and_removes_named_container() -> None:
         calls.append(command)
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
-        if command[1] in {"kill", "rm"}:
-            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         raise subprocess.TimeoutExpired(command, 10, output="SECRET_HIDDEN_TEST")
 
     sandbox = DockerHumanEvalSandbox(
@@ -483,10 +636,125 @@ def test_sandbox_timeout_kills_and_removes_named_container() -> None:
     with pytest.raises(SandboxInfrastructureError, match="^timeout$"):
         sandbox.run(_problem(), "    return 1\n")
 
-    assert calls[-2:] == [
+    assert calls[-4:] == [
         ["docker", "kill", _CONTAINER_NAME],
         ["docker", "rm", "-f", _CONTAINER_NAME],
+        ["docker", "version", "--format", "{{.Server.Version}}"],
+        [
+            "docker",
+            "container",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            _CONTAINER_NAME,
+        ],
     ]
+
+
+def test_sandbox_nonzero_exit_cleans_and_confirms_named_container_absent() -> None:
+    """Docker run 非零退出也必须完成并确认命名容器清理，再报告原始沙箱故障。"""
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """让固定镜像可信、容器执行失败，并模拟清理后容器确实不存在。
+
+        Args:
+            command: 镜像检查、容器执行或清理确认命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            当前阶段对应的固定进程结果。
+        """
+        del kwargs
+        calls.append(command)
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] == "run":
+            return subprocess.CompletedProcess(command, 1, "SECRET_HIDDEN_TEST", "")
+        return _confirmed_cleanup_result(command)
+
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError, match="^sandbox_failed$"):
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert calls[-4:] == [
+        ["docker", "kill", _CONTAINER_NAME],
+        ["docker", "rm", "-f", _CONTAINER_NAME],
+        ["docker", "version", "--format", "{{.Server.Version}}"],
+        [
+            "docker",
+            "container",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            _CONTAINER_NAME,
+        ],
+    ]
+
+
+def test_sandbox_escalates_when_abnormal_cleanup_cannot_be_confirmed() -> None:
+    """异常容器路径若连 daemon 可达性都无法确认，必须升级为 cleanup_failed。"""
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """模拟容器非零、kill/rm 失败且随后 Docker daemon 不可达。
+
+        Args:
+            command: 镜像检查、容器执行或清理阶段命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            镜像检查成功，其他命令均以非零状态失败。
+        """
+        del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        return subprocess.CompletedProcess(command, 1, "SECRET_DAEMON_DETAIL", "")
+
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError, match="^cleanup_failed$") as raised:
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert "SECRET_DAEMON_DETAIL" not in str(raised.value)
+
+
+def test_sandbox_cleanup_still_removes_after_kill_subprocess_exception() -> None:
+    """kill 命令自身抛出 subprocess 异常时仍必须继续 rm 并确认容器已经消失。"""
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """模拟 Docker run 非零与 kill 异常，其余清理确认步骤成功。
+
+        Args:
+            command: 镜像检查、容器执行或清理确认命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            镜像检查、rm 和清理确认阶段的固定结果。
+
+        Raises:
+            subprocess.SubprocessError: kill 阶段模拟 Docker CLI 内部失败。
+        """
+        del kwargs
+        calls.append(command)
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] == "run":
+            return subprocess.CompletedProcess(command, 1, "", "")
+        if command[1] == "kill":
+            raise subprocess.SubprocessError("SECRET_KILL_DETAIL")
+        return _confirmed_cleanup_result(command)
+
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError, match="^sandbox_failed$"):
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert ["docker", "rm", "-f", _CONTAINER_NAME] in calls
 
 
 @pytest.mark.parametrize(
@@ -545,6 +813,11 @@ def test_sandbox_rejects_unexpected_verifier_fields() -> None:
         del kwargs
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         return subprocess.CompletedProcess(
             command,
             0,
@@ -573,6 +846,11 @@ def test_sandbox_rejects_non_string_failure_reason_as_infrastructure_error() -> 
         del kwargs
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         return subprocess.CompletedProcess(command, 0, '{"passed":false,"reason":[]}', "")
 
     sandbox = DockerHumanEvalSandbox(command_runner=runner)
@@ -601,6 +879,11 @@ def test_sandbox_scores_only_genuine_verifier_failures_as_zero(reason: str) -> N
         del kwargs
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         output = json.dumps({"passed": False, "reason": reason})
         return subprocess.CompletedProcess(command, 0, output, "")
 
@@ -630,6 +913,11 @@ def test_sandbox_treats_verifier_infrastructure_reasons_as_exceptions(reason: st
         del kwargs
         if command[1:3] == ["image", "inspect"]:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm", "version"} or command[1:3] == [
+            "container",
+            "inspect",
+        ]:
+            return _confirmed_cleanup_result(command)
         output = json.dumps({"passed": False, "reason": reason})
         return subprocess.CompletedProcess(command, 0, output, "")
 

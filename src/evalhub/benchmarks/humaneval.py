@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, NoReturn, Protocol
 
 from evalhub.adapters.base import ModelAdapter
 
@@ -169,27 +169,56 @@ class DockerHumanEvalSandbox:
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
-            self._cleanup_container(container_name)
-            raise SandboxInfrastructureError("timeout") from exc
+            self._raise_after_cleanup(container_name, "timeout", exc)
         except UnicodeError as exc:
-            raise SandboxInfrastructureError("invalid_result") from exc
+            self._raise_after_cleanup(container_name, "invalid_result", exc)
         except OSError as exc:
-            raise SandboxInfrastructureError("executor_not_ready") from exc
+            self._raise_after_cleanup(container_name, "executor_not_ready", exc)
+        except subprocess.SubprocessError as exc:
+            self._raise_after_cleanup(container_name, "sandbox_failed", exc)
         if completed.returncode != 0:
-            raise SandboxInfrastructureError("sandbox_failed")
-        return _parse_sandbox_result(completed.stdout)
+            self._raise_after_cleanup(container_name, "sandbox_failed")
+        try:
+            return _parse_sandbox_result(completed.stdout)
+        except SandboxInfrastructureError as exc:
+            self._raise_after_cleanup(container_name, exc.code, exc)
 
-    def _cleanup_container(self, container_name: str) -> None:
-        """在宿主硬超时后按固定名字 kill 并强制 rm，容忍并发退出竞态。
+    def _raise_after_cleanup(
+        self,
+        container_name: str,
+        code: str,
+        cause: BaseException | None = None,
+    ) -> NoReturn:
+        """确认异常容器已消失后抛出原始固定故障码，清理不可证实时升级。
 
         Args:
-            container_name: 本次运行前由 controller 生成并写入 ``--name`` 的名字。
+            container_name: 当前异常 Docker run 使用的 controller 生成名称。
+            code: 清理确认成功后应向调用方报告的原始固定状态码。
+            cause: 可选的宿主异常，仅作为内部因果链且不会进入异常文本。
+
+        Raises:
+            SandboxInfrastructureError: 始终抛出原始故障或更高优先级的清理故障。
+        """
+        self._cleanup_container(container_name)
+        error = SandboxInfrastructureError(code)
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def _cleanup_container(self, container_name: str) -> None:
+        """kill/rm 异常命名容器，并确认 daemon 可达且容器确实不存在。
+
+        Args:
+            container_name: 本次异常运行前由 controller 生成并写入 ``--name`` 的名字。
+
+        Raises:
+            SandboxInfrastructureError: daemon 不可达、检查失败或容器仍存在时抛出。
         """
         commands = (
             ["docker", "kill", container_name],
             ["docker", "rm", "-f", container_name],
         )
-        # 两步都必须尝试；自动删除或先行退出导致的非零状态只是幂等清理竞态。
+        # 两步都必须尝试；返回码稍后由独立 daemon 与容器存在性探测消除歧义。
         for command in commands:
             try:
                 self._command_runner(
@@ -199,8 +228,43 @@ class DockerHumanEvalSandbox:
                     timeout=5,
                     check=False,
                 )
-            except (OSError, subprocess.TimeoutExpired, UnicodeError):
+            except (OSError, subprocess.SubprocessError, UnicodeError):
                 continue
+
+        # daemon 必须在短超时内响应，否则 inspect 非零不能证明是“容器不存在”。
+        try:
+            daemon = self._command_runner(
+                ["docker", "version", "--format", "{{.Server.Version}}"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise SandboxInfrastructureError("cleanup_failed") from exc
+        if daemon.returncode != 0:
+            raise SandboxInfrastructureError("cleanup_failed")
+
+        # daemon 已确认可达；此时 inspect 非零表示固定合法名字没有对应容器。
+        try:
+            remaining = self._command_runner(
+                [
+                    "docker",
+                    "container",
+                    "inspect",
+                    "--format",
+                    "{{.Id}}",
+                    container_name,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
+            raise SandboxInfrastructureError("cleanup_failed") from exc
+        if remaining.returncode == 0:
+            raise SandboxInfrastructureError("cleanup_failed")
 
 
 def _container_token() -> str:
