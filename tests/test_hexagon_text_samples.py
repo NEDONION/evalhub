@@ -48,6 +48,7 @@ def _spec(
     input_zh: str = "中文题目",
     reference_zh: str | None = "中文答案",
     option_order: tuple[str, ...] | None = None,
+    selection_stratum: str = "test",
 ) -> HexagonSampleSpec:
     """构造单条已冻结规格，用于隔离验证加载器而不依赖完整 60 行清单。
 
@@ -69,7 +70,7 @@ def _spec(
         benchmark_id=benchmark_id,
         capability=Capability.MATHEMATICS,
         source_key=source_key,
-        selection_stratum="test",
+        selection_stratum=selection_stratum,
         input_sha256=_digest(input_text),
         reference_sha256=_digest(reference),
         input_zh=input_zh,
@@ -202,6 +203,37 @@ def test_production_loader_rejects_tampered_pinned_metadata_before_parsing(
 
     with pytest.raises(ValueError, match="source SHA-256 mismatch"):
         load_hexagon_samples("hexagon-ifeval", root=tmp_path)
+
+
+def test_hexagon_ifeval_loader_rejects_unsupported_selected_rule_before_model_execution(
+    tmp_path: Path,
+) -> None:
+    """选中 IFEval 规则不在本地实现范围时，加载器必须在模型调用前拒绝样本。
+
+    Args:
+        tmp_path: pytest 提供的隔离目录，用于放置一条 IFEval 本地来源夹具。
+    """
+    path = tmp_path / "data/raw/hexagon/ifeval/input_data.jsonl"
+    path.parent.mkdir(parents=True)
+    row = {
+        "key": 32,
+        "prompt": "Use an unsupported instruction.",
+        "instruction_id_list": ["unsupported:rule"],
+        "kwargs": [{}],
+    }
+    path.write_text(f"{json.dumps(row)}\n", encoding="utf-8")
+    manifest = (
+        _spec(
+            benchmark_id="hexagon-ifeval",
+            source_key="32",
+            input_text=row["prompt"],
+            reference="",
+            selection_stratum="punctuation:no_comma",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="unsupported IFEval instruction"):
+        load_hexagon_samples("hexagon-ifeval", root=tmp_path, manifest=manifest)
 
 
 def test_mmlu_parser_reads_test_csv_from_pinned_archive(tmp_path: Path) -> None:

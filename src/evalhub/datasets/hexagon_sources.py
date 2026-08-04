@@ -435,6 +435,13 @@ def parse_ifeval_rows(path: Path) -> dict[str, NormalizedSourceRow]:
             kwargs = payload.get("kwargs")
             if not isinstance(instruction_ids, list) or not isinstance(kwargs, list):
                 raise ValueError(f"IFEval row {source_key} has invalid rules")
+            # 只接收可传给评测器的一一对应对象，避免上游格式漂移在运行期才暴露。
+            if len(instruction_ids) != len(kwargs) or any(
+                not isinstance(item, str) for item in instruction_ids
+            ):
+                raise ValueError(f"IFEval row {source_key} has invalid rules")
+            if any(not isinstance(item, dict) for item in kwargs):
+                raise ValueError(f"IFEval row {source_key} has invalid rules")
             metadata: dict[str, object] = {
                 "instruction_id_list": instruction_ids,
                 "kwargs": kwargs,

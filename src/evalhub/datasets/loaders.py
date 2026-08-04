@@ -22,6 +22,7 @@ from evalhub.datasets.hexagon_sources import (
     prepare_hexagon_dataset,
 )
 from evalhub.domain import EvaluationSample
+from evalhub.evaluators.ifeval import SUPPORTED_RULE_IDS
 
 # MMLU 官方测试集的完整学科列表用于 ``subject=all`` 的确定性遍历。
 MMLU_SUBJECTS = [
@@ -191,7 +192,43 @@ def load_hexagon_samples(
         if item.benchmark_id == "hexagon-truthfulqa" and item.option_order is not None
     }
     rows = load_hexagon_source_rows(name, source_path, option_orders=option_orders)
+    _validate_ifeval_selected_rules(name, frozen, rows)
     return _limited(_selected_samples(name, rows, frozen), limit)
+
+
+def _validate_ifeval_selected_rules(
+    benchmark_id: str,
+    manifest: tuple[HexagonSampleSpec, ...],
+    rows: Mapping[str, NormalizedSourceRow],
+) -> None:
+    """在样本进入模型前确认 IFEval 选中行仍是唯一受支持的官方规则。
+
+    Args:
+        benchmark_id: 当前加载的 Hexagon Benchmark 稳定标识。
+        manifest: 固定清单中的全部样本规格。
+        rows: 已从固定 IFEval 来源解析出的规范化记录映射。
+
+    Raises:
+        ValueError: 选中键缺失、规则未支持或不再与清单固定规则一一对应时抛出。
+    """
+    if benchmark_id != "hexagon-ifeval":
+        return
+    for item in (entry for entry in manifest if entry.benchmark_id == benchmark_id):
+        row = rows.get(item.source_key)
+        if row is None:
+            continue
+        instruction_ids = row.source_metadata.get("instruction_id_list")
+        if not isinstance(instruction_ids, list):
+            raise ValueError(f"IFEval source key {item.source_key} has invalid rules")
+        # 先拒绝本地不支持的规则，确保它绝不会流入模型执行阶段。
+        unsupported = [rule for rule in instruction_ids if rule not in SUPPORTED_RULE_IDS]
+        if unsupported:
+            raise ValueError(f"unsupported IFEval instruction: {unsupported[0]}")
+        if instruction_ids != [item.selection_stratum]:
+            raise ValueError(
+                f"IFEval source key {item.source_key} must contain exactly rule "
+                f"{item.selection_stratum}"
+            )
 
 
 def _selected_samples(
