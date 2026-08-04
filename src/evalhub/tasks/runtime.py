@@ -19,7 +19,7 @@ from evalhub.benchmarks import (
     aggregate_capability_profile,
     benchmark_readiness,
 )
-from evalhub.datasets import prepare_dataset
+from evalhub.datasets import hexagon_source_specs, prepare_dataset
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
     TaskExecutionCanceled,
@@ -112,13 +112,16 @@ class PersistentWorkflowExecutor:
         while True:
             if cancel_event.is_set():
                 raise TaskExecutionCanceled("evaluation canceled")
-            self._block_unsatisfied_nodes(task_id)
+            blocked_dependencies = self._block_unsatisfied_nodes(task_id)
             nodes = self._repository.list_nodes(task_id)
             finalizer = next(node for node in nodes if node.kind == "workflow_finalize")
             if finalizer.status in TERMINAL_NODE_STATUSES:
                 break
             ready = next((node for node in nodes if self._is_ready(node, nodes)), None)
             if ready is None:
+                # 本轮若刚传播阻塞状态，下一轮才能让更下游节点观察到新终态。
+                if blocked_dependencies:
+                    continue
                 raise TaskExecutionError("workflow has no runnable node")
             self._execute_node(
                 ready,
@@ -195,6 +198,8 @@ class PersistentWorkflowExecutor:
             for item in self._repository.list_nodes(node.task_id)
             if item.kind == "benchmark"
         }
+        # 先整体核对七条固定来源，防止第三条漂移时前两条已经开始下载。
+        self._verify_source_contracts(benchmarks)
         for benchmark_id in node.input.get("benchmark_ids", []):
             spec = _frozen_benchmark_spec(benchmarks[str(benchmark_id)])
             readiness = self._readiness_checker(spec)
@@ -232,6 +237,52 @@ class PersistentWorkflowExecutor:
                     {"error_type": readiness.code, "message": readiness.message}
                 )
         return {"assets": assets}
+
+    def _verify_source_contracts(
+        self,
+        benchmarks: dict[str, EvaluationNode],
+    ) -> None:
+        """在任何资产准备前核对 Hexagon 创建合同与当前 Task 2 固定来源。
+
+        Args:
+            benchmarks: 当前任务按 Benchmark ID 索引的全部持久化执行节点。
+
+        Raises:
+            RuntimeBlockedError: 任一 Hexagon 来源合同缺失或与当前部署记录不一致。
+        """
+        hexagon_nodes = {
+            benchmark_id: benchmark
+            for benchmark_id, benchmark in benchmarks.items()
+            if benchmark_id.startswith("hexagon-")
+        }
+        if not hexagon_nodes:
+            return
+        # 一次读取当前部署目录，保证同一准备预检不会混用两个动态视图。
+        current_sources = hexagon_source_specs()
+        mismatched: list[EvaluationNode] = []
+        for benchmark_id, benchmark in hexagon_nodes.items():
+            source = current_sources.get(benchmark_id)
+            current_contract = (
+                {
+                    "source_id": source.benchmark_id,
+                    "url": source.url,
+                    "revision": source.revision,
+                    "sha256": source.sha256,
+                }
+                if source is not None
+                else None
+            )
+            # 旧节点缺少创建合同也不能继续，因为当前代码无法证明它对应哪个下载 pin。
+            if benchmark.input.get("source_contract") != current_contract:
+                mismatched.append(benchmark)
+        if not mismatched:
+            return
+        changed_ids = ", ".join(sorted(str(item.input["benchmark_id"]) for item in mismatched))
+        message = f"固定来源合同与任务创建时不一致，不能安全准备：{changed_ids}"
+        # 异常恢复留下的受影响样本不可进入 skip 集；其他冻结来源的检查点仍可保留审计。
+        for benchmark in mismatched:
+            self._repository.clear_node_samples(benchmark.id, message)
+        raise RuntimeBlockedError("source_contract_changed", message)
 
     def _run_benchmark(
         self,
@@ -480,11 +531,19 @@ class PersistentWorkflowExecutor:
             "comparison_fingerprint": comparison_fingerprint,
         }
 
-    def _block_unsatisfied_nodes(self, task_id: str) -> None:
-        """把确定无法满足依赖的 pending 节点转为可审计阻塞态。"""
+    def _block_unsatisfied_nodes(self, task_id: str) -> bool:
+        """把确定无法满足依赖的 pending 节点转为可审计阻塞态。
+
+        Args:
+            task_id: 当前持久化工作流所属的顶层任务标识。
+
+        Returns:
+            本轮至少阻塞一个节点时返回 ``True``，供执行循环继续传播下游终态。
+        """
         nodes = self._repository.list_nodes(task_id)
         by_key = {node.node_key: node for node in nodes}
         benchmarks = [node for node in nodes if node.kind == "benchmark"]
+        blocked_any = False
         for node in nodes:
             if node.status != "pending" or node.kind == "workflow_finalize":
                 continue
@@ -497,6 +556,7 @@ class PersistentWorkflowExecutor:
                             "no_successful_benchmark",
                             "没有成功 Benchmark，无法生成能力画像",
                         )
+                        blocked_any = True
                 continue
             dependencies = [by_key[key] for key in node.depends_on]
             failed = [
@@ -509,6 +569,8 @@ class PersistentWorkflowExecutor:
                     "dependency_failed",
                     f"依赖节点未成功：{', '.join(item.node_key for item in failed)}",
                 )
+                blocked_any = True
+        return blocked_any
 
     @staticmethod
     def _is_ready(node: EvaluationNode, nodes: list[EvaluationNode]) -> bool:

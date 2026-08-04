@@ -10,7 +10,7 @@ from evalhub.benchmarks import (
     get_benchmark_spec,
     get_suite_spec,
 )
-from evalhub.datasets import dataset_catalog
+from evalhub.datasets import PinnedSource, dataset_catalog, hexagon_source_specs
 from evalhub.tasks.models import TaskRequest, WorkflowNodeSpec
 
 
@@ -42,10 +42,19 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
         _hexagon_manifest_sha256() if suite.id == "evalhub-hexagon-v1" else None
     )
     datasets = dataset_catalog()
+    # Hexagon 下载合同来自 Task 2 固定来源目录；其他 Suite 不改变既有协议形状。
+    pinned_sources = (
+        hexagon_source_specs() if suite.id == "evalhub-hexagon-v1" else {}
+    )
+    source_contracts = {
+        benchmark_id: _source_contract(source)
+        for benchmark_id, source in pinned_sources.items()
+    }
     benchmark_protocols = [
         _benchmark_protocol(
             spec,
             datasets[spec.id].evaluator_type if spec.id in datasets else spec.metric,
+            source_contracts.get(spec.id),
         )
         for spec in specs
     ]
@@ -59,6 +68,9 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
         },
         "generation_config": dict(specs[0].generation_config) if specs else {},
     }
+    # 最终结果直接发布创建时冻结合同，不能在终结阶段重新读取当前部署固定来源。
+    if source_contracts:
+        reproducibility["source_contracts"] = source_contracts
     benchmark_keys = tuple(f"benchmark:{item}" for item in suite.benchmark_ids)
     nodes: list[WorkflowNodeSpec] = [
         WorkflowNodeSpec(
@@ -131,17 +143,22 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
     return tuple(nodes)
 
 
-def _benchmark_protocol(spec: BenchmarkSpec, evaluator_type: str) -> dict[str, object]:
+def _benchmark_protocol(
+    spec: BenchmarkSpec,
+    evaluator_type: str,
+    source_contract: dict[str, str] | None = None,
+) -> dict[str, object]:
     """把 Registry 规格冻结为后续运行无需重新查询的 JSON 协议事实。
 
     Args:
         spec: 创建任务时读取的一条不可变 Benchmark 规格。
         evaluator_type: 创建时数据集目录为该 Benchmark 选择的评分器类型。
+        source_contract: Hexagon 在创建时读取的 Task 2 固定下载合同；其他套件为空。
 
     Returns:
-        覆盖执行、评分、归一化和来源 revision 的完整 JSON 映射。
+        覆盖执行、评分、归一化、来源 revision 和固定下载合同的完整 JSON 映射。
     """
-    return {
+    protocol: dict[str, object] = {
         "benchmark_id": spec.id,
         "benchmark_version": spec.version,
         "benchmark_display_name": spec.display_name,
@@ -162,6 +179,27 @@ def _benchmark_protocol(spec: BenchmarkSpec, evaluator_type: str) -> dict[str, o
         "few_shot": spec.few_shot,
         "generation_config": dict(spec.generation_config),
         "requirements": list(spec.requirements),
+    }
+    # 仅 Hexagon 增加该字段，避免改变非 Hexagon 工作流的持久化兼容形状。
+    if source_contract is not None:
+        protocol["source_contract"] = dict(source_contract)
+    return protocol
+
+
+def _source_contract(source: PinnedSource) -> dict[str, str]:
+    """把 Task 2 固定来源收窄为准备安全所需的不可变协议事实。
+
+    Args:
+        source: 当前任务创建部署中的一条固定来源记录。
+
+    Returns:
+        只含稳定来源 ID、下载 URL、revision 和期望 SHA-256 的 JSON 映射。
+    """
+    return {
+        "source_id": source.benchmark_id,
+        "url": source.url,
+        "revision": source.revision,
+        "sha256": source.sha256,
     }
 
 

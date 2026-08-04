@@ -10,6 +10,7 @@ import pytest
 import evalhub.tasks.runtime as runtime_module
 import evalhub.tasks.workflow as workflow_module
 from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
+from evalhub.datasets import PinnedSource, hexagon_source_specs
 from evalhub.tasks import (
     EvaluationSampleCheckpoint,
     ResourceUsage,
@@ -392,6 +393,20 @@ def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
 
     monkeypatch.setattr(workflow_module, "get_benchmark_spec", changed_generation)
     changed_generation_fingerprint = fingerprint()
+    # 固定来源下载合同也是协议本体；只改变 URL 必须使同字节清单获得不同指纹。
+    changed_sources = hexagon_source_specs()
+    current_gsm8k = changed_sources["hexagon-gsm8k"]
+    changed_sources["hexagon-gsm8k"] = replace(
+        current_gsm8k,
+        url=f"{current_gsm8k.url}?deployment=b",
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "hexagon_source_specs",
+        lambda: changed_sources,
+        raising=False,
+    )
+    changed_source_fingerprint = fingerprint()
 
     assert len(
         {
@@ -400,8 +415,158 @@ def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
             changed_suite,
             changed_prompt_fingerprint,
             changed_generation_fingerprint,
+            changed_source_fingerprint,
         }
-    ) == 5
+    ) == 6
+
+
+def test_hexagon_workflow_freezes_complete_pinned_source_contracts() -> None:
+    """Hexagon 创建结果必须冻结 Task 2 下载边界并用于最终复现。
+
+    Returns:
+        无；通过节点输入与终结复现字段断言来源 ID、URL、revision 和摘要均已冻结。
+    """
+    graph = build_workflow(request(suite_id="evalhub-hexagon-v1"))
+    benchmarks = [node for node in graph if node.kind == "benchmark"]
+    finalizer = next(node for node in graph if node.kind == "workflow_finalize")
+    # 使用手工核对的 GSM8K 固定值，避免测试与生产序列化辅助函数共享同一错误。
+    gsm8k = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-gsm8k")
+    expected = {
+        "source_id": "hexagon-gsm8k",
+        "url": (
+            "https://raw.githubusercontent.com/openai/grade-school-math/"
+            "3101c7d5072418e28b9008a6636bde82a006892c/"
+            "grade_school_math/data/test.jsonl"
+        ),
+        "revision": "3101c7d5072418e28b9008a6636bde82a006892c",
+        "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+    }
+
+    assert gsm8k.input["source_contract"] == expected
+    assert finalizer.input["reproducibility"]["source_contracts"]["hexagon-gsm8k"] == expected
+
+
+def test_runtime_blocks_hexagon_source_drift_before_any_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """排队后固定来源漂移时必须先阻塞整个准备节点，不能下载或执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与伪资产目录。
+        monkeypatch: 模拟部署 B 的 Task 2 固定来源记录，同时保持包内清单字节不变。
+
+    Returns:
+        无；断言下载和 Benchmark 边界均未被调用，且最终只发布创建时冻结事实。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    created_nodes = repository.list_nodes(task.id)
+    finalizer = next(node for node in created_nodes if node.kind == "workflow_finalize")
+    frozen_reproducibility = finalizer.input["reproducibility"]
+    frozen_manifest = frozen_reproducibility["manifest_sha256"]
+    # 只改变第三个来源记录，证明运行时必须在任何下载前完成全套来源预检。
+    deployed_sources = hexagon_source_specs()
+    old_gsm8k = deployed_sources["hexagon-gsm8k"]
+    deployed_sources["hexagon-gsm8k"] = replace(
+        old_gsm8k,
+        revision="deployment-b",
+        url=f"{old_gsm8k.url}?deployment=b",
+        sha256="f" * 64,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "hexagon_source_specs",
+        lambda: deployed_sources,
+        raising=False,
+    )
+    monkeypatch.setattr(runtime_module, "_hexagon_manifest_sha256", lambda: frozen_manifest)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    asset = tmp_path / "must-not-be-prepared"
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmarks = [node for node in nodes if node.kind == "benchmark"]
+    completed_finalizer = next(node for node in nodes if node.kind == "workflow_finalize")
+
+    assert preparation_calls == []
+    assert fake.attempts == {}
+    assert prepare.status == "blocked"
+    assert prepare.error_type == "source_contract_changed"
+    assert all(node.status == "blocked" and node.output is None for node in benchmarks)
+    assert completed_finalizer.output["total_samples"] == 0
+    assert completed_finalizer.output["reproducibility"] == frozen_reproducibility
+
+
+def test_runtime_prepares_hexagon_when_frozen_source_contract_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前 Task 2 来源与冻结合同一致时应正常准备并执行七个 Benchmark。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+        monkeypatch: 记录运行时是否实际读取当前部署的来源合同。
+
+    Returns:
+        无；断言完整预检只读取一次目录，并允许全部七个准备与执行调用。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    current_sources = hexagon_source_specs()
+    source_catalog_reads = 0
+
+    def read_current_sources() -> dict[str, PinnedSource]:
+        """记录一次部署来源目录读取并返回与创建时一致的不可变记录。
+
+        Returns:
+            当前测试部署的七条 Task 2 固定来源记录副本。
+        """
+        nonlocal source_catalog_reads
+        source_catalog_reads += 1
+        return dict(current_sources)
+
+    monkeypatch.setattr(runtime_module, "hexagon_source_specs", read_current_sources, raising=False)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("fixed source", encoding="utf-8")
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert source_catalog_reads == 1
+    assert preparation_calls == list(current_sources)
+    assert set(fake.attempts) == set(current_sources)
+    assert result["status"] == "success"
 
 
 def test_runtime_reruns_same_bytes_checkpoint_when_protocol_fingerprint_changed(
