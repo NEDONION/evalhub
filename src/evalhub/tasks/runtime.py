@@ -262,6 +262,7 @@ class PersistentWorkflowExecutor:
         mismatched: list[EvaluationNode] = []
         for benchmark_id, benchmark in hexagon_nodes.items():
             source = current_sources.get(benchmark_id)
+            frozen_contract = benchmark.input.get("source_contract")
             current_contract = (
                 {
                     "source_id": source.benchmark_id,
@@ -272,8 +273,12 @@ class PersistentWorkflowExecutor:
                 if source is not None
                 else None
             )
-            # 旧节点缺少创建合同也不能继续，因为当前代码无法证明它对应哪个下载 pin。
-            if benchmark.input.get("source_contract") != current_contract:
+            # 任一侧缺失都必须 fail-closed；不能让旧节点通过 ``None == None`` 绕过验证。
+            if (
+                not isinstance(frozen_contract, dict)
+                or current_contract is None
+                or frozen_contract != current_contract
+            ):
                 mismatched.append(benchmark)
         if not mismatched:
             return

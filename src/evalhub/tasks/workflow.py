@@ -42,14 +42,15 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
         _hexagon_manifest_sha256() if suite.id == "evalhub-hexagon-v1" else None
     )
     datasets = dataset_catalog()
-    # Hexagon 下载合同来自 Task 2 固定来源目录；其他 Suite 不改变既有协议形状。
-    pinned_sources = (
-        hexagon_source_specs() if suite.id == "evalhub-hexagon-v1" else {}
-    )
-    source_contracts = {
-        benchmark_id: _source_contract(source)
-        for benchmark_id, source in pinned_sources.items()
-    }
+    # 由成员而非 Suite ID 识别 Hexagon，使单项与完整套件共享同一固定来源边界。
+    hexagon_ids = tuple(spec.id for spec in specs if spec.id.startswith("hexagon-"))
+    pinned_sources = hexagon_source_specs() if hexagon_ids else {}
+    source_contracts: dict[str, dict[str, str]] = {}
+    for benchmark_id in hexagon_ids:
+        source = pinned_sources.get(benchmark_id)
+        if source is None:
+            raise ValueError(f"missing pinned source contract: {benchmark_id}")
+        source_contracts[benchmark_id] = _source_contract(source, benchmark_id)
     benchmark_protocols = [
         _benchmark_protocol(
             spec,
@@ -186,21 +187,33 @@ def _benchmark_protocol(
     return protocol
 
 
-def _source_contract(source: PinnedSource) -> dict[str, str]:
+def _source_contract(source: PinnedSource, benchmark_id: str) -> dict[str, str]:
     """把 Task 2 固定来源收窄为准备安全所需的不可变协议事实。
 
     Args:
         source: 当前任务创建部署中的一条固定来源记录。
+        benchmark_id: 当前工作流成员要求匹配的稳定 Benchmark ID。
 
     Returns:
         只含稳定来源 ID、下载 URL、revision 和期望 SHA-256 的 JSON 映射。
+
+    Raises:
+        ValueError: 来源 ID 不匹配、必要字符串为空或 SHA-256 不是小写 64 位十六进制。
     """
-    return {
+    contract = {
         "source_id": source.benchmark_id,
         "url": source.url,
         "revision": source.revision,
         "sha256": source.sha256,
     }
+    required_strings = (contract["url"], contract["revision"])
+    valid_sha256 = len(source.sha256) == 64 and all(
+        character in "0123456789abcdef" for character in source.sha256
+    )
+    # 创建端 fail-closed，避免把无法由运行时安全验证的半成品合同写入 SQLite。
+    if source.benchmark_id != benchmark_id or not all(required_strings) or not valid_sha256:
+        raise ValueError(f"invalid pinned source contract: {benchmark_id}")
+    return contract
 
 
 def _protocol_fingerprint(

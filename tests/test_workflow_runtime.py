@@ -22,10 +22,24 @@ from evalhub.tasks.runtime import PersistentWorkflowExecutor, WorkflowIncomplete
 from evalhub.tasks.workflow import build_workflow
 
 
-def request(*, suite_id: str | None = None, subject: str = "abstract_algebra") -> TaskRequest:
-    """构造单项或 Suite 的离线 Oracle 请求。"""
+def request(
+    *,
+    dataset: str = "gsm8k",
+    suite_id: str | None = None,
+    subject: str = "abstract_algebra",
+) -> TaskRequest:
+    """构造单项或 Suite 的离线 Oracle 请求。
+
+    Args:
+        dataset: 单项评测使用的稳定 Benchmark ID；Suite 请求仍保留兼容占位值。
+        suite_id: 可选版本化 Suite ID；为空时创建单 Benchmark 临时 Suite。
+        subject: MMLU 单项请求的可选学科。
+
+    Returns:
+        不访问网络且可由持久化工作流执行的 Oracle 任务请求。
+    """
     return TaskRequest(
-        dataset="gsm8k",
+        dataset=dataset,
         adapter="oracle",
         model="oracle",
         base_url="http://127.0.0.1:11434",
@@ -444,6 +458,169 @@ def test_hexagon_workflow_freezes_complete_pinned_source_contracts() -> None:
 
     assert gsm8k.input["source_contract"] == expected
     assert finalizer.input["reproducibility"]["source_contracts"]["hexagon-gsm8k"] == expected
+
+
+def test_standalone_hexagon_text_prepares_and_executes_with_matching_contract(
+    tmp_path: Path,
+) -> None:
+    """单项文本 Hexagon 必须冻结匹配来源合同并完成准备与执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+
+    Returns:
+        无；断言可观察执行结果成功，且最终复现信息含单项固定来源合同。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-gsm8k")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "hexagon-gsm8k.jsonl"
+    asset.write_text("fixed source", encoding="utf-8")
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert preparation_calls == ["hexagon-gsm8k"]
+    assert fake.attempts == {"hexagon-gsm8k": 1}
+    assert result["status"] == "success"
+    assert set(result["reproducibility"]["source_contracts"]) == {"hexagon-gsm8k"}
+
+
+def test_standalone_humaneval_reaches_readiness_after_source_preflight(
+    tmp_path: Path,
+) -> None:
+    """单项 HumanEval 合同匹配时应由 Docker readiness 决定阻塞原因。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节 HumanEval 伪资产目录。
+
+    Returns:
+        无；断言资产已准备、Benchmark 未执行，且节点报告执行器未就绪而非来源漂移。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-humaneval")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "HumanEval.jsonl.gz"
+    asset.write_bytes(b"fixed source")
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(
+            False,
+            "executor_not_ready",
+            "fixture Docker missing",
+        ),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmark = next(node for node in nodes if node.kind == "benchmark")
+
+    assert preparation_calls == ["hexagon-humaneval"]
+    assert prepare.status == "success"
+    assert benchmark.status == "blocked"
+    assert benchmark.error_type == "executor_not_ready"
+    assert fake.attempts == {}
+
+
+def test_standalone_hexagon_workflow_rejects_missing_pinned_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """创建单项 Hexagon 工作流时缺少 Task 2 固定来源必须立即拒绝。
+
+    Args:
+        monkeypatch: 删除创建部署中的目标固定来源记录。
+
+    Returns:
+        无；断言持久化任何节点前抛出带 Benchmark ID 的输入错误。
+    """
+    deployed_sources = hexagon_source_specs()
+    deployed_sources.pop("hexagon-gsm8k")
+    monkeypatch.setattr(workflow_module, "hexagon_source_specs", lambda: deployed_sources)
+
+    with pytest.raises(ValueError, match="missing pinned source contract: hexagon-gsm8k"):
+        build_workflow(request(dataset="hexagon-gsm8k"))
+
+
+def test_runtime_blocks_when_frozen_and_current_source_contracts_are_both_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """冻结和当前来源合同同时缺失时必须 fail-closed，不能因 ``None == None`` 放行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与不会被调用的伪资产目录。
+        monkeypatch: 从运行部署的 Task 2 来源目录删除同一 Benchmark。
+
+    Returns:
+        无；断言准备节点稳定阻塞，且资产准备和 Benchmark 执行均未发生。
+    """
+    task_request = request(dataset="hexagon-gsm8k")
+    graph = build_workflow(task_request)
+    # 模拟修复前持久化的旧单项节点，明确移除创建时来源合同。
+    legacy_graph = tuple(
+        replace(
+            node,
+            input={key: value for key, value in node.input.items() if key != "source_contract"},
+        )
+        if node.kind == "benchmark"
+        else node
+        for node in graph
+    )
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task = repository.create_with_nodes(task_request, legacy_graph)
+    deployed_sources = hexagon_source_specs()
+    deployed_sources.pop("hexagon-gsm8k")
+    monkeypatch.setattr(runtime_module, "hexagon_source_specs", lambda: deployed_sources)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id),
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    prepare = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "prepare_assets"
+    )
+
+    assert prepare.status == "blocked"
+    assert prepare.error_type == "source_contract_changed"
+    assert preparation_calls == []
+    assert fake.attempts == {}
 
 
 def test_runtime_blocks_hexagon_source_drift_before_any_preparation(
