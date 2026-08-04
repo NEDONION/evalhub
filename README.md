@@ -9,6 +9,11 @@
 <img width="1262" height="838" alt="image" src="https://github.com/user-attachments/assets/5e1c29b4-4b31-4b09-8a02-dd6d3f8e8542" />
 
 
+> 模型下载与数据集管理
+<img width="1274" height="821" alt="image" src="https://github.com/user-attachments/assets/b56c2a2d-503d-4d30-a1ca-2016e5200f83" />
+
+
+
 EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。它的目标不是做简单 CRUD 后台，而是把 Model Registry、Dataset Registry、Benchmark Registry、Evaluator Plugin、Evaluation Engine、Result Store、Report、Leaderboard 和 Release Gate 串成一条可追踪、可复现、可扩展的评测链路。
 
 当前仓库先落地 Python 后端核心骨架和一个 React 本地 Web 控制台，保证真实公开 Benchmark 可以下载到本地、用本地模型服务试跑，并产出样本级结果和聚合分数。后续再接入 FastAPI、PostgreSQL、Celery、RabbitMQ 和 MinIO。
