@@ -2,8 +2,11 @@
 
 <img width="1405" height="830" alt="image" src="https://github.com/user-attachments/assets/f94085b8-dbe6-423c-8e12-83b38ff0ad2b" />
 
+> 基模 Benchmark 套件
 <img width="1387" height="842" alt="image" src="https://github.com/user-attachments/assets/360899cf-270d-4133-9c40-f48097ceaa3d" />
 
+> Agent评测
+<img width="1262" height="838" alt="image" src="https://github.com/user-attachments/assets/5e1c29b4-4b31-4b09-8a02-dd6d3f8e8542" />
 
 
 EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。它的目标不是做简单 CRUD 后台，而是把 Model Registry、Dataset Registry、Benchmark Registry、Evaluator Plugin、Evaluation Engine、Result Store、Report、Leaderboard 和 Release Gate 串成一条可追踪、可复现、可扩展的评测链路。
