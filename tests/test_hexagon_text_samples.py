@@ -178,6 +178,32 @@ def test_hexagon_loader_rejects_changed_english_content(tmp_path: Path) -> None:
         load_hexagon_samples("hexagon-gsm8k", root=tmp_path, manifest=manifest)
 
 
+def test_production_loader_rejects_tampered_pinned_metadata_before_parsing(
+    tmp_path: Path,
+) -> None:
+    """生产加载必须先校验固定文件摘要，拒绝未改变规范化正文但篡改规则参数的缓存。
+
+    Args:
+        tmp_path: pytest 提供的隔离根目录，用于放置存在但未通过固定摘要的 IFEval 缓存。
+    """
+    path = tmp_path / "data/raw/hexagon/ifeval/input_data.jsonl"
+    path.parent.mkdir(parents=True)
+    # 提示和空参考与冻结首题一致，只修改行级摘要未覆盖的官方规则参数。
+    row = {
+        "key": 32,
+        "prompt": (
+            "Write a limerick about writing a limerick. "
+            "Don't use any commas in your entire reply."
+        ),
+        "instruction_id_list": ["punctuation:no_comma"],
+        "kwargs": [{"tampered": True}],
+    }
+    path.write_text(f"{json.dumps(row)}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source SHA-256 mismatch"):
+        load_hexagon_samples("hexagon-ifeval", root=tmp_path)
+
+
 def test_mmlu_parser_reads_test_csv_from_pinned_archive(tmp_path: Path) -> None:
     """MMLU 解析器必须从固定归档读取一基行号、四个选项和官方答案字母。"""
     archive_path = tmp_path / "data.tar"

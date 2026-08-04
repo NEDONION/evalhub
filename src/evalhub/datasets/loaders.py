@@ -162,7 +162,8 @@ def load_hexagon_samples(
         name: 七个固定 Hexagon Benchmark ID 之一。
         root: 已准备原始资产相对的项目根目录或测试临时目录。
         limit: 在完整清单顺序建立后最多返回的样本数量。
-        manifest: 测试可注入的已解析清单；缺省读取随包发布的 v1 清单。
+        manifest: 测试可注入的已解析清单；注入时直接解析局部夹具，缺省生产路径读取包内清单
+            并复核 Task 2 固定文件摘要。
 
     Returns:
         仅英文进入 ``input`` 和 ``reference``、中文只在元数据中的样本列表。
@@ -170,13 +171,19 @@ def load_hexagon_samples(
     Raises:
         KeyError: Benchmark ID 未注册时抛出。
         FileNotFoundError: 固定来源资产尚未准备时抛出。
-        ValueError: 清单选择器缺失、重复或英文内容摘要发生漂移时抛出。
+        ValueError: 固定文件、清单选择器或英文内容的摘要发生漂移，或选择器重复时抛出。
     """
     source = hexagon_source_specs()[name]
-    source_path = Path(root) / source.cache_path
+    root_path = Path(root)
+    source_path = root_path / source.cache_path
     if not source_path.exists():
         raise FileNotFoundError(f"Hexagon source is not prepared: {source_path}")
-    frozen = hexagon_manifest() if manifest is None else manifest
+    # 生产加载复用 Task 2 的整文件摘要边界；注入清单仅用于离线局部夹具测试。
+    if manifest is None:
+        source_path = prepare_hexagon_dataset(name, root=root_path)
+        frozen = hexagon_manifest()
+    else:
+        frozen = manifest
     # TruthfulQA 的输入摘要取决于清单冻结的二选一排列，解析前先建立来源键映射。
     option_orders = {
         item.source_key: item.option_order
