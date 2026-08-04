@@ -10,6 +10,7 @@ from evalhub.tasks import (
     EvaluationType,
     SQLiteTaskRepository,
     TaskRequest,
+    TaskStatus,
 )
 from evalhub.tasks.performance import build_model_performance
 
@@ -25,6 +26,10 @@ def performance_task(
     dataset: str = "gsm8k",
     suite_id: str | None = None,
     evaluation_type: EvaluationType = "model",
+    status: TaskStatus = "success",
+    completed_samples: int = 10,
+    total_samples: int = 10,
+    comparison_fingerprint: str | None = None,
 ) -> EvaluationTask:
     """构造具备稳定时间、范围和得分的历史任务。
 
@@ -36,9 +41,13 @@ def performance_task(
         dataset: 单项 Benchmark 的稳定标识。
         suite_id: Suite 稳定标识；提供时不再按单项 Benchmark 分组。
         evaluation_type: 模型或 Agent 任务类型，用于验证排除逻辑。
+        status: 持久化任务终态，用于覆盖不完整但错误标成功的回归场景。
+        completed_samples: 已形成评分结果的持久化样本数。
+        total_samples: 任务声明的持久化样本总数。
+        comparison_fingerprint: 完整 Suite 的来源、清单、提示和生成协议摘要。
 
     Returns:
-        不依赖数据库或墙上时钟的完整成功任务快照。
+        不依赖数据库或墙上时钟的完整任务快照。
     """
     finished_at = BASE_TIME + timedelta(minutes=minute)
     request = TaskRequest(
@@ -53,13 +62,16 @@ def performance_task(
         agent_framework="codex" if evaluation_type == "agent" else None,
         suite_id=suite_id,
     )
+    fingerprint = comparison_fingerprint
+    if fingerprint is None and suite_id == "evalhub-hexagon-v1":
+        fingerprint = "hexagon-v1-fixture"
     # 聚合只允许读取轻量摘要；result 明确为空可捕获意外依赖完整结果正文。
     return EvaluationTask(
         id=task_id,
         request=request,
-        status="success",
-        completed_samples=10,
-        total_samples=10,
+        status=status,
+        completed_samples=completed_samples,
+        total_samples=total_samples,
         created_at=finished_at - timedelta(minutes=1),
         updated_at=finished_at,
         started_at=finished_at - timedelta(minutes=1),
@@ -67,6 +79,7 @@ def performance_task(
         benchmark="行业核心套件" if suite_id else dataset.upper(),
         passed_samples=round(score * 10),
         average_score=score,
+        comparison_fingerprint=fingerprint,
         result=None,
     )
 
@@ -78,12 +91,19 @@ def test_performance_isolates_scopes_agents_and_ranks_historical_bests() -> None
         performance_task("qwen-record", model="qwen", score=0.8, minute=2),
         performance_task("qwen-latest", model="qwen", score=0.75, minute=3),
         performance_task("llama-best", model="llama", score=0.7, minute=4),
-        performance_task("mmlu-high", model="other", score=0.99, minute=5, dataset="mmlu"),
+        performance_task(
+            "failed-score",
+            model="broken",
+            score=0.99,
+            minute=5,
+            status="failed",
+        ),
+        performance_task("mmlu-high", model="other", score=0.99, minute=6, dataset="mmlu"),
         performance_task(
             "agent-high",
             model="agent-model",
             score=1.0,
-            minute=6,
+            minute=7,
             dataset="coding_mini",
             evaluation_type="agent",
         ),
@@ -146,6 +166,48 @@ def test_performance_ties_are_deterministic_and_equal_scores_do_not_set_records(
     assert report.record is None
 
 
+def test_performance_excludes_numeric_partial_hexagon_suite_even_if_marked_success() -> None:
+    """Hexagon 只有 all 模式且 60 条全部完成时才能进入比较范围和排行榜。"""
+    tasks = [
+        performance_task(
+            "old-revision-hexagon",
+            model="old-revision",
+            score=1.0,
+            minute=0,
+            suite_id="evalhub-hexagon-v1",
+            completed_samples=60,
+            total_samples=60,
+            comparison_fingerprint="hexagon-v0-fixture",
+        ),
+        performance_task(
+            "partial-hexagon",
+            model="partial",
+            score=1.0,
+            minute=1,
+            suite_id="evalhub-hexagon-v1",
+            status="success",
+            completed_samples=50,
+            total_samples=60,
+        ),
+        performance_task(
+            "complete-hexagon",
+            model="complete",
+            score=0.8,
+            minute=2,
+            suite_id="evalhub-hexagon-v1",
+            status="success",
+            completed_samples=60,
+            total_samples=60,
+        ),
+    ]
+
+    report = build_model_performance(tasks, "suite:evalhub-hexagon-v1")
+
+    assert report.selected_scope is not None
+    assert report.selected_scope.run_count == 1
+    assert [model.model for model in report.models] == ["complete"]
+
+
 def test_repository_lists_only_scored_summaries_without_result_body(tmp_path: Path) -> None:
     """成绩查询只应返回有分摘要，且不能加载完整结果正文。"""
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
@@ -160,6 +222,7 @@ def test_repository_lists_only_scored_summaries_without_result_body(tmp_path: Pa
             "total_samples": 10,
             "passed_samples": 8,
             "average_score": 0.8,
+            "comparison_fingerprint": "protocol-fixture",
         },
     )
     repository.create(performance_task("pending", model="llama", score=0.9, minute=2).request)
@@ -168,4 +231,5 @@ def test_repository_lists_only_scored_summaries_without_result_body(tmp_path: Pa
 
     assert [task.id for task in listed] == [scored.id]
     assert listed[0].average_score == 0.8
+    assert listed[0].comparison_fingerprint == "protocol-fixture"
     assert listed[0].result is None

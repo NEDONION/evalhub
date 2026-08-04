@@ -6,6 +6,7 @@ from threading import Event
 
 import pytest
 
+from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
 from evalhub.tasks import ResourceUsage, SQLiteTaskRepository, TaskRequest
 from evalhub.tasks.executor import TaskExecutionError
 from evalhub.tasks.runtime import PersistentWorkflowExecutor, WorkflowIncompleteError
@@ -94,6 +95,7 @@ class FakeBenchmarkExecutor:
                     "metric": "exact_match",
                     "score": self.score,
                     "reason": None if self.score >= 1.0 else "答案不匹配",
+                    "metadata": {"input_zh": "一加一", "source_key": "fixture:1"},
                 },
                 1,
                 1,
@@ -213,6 +215,56 @@ class MutatingDoubleRetryExecutor(MutatingRetryExecutor):
         return result
 
 
+class HexagonBenchmarkExecutor(FakeBenchmarkExecutor):
+    """按 Registry 固定题数发出七个来源的满分元数据结果。"""
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """为当前 Hexagon 节点发出其声明数量的确定性结果。
+
+        Args:
+            task_id: 当前持久化顶层任务标识。
+            task_request: 已替换为单个 Hexagon 来源的执行请求。
+            **kwargs: Runtime 提供的进度、资源、恢复和样本回调。
+
+        Returns:
+            仅供 Runtime 完成子进程调用的增量摘要。
+        """
+        spec = get_benchmark_spec(task_request.dataset)
+        total = int(spec.expected_sample_count or 0)
+        skipped = set(kwargs["skip_sample_ids"])
+        self.seen_skips.append(skipped)
+        progress = kwargs["on_progress"]
+        callback = kwargs["on_sample_result"]
+        assert callable(progress)
+        assert callable(callback)
+        progress(len(skipped), total)
+        # 每个来源使用独立样本键，确保 SQLite 主键与跨节点恢复都可验证。
+        for index in range(total):
+            sample_id = f"{task_request.dataset}-{index + 1}"
+            if sample_id in skipped:
+                continue
+            callback(
+                {
+                    "sample_id": sample_id,
+                    "input": f"English prompt {index + 1}",
+                    "prediction": "A",
+                    "reference": "A",
+                    "metric": spec.metric,
+                    "score": 1.0,
+                    "reason": None,
+                    "metadata": {
+                        "input_zh": f"中文题目 {index + 1}",
+                        "source_key": f"{task_request.dataset}:{index + 1}",
+                    },
+                },
+                index + 1,
+                total,
+            )
+        return {"job_id": task_id, "total_samples": total, "incremental": bool(skipped)}
+
+
 def test_single_benchmark_builds_fixed_four_node_graph() -> None:
     """兼容请求应映射为准备、单项、聚合和终结四个节点。"""
     graph = build_workflow(request())
@@ -244,6 +296,113 @@ def test_suite_freezes_mmlu_to_all_subjects() -> None:
     mmlu = next(node for node in graph if node.node_key == "benchmark:mmlu")
 
     assert mmlu.input["subject"] == "all"
+
+
+def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_sixty_samples() -> None:
+    """Hexagon 工作流应冻结七个来源的题数、revision、提示版本和生成配置。"""
+    graph = build_workflow(request(suite_id="evalhub-hexagon-v1"))
+    benchmarks = [node for node in graph if node.kind == "benchmark"]
+
+    assert len(benchmarks) == 7
+    assert sum(int(node.input["expected_sample_count"]) for node in benchmarks) == 60
+    assert all(node.input["prompt_template_version"] == "evalhub-v1" for node in benchmarks)
+    assert all(
+        node.input["generation_config"] == {"temperature": 0, "num_predict": 256}
+        for node in benchmarks
+    )
+    ifeval = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-ifeval")
+    assert ifeval.input["dataset_revision"] == "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
+
+
+def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
+    tmp_path: Path,
+) -> None:
+    """七节点 Oracle 流程应持久化 60 条溯源结果并生成完整六维复现信息。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("fixed source", encoding="utf-8")
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=HexagonBenchmarkExecutor(),
+        asset_preparer=lambda benchmark_id: asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    benchmarks = [node for node in repository.list_nodes(task.id) if node.kind == "benchmark"]
+    samples = [
+        sample
+        for node in benchmarks
+        for sample in repository.list_samples(node.id, limit=200).items
+    ]
+
+    assert len(samples) == 60
+    assert all((sample.result or {})["metadata"]["input_zh"] for sample in samples)
+    assert all((sample.input or {})["metadata"]["source_key"] for sample in samples)
+    assert result["total_samples"] == 60
+    assert result["capability_profile"]["status"] == "complete"
+    assert {
+        capability["score"]
+        for capability in result["capability_profile"]["capabilities"].values()
+    } == {100.0}
+    reproducibility = result["reproducibility"]
+    assert len(result["comparison_fingerprint"]) == 64
+    assert reproducibility["suite_version"] == "1.0.0"
+    assert reproducibility["manifest_sha256"] == (
+        "9ff977a258c61dacb568d1fc5d30209fa340687ee2e1be8e7365f5a18df2b6f2"
+    )
+    assert reproducibility["source_revisions"]["hexagon-ifeval"] == (
+        "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
+    )
+    assert reproducibility["prompt_template_versions"] == {
+        node.input["benchmark_id"]: "evalhub-v1" for node in benchmarks
+    }
+    assert reproducibility["generation_config"] == {"temperature": 0, "num_predict": 256}
+
+
+def test_hexagon_runtime_blocks_unready_humaneval_without_executing_it(tmp_path: Path) -> None:
+    """Docker 未就绪时 HumanEval 节点必须阻塞，不能调用模型或产生零分样本。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+        readiness_checker=lambda spec: ExecutorReadiness(
+            spec.id != "hexagon-humaneval",
+            "ready" if spec.id != "hexagon-humaneval" else "executor_not_ready",
+            "fixture Docker missing",
+        ),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    humaneval = next(
+        node
+        for node in repository.list_nodes(task.id)
+        if node.node_key == "benchmark:hexagon-humaneval"
+    )
+    assert humaneval.status == "blocked"
+    assert humaneval.error_type == "executor_not_ready"
+    assert "hexagon-humaneval" not in fake.attempts
+    assert repository.completed_sample_keys(humaneval.id) == set()
 
 
 def test_runtime_persists_samples_and_completes_single_benchmark(tmp_path: Path) -> None:
@@ -331,7 +490,7 @@ def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: P
     )
 
     # 完整执行持久化工作流，确保样本状态经过真实运行时和仓储边界。
-    runtime.execute(
+    result = runtime.execute(
         task.id,
         task_request,
         on_progress=lambda completed, total: None,
@@ -346,6 +505,10 @@ def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: P
     assert repository.completed_sample_keys(benchmark.id) == {"gsm8k-sample-1"}
     assert [sample.sample_key for sample in failed_page.items] == ["gsm8k-sample-1"]
     assert failed_page.items[0].result["reason"] == "答案不匹配"
+    assert result["failed_examples"][0]["metadata"] == {
+        "input_zh": "一加一",
+        "source_key": "fixture:1",
+    }
 
 
 def test_runtime_retry_reuses_completed_zero_score_checkpoint(tmp_path: Path) -> None:

@@ -1,10 +1,77 @@
 """验证同步评测执行器的样本结果、任务状态和报告聚合。"""
 
+from types import SimpleNamespace
+
+import pytest
+
+import evalhub.cli as cli_module
 from evalhub.adapters import StaticMappingAdapter
-from evalhub.domain import BenchmarkRecord, EvaluationJob, EvaluationSample
+from evalhub.domain import BenchmarkRecord, EvaluationJob, EvaluationSample, MetricResult
 from evalhub.domain.enums import JobStatus
 from evalhub.engine import EvaluationRunner
 from evalhub.evaluators import ExactMatchEvaluator
+
+
+class RecordingAdapter(StaticMappingAdapter):
+    """记录实际送入模型边界的提示词，便于证明展示翻译没有混入调用。"""
+
+    def __init__(self, response: str) -> None:
+        """配置固定响应并初始化调用记录。
+
+        Args:
+            response: 任意提示词都返回的确定性模型文本。
+        """
+        super().__init__({}, default_response=response)
+        self.inputs: list[str] = []
+
+    def generate(self, prompt: str, **kwargs: object) -> str:
+        """记录英文提示并返回固定响应。
+
+        Args:
+            prompt: Runner 实际提交给模型的文本。
+            **kwargs: Benchmark 传入的确定性生成参数。
+
+        Returns:
+            构造测试适配器时配置的固定响应。
+        """
+        self.inputs.append(prompt)
+        return super().generate(prompt, **kwargs)
+
+
+class RecordingEvaluator(ExactMatchEvaluator):
+    """记录评分器收到的元数据，验证展示字段不会越过评分边界。"""
+
+    def __init__(self) -> None:
+        """初始化尚未收到评分请求的元数据记录。"""
+        super().__init__()
+        self.metadata: dict[str, object] | None = None
+
+    def evaluate(
+        self,
+        prediction: str,
+        reference: str,
+        *,
+        input_text: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> MetricResult:
+        """记录评分元数据后复用真实精确匹配逻辑。
+
+        Args:
+            prediction: 固定适配器生成的模型文本。
+            reference: 样本提供的官方参考答案。
+            input_text: Runner 传入的官方英文题面。
+            metadata: 已移除纯展示翻译、仍保留评分字段的元数据。
+
+        Returns:
+            真实精确匹配评分结果。
+        """
+        self.metadata = metadata
+        return super().evaluate(
+            prediction,
+            reference,
+            input_text=input_text,
+            metadata=metadata,
+        )
 
 
 def test_runner_generates_sample_results_and_report() -> None:
@@ -37,6 +104,7 @@ def test_runner_generates_sample_results_and_report() -> None:
     # 均分和失败标识共同验证报告没有只统计数量而丢失样本级错误定位。
     assert report.average_score == 0.5
     assert report.failed_sample_ids == ["s2"]
+    assert results[0].metadata == {}
 
 
 def test_runner_reports_progress_after_each_scored_sample() -> None:
@@ -103,3 +171,73 @@ def test_runner_skips_completed_samples_and_reports_new_results() -> None:
     assert [result.sample_id for result in results] == ["s2"]
     assert emitted == [("s2", 2, 2)]
     assert progress == [(2, 2)]
+
+
+def test_runner_preserves_display_metadata_without_sending_it_to_model_or_evaluator() -> None:
+    """结果应保留完整展示溯源，但模型和评分器只能接收各自需要的英文数据。"""
+    sample = EvaluationSample(
+        id="s1",
+        input="English only",
+        reference="A",
+        metadata={
+            "input_zh": "仅供展示",
+            "reference_zh": "答案展示",
+            "source_key": "subject:1",
+        },
+    )
+    adapter = RecordingAdapter("A")
+    evaluator = RecordingEvaluator()
+    runner = EvaluationRunner(adapter, evaluator)
+    job = EvaluationJob(model_id="model_1", benchmark_id="benchmark_1")
+    benchmark = BenchmarkRecord(
+        id="benchmark_1",
+        name="metadata-mini",
+        dataset_id="dataset_1",
+        evaluator_type="exact_match",
+    )
+
+    results, _ = runner.run(job=job, benchmark=benchmark, samples=[sample])
+
+    assert adapter.inputs == ["English only"]
+    assert evaluator.metadata == {"source_key": "subject:1"}
+    assert results[0].metadata == sample.metadata
+
+
+def test_real_benchmark_failed_example_keeps_sample_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同步入口的失败示例应沿用领域结果元数据，供后续展示来源与翻译。"""
+    sample = EvaluationSample(
+        id="ifeval-1",
+        input="Return text without a comma",
+        reference="",
+        metadata={
+            "input_zh": "请返回不含逗号的文本",
+            "source_key": "32",
+            "instruction_id_list": ["punctuation:no_comma"],
+            "kwargs": [{}],
+        },
+    )
+    monkeypatch.setattr(cli_module, "prepare_dataset", lambda dataset: None)
+    monkeypatch.setattr(cli_module, "load_samples", lambda *args, **kwargs: [sample])
+    monkeypatch.setattr(
+        cli_module,
+        "get_dataset_spec",
+        lambda dataset: SimpleNamespace(
+            name=dataset,
+            display_name="IFEval fixture",
+            local_path="fixture.jsonl",
+            evaluator_type="ifeval_strict",
+        ),
+    )
+
+    result = cli_module.run_real_benchmark(
+        dataset="ifeval-fixture",
+        adapter_type="oracle",
+        model="oracle",
+        base_url="http://127.0.0.1:11434",
+        limit=None,
+        subject="",
+    )
+
+    assert result["failed_examples"][0]["metadata"] == sample.metadata

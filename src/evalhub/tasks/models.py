@@ -72,6 +72,7 @@ class EvaluationTask:
     benchmark: str | None = None
     passed_samples: int | None = None
     average_score: float | None = None
+    comparison_fingerprint: str | None = None
     result: dict[str, object] | None = None
 
 

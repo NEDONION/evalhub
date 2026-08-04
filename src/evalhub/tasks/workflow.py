@@ -22,7 +22,14 @@ def workflow_suite(request: TaskRequest) -> BenchmarkSuiteSpec:
 
 
 def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
-    """按 Registry 稳定顺序构建准备、评测、聚合和终结节点。"""
+    """按 Registry 稳定顺序冻结准备、评测、聚合和终结节点。
+
+    Args:
+        request: 已校验的单项或 Suite 模型评测请求。
+
+    Returns:
+        带固定题数、来源 revision、提示版本和生成配置的不可变节点规格元组。
+    """
     suite = workflow_suite(request)
     benchmark_keys = tuple(f"benchmark:{item}" for item in suite.benchmark_ids)
     nodes: list[WorkflowNodeSpec] = [
@@ -45,9 +52,11 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
                     "capability": spec.capability.value,
                     "dataset_source": spec.dataset_source,
                     "dataset_revision": spec.dataset_revision,
+                    "expected_sample_count": spec.expected_sample_count,
                     "executor": spec.executor.value,
                     "task_name": spec.task_name,
                     "metric": spec.metric,
+                    "prompt_template_version": spec.prompt_template_version,
                     "generation_config": dict(spec.generation_config),
                     "model": request.model,
                     "adapter": request.adapter,

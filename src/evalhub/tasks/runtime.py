@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
+from importlib.resources import files
 from pathlib import Path
 from threading import Event
 
-from evalhub.benchmarks import ExecutorKind, aggregate_capability_profile, get_benchmark_spec
+from evalhub.benchmarks import (
+    BenchmarkSpec,
+    ExecutorKind,
+    ExecutorReadiness,
+    aggregate_capability_profile,
+    benchmark_readiness,
+    get_benchmark_spec,
+)
 from evalhub.datasets import prepare_dataset
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
@@ -45,6 +54,9 @@ def classify_runtime_error(exc: Exception) -> str:
     if isinstance(exc, RuntimeBlockedError):
         return "blocked"
     if isinstance(exc, TaskExecutionError):
+        # 只有专用沙箱边界会携带稳定分类；这类环境故障不能写成模型失败分数。
+        if exc.error_type is not None:
+            return "blocked"
         message = str(exc).lower()
         transient_markers = (
             "timeout",
@@ -72,11 +84,20 @@ class PersistentWorkflowExecutor:
         *,
         benchmark_executor: object | None = None,
         asset_preparer: Callable[[str], object] = prepare_dataset,
+        readiness_checker: Callable[[BenchmarkSpec], ExecutorReadiness] = benchmark_readiness,
     ) -> None:
-        """注入仓储、隔离 Benchmark 执行器和可测试的数据准备函数。"""
+        """注入持久化和执行边界，允许单元测试替换所有外部依赖。
+
+        Args:
+            repository: 保存节点、检查点、样本和最终结果的 SQLite 仓储。
+            benchmark_executor: 运行单个 Benchmark 的可替换隔离执行器。
+            asset_preparer: 校验或准备指定 Benchmark 固定数据资产的函数。
+            readiness_checker: 检查原生或 Docker 执行器真实就绪状态的共享函数。
+        """
         self._repository = repository
         self._benchmark_executor = benchmark_executor or SubprocessEvaluationExecutor()
         self._asset_preparer = asset_preparer
+        self._readiness_checker = readiness_checker
 
     def execute(
         self,
@@ -149,7 +170,7 @@ class PersistentWorkflowExecutor:
             raise
         except Exception as exc:
             classification = classify_runtime_error(exc)
-            error_type = getattr(exc, "error_type", exc.__class__.__name__.lower())
+            error_type = getattr(exc, "error_type", None) or exc.__class__.__name__.lower()
             if classification == "transient" and running.attempt_count < running.max_attempts:
                 self._repository.reschedule_node(running.id, str(error_type), str(exc))
             elif classification == "blocked":
@@ -160,34 +181,51 @@ class PersistentWorkflowExecutor:
         self._repository.complete_node(running.id, output)
 
     def _prepare_assets(self, node: EvaluationNode) -> dict[str, object]:
-        """检查每个 Suite 成员的本地执行器和数据准备状态。"""
+        """准备可接通的数据资产，并用共享检查器确认对应执行器真实就绪。
+
+        Args:
+            node: 包含固定 Suite 成员 ID 的运行中资产准备节点。
+
+        Returns:
+            每个成员的数据路径、摘要、revision 和执行器就绪或失败状态。
+        """
         assets: dict[str, object] = {}
         for benchmark_id in node.input.get("benchmark_ids", []):
             spec = get_benchmark_spec(str(benchmark_id))
-            if spec.executor != ExecutorKind.NATIVE:
+            readiness = self._readiness_checker(spec)
+            supported_source = (
+                spec.executor == ExecutorKind.NATIVE or spec.id == "hexagon-humaneval"
+            )
+            if not supported_source:
                 assets[spec.id] = {
                     "status": "unavailable",
-                    "error_type": "executor_not_ready",
-                    "message": f"本地尚未配置 {spec.executor.value} 执行器",
+                    "error_type": readiness.code,
+                    "message": readiness.message,
                 }
                 continue
             try:
                 path = self._asset_preparer(spec.id)
                 content_sha256 = _content_sha256(path)
-                assets[spec.id] = {
-                    "status": "ready",
-                    "path": str(path),
-                    "content_sha256": content_sha256,
-                    "dataset_revision": (
-                        f"sha256:{content_sha256}" if content_sha256 else spec.dataset_revision
-                    ),
-                }
             except Exception as exc:
                 assets[spec.id] = {
                     "status": "failed",
                     "error_type": "dataset_prepare_failed",
                     "message": str(exc),
                 }
+                continue
+            # HumanEval 必须同时具备校验后的固定数据和可信 Docker 镜像，缺一即不可评分。
+            assets[spec.id] = {
+                "status": "ready" if readiness.ready else "unavailable",
+                "path": str(path),
+                "content_sha256": content_sha256,
+                "dataset_revision": (
+                    f"sha256:{content_sha256}" if content_sha256 else spec.dataset_revision
+                ),
+            }
+            if not readiness.ready:
+                assets[spec.id].update(
+                    {"error_type": readiness.code, "message": readiness.message}
+                )
         return {"assets": assets}
 
     def _run_benchmark(
@@ -199,7 +237,21 @@ class PersistentWorkflowExecutor:
         on_resources: Callable[[ResourceUsage], None],
         cancel_event: Event,
     ) -> dict[str, object]:
-        """执行一个本地原生 Benchmark，并把每条样本即时写入 SQLite。"""
+        """执行一个已通过准备检查的 Benchmark，并从全部 SQLite 检查点聚合结果。
+
+        Args:
+            node: 当前需要执行或恢复的 Benchmark 节点。
+            request: 顶层模型评测请求，执行时会替换为当前来源 ID。
+            on_progress: 接收汇总后顶层样本进度的回调。
+            on_resources: 接收隔离进程资源读数的回调。
+            cancel_event: 服务请求取消时由执行器观察的线程事件。
+
+        Returns:
+            包含来源 revision、固定生成配置和全量检查点得分的节点输出。
+
+        Raises:
+            RuntimeBlockedError: 执行器未就绪或执行期间数据资产发生变化时抛出。
+        """
         benchmark_id = str(node.input["benchmark_id"])
         spec = get_benchmark_spec(benchmark_id)
         prepare_node = next(
@@ -208,7 +260,7 @@ class PersistentWorkflowExecutor:
             if item.kind == "prepare_assets"
         )
         asset = ((prepare_node.output or {}).get("assets") or {}).get(benchmark_id, {})
-        if spec.executor != ExecutorKind.NATIVE or asset.get("status") != "ready":
+        if asset.get("status") != "ready":
             raise RuntimeBlockedError(
                 str(asset.get("error_type", "executor_not_ready")),
                 str(asset.get("message", f"{spec.display_name} 当前不可运行")),
@@ -255,7 +307,11 @@ class PersistentWorkflowExecutor:
                     sample_index=max(0, completed - 1),
                     status=sample_status,
                     attempt_count=node.attempt_count,
-                    input={"input": sample.get("input"), "reference": sample.get("reference")},
+                    input={
+                        "input": sample.get("input"),
+                        "reference": sample.get("reference"),
+                        "metadata": sample.get("metadata", {}),
+                    },
                     result=sample,
                 ),
                 completed=completed,
@@ -295,6 +351,9 @@ class PersistentWorkflowExecutor:
                 if execution_digest_after
                 else asset.get("dataset_revision", spec.dataset_revision)
             ),
+            "expected_sample_count": spec.expected_sample_count,
+            "prompt_template_version": spec.prompt_template_version,
+            "generation_config": dict(spec.generation_config),
             "raw_score": round(sum(scores) / len(scores), 6) if scores else 0.0,
             "score_sum": round(sum(scores), 6),
             "total_samples": len(samples),
@@ -304,6 +363,11 @@ class PersistentWorkflowExecutor:
                 for sample, score in zip(samples, scores, strict=True)
                 if score < 1.0
             ],
+            "failed_examples": [
+                dict(sample.result or {})
+                for sample, score in zip(samples, scores, strict=True)
+                if score < 1.0
+            ][:5],
             "protocol_scope": "evalhub_generation",
         }
 
@@ -326,7 +390,15 @@ class PersistentWorkflowExecutor:
         return aggregate_capability_profile(workflow_suite(request), outputs)
 
     def _finalize(self, task_id: str, request: TaskRequest) -> dict[str, object]:
-        """把 Benchmark 与画像节点产物收敛为现有任务结果兼容结构。"""
+        """把节点产物收敛为兼容任务结果，并附加固定协议复现信息。
+
+        Args:
+            task_id: 当前持久化顶层任务标识。
+            request: 用于恢复 Suite、模型和 adapter 身份的原始请求。
+
+        Returns:
+            兼容旧字段且包含能力画像、来源 revision 与生成配置的最终结果。
+        """
         nodes = self._repository.list_nodes(task_id)
         benchmarks = [node for node in nodes if node.kind == "benchmark"]
         successful = [node.output for node in benchmarks if node.output is not None]
@@ -335,6 +407,24 @@ class PersistentWorkflowExecutor:
         passed = sum(int(item.get("passed_samples", 0)) for item in successful)
         score_sum = sum(float(item.get("score_sum", 0.0)) for item in successful)
         suite = workflow_suite(request)
+        reproducibility = {
+            "suite_version": suite.version,
+            "manifest_sha256": (
+                _hexagon_manifest_sha256() if suite.id == "evalhub-hexagon-v1" else None
+            ),
+            "source_revisions": {
+                str(node.input["benchmark_id"]): node.input["dataset_revision"]
+                for node in benchmarks
+            },
+            "prompt_template_versions": {
+                str(node.input["benchmark_id"]): node.input["prompt_template_version"]
+                for node in benchmarks
+            },
+            "generation_config": (
+                dict(benchmarks[0].input.get("generation_config", {})) if benchmarks else {}
+            ),
+        }
+        comparison_fingerprint = _comparison_fingerprint(reproducibility)
         return {
             "job_id": task_id,
             "status": (
@@ -352,8 +442,14 @@ class PersistentWorkflowExecutor:
             "failed_sample_ids": [
                 sample_id for item in successful for sample_id in item.get("failed_sample_ids", [])
             ],
-            "failed_examples": [],
+            "failed_examples": [
+                example
+                for item in successful
+                for example in item.get("failed_examples", [])
+            ][:5],
             "capability_profile": aggregate.output,
+            "reproducibility": reproducibility,
+            "comparison_fingerprint": comparison_fingerprint,
         }
 
     def _block_unsatisfied_nodes(self, task_id: str) -> None:
@@ -446,3 +542,31 @@ def _content_sha256(value: object) -> str | None:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
     return digest.hexdigest()
+
+
+def _hexagon_manifest_sha256() -> str:
+    """返回随包发布的 Hexagon v1 清单文件摘要，供最终结果复现校验。
+
+    Returns:
+        随包发布的固定清单原始字节摘要，用于最终结果的复现审计。
+    """
+    resource = files("evalhub.datasets").joinpath("manifests/hexagon_v1.json")
+    return hashlib.sha256(resource.read_bytes()).hexdigest()
+
+
+def _comparison_fingerprint(reproducibility: dict[str, object]) -> str:
+    """把完整复现协议编码为可在轻量成绩摘要中比较的稳定指纹。
+
+    Args:
+        reproducibility: Suite 版本、清单、来源、提示和生成配置组成的协议快照。
+
+    Returns:
+        对规范 JSON 字节计算的 SHA-256 十六进制摘要。
+    """
+    payload = json.dumps(
+        reproducibility,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
