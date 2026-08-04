@@ -31,6 +31,7 @@ class TaskRequest:
     agent_difficulty: str | None = None
     generation_config: dict[str, object] | None = None
     evaluator_type: str | None = None
+    provider_id: str | None = None
 
 
 @dataclass(frozen=True)

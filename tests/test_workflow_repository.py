@@ -11,6 +11,7 @@ from evalhub.tasks import (
     TaskStateError,
     WorkflowNodeSpec,
 )
+from evalhub.tasks.workflow import build_workflow
 
 
 def task_request() -> TaskRequest:
@@ -48,6 +49,30 @@ def workflow_specs() -> tuple[WorkflowNodeSpec, ...]:
             max_attempts=1,
         ),
     )
+
+
+def test_api_provider_snapshot_is_persisted_without_credential(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """工作流节点应冻结服务商、模型和地址，但任务 JSON 不能出现凭据字段。"""
+    request = TaskRequest(
+        dataset="gsm8k",
+        adapter="openai-compatible",
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+        sample_mode="quick",
+        subject="all",
+        limit=None,
+        provider_id="deepseek",
+    )
+
+    task = repository.create_with_nodes(request, build_workflow(request), task_id="job_api")
+    benchmark = next(node for node in repository.list_nodes(task.id) if node.kind == "benchmark")
+
+    assert benchmark.input["provider_id"] == "deepseek"
+    assert benchmark.input["base_url"] == "https://api.deepseek.com"
+    assert task.request.provider_id == "deepseek"
+    assert "api_key" not in repository.database_path.read_bytes().decode("utf-8", errors="ignore")
 
 
 @pytest.fixture

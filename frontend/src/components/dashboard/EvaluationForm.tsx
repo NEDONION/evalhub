@@ -1,5 +1,5 @@
 import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type {
@@ -12,12 +12,14 @@ import type {
   EvaluationRequest,
   EvaluationType,
   ModelOption,
+  ModelProvider,
   SampleMode,
 } from "../../types";
 import { Button } from "../ui/Button";
 import { FieldMessage } from "../ui/FieldMessage";
 import { Panel } from "../ui/Panel";
 import { ModelSelector } from "./ModelSelector";
+import { ProviderSettings } from "./ProviderSettings";
 
 interface EvaluationFormProps {
   datasets: Dataset[];
@@ -82,6 +84,8 @@ export function EvaluationForm({
   const [agentDifficulty, setAgentDifficulty] = useState<AgentDifficulty>("all");
   const [limit, setLimit] = useState("20");
   const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
+  const [apiModel, setApiModel] = useState("");
+  const [apiProvider, setApiProvider] = useState<ModelProvider | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -115,6 +119,13 @@ export function EvaluationForm({
   }, [benchmarks, datasetOptions]);
   const selectedBenchmark = benchmarkOptions.find((item) => item.id === dataset) || null;
   const selectedSuite = suites.find((item) => item.id === suiteId) || suites[0] || null;
+  const apiSupported = targetMode === "suite"
+    ? selectedSuite?.id === "evalhub-hexagon-v1"
+    : selectedBenchmark?.executor === "native" || selectedBenchmark?.id === "hexagon-humaneval";
+
+  useEffect(() => {
+    if (adapter === "openai-compatible" && !apiSupported) setAdapter("ollama");
+  }, [adapter, apiSupported]);
 
   const availableModels: ModelOption[] =
     modelOptions.length > 0
@@ -134,19 +145,32 @@ export function EvaluationForm({
   const applicableModels = availableModels.filter((option) => option.evaluation_types.includes(evaluationType));
   const selectedModelOption = applicableModels.find((option) => option.name === model);
   const missingOllamaModel = (evaluationType === "agent" || adapter === "ollama") && !selectedModelOption?.installed;
+  const missingApiConfiguration =
+    adapter === "openai-compatible" && (!apiProvider?.key_configured || !apiModel.trim());
 
   const values: EvaluationFormValues = {
     evaluationType,
     dataset,
     subject,
     adapter,
-    model,
-    baseUrl: baseUrlDraft,
+    model: adapter === "openai-compatible" ? apiModel : model,
+    baseUrl: adapter === "openai-compatible" ? apiProvider?.base_url || "" : baseUrlDraft,
     sampleMode,
     agentDifficulty,
     limit,
     suiteId: targetMode === "suite" ? selectedSuite?.id || null : null,
+    providerId: adapter === "openai-compatible" ? apiProvider?.id || null : null,
   };
+
+  const selectApiProvider = useCallback((provider: ModelProvider | null) => {
+    setApiProvider(provider);
+    setErrors((current) => {
+      if (!current.provider) return current;
+      const next = { ...current };
+      delete next.provider;
+      return next;
+    });
+  }, []);
 
   /**
    * 校验当前表单并提交稳定的模型或 Agent 请求。
@@ -157,9 +181,12 @@ export function EvaluationForm({
     event.preventDefault();
     const nextErrors = validateEvaluation(values);
     if (missingOllamaModel) nextErrors.model = "先下载模型或选择已安装模型";
+    if (adapter === "openai-compatible" && apiProvider && !apiProvider.key_configured) {
+      nextErrors.provider = "请先保存 API Key 并验证连接";
+    }
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    onBaseUrlCommit(baseUrlDraft);
+    if (adapter !== "openai-compatible") onBaseUrlCommit(baseUrlDraft);
     onSubmit(buildEvaluationRequest(values));
   }
 
@@ -330,9 +357,15 @@ export function EvaluationForm({
                   id="adapter"
                   className={controlClass}
                   value={adapter}
-                  onChange={(event) => setAdapter(event.target.value as AdapterType)}
+                  onChange={(event) => {
+                    setAdapter(event.target.value as AdapterType);
+                    setErrors({});
+                  }}
                 >
                   <option value="ollama">Ollama 本地模型</option>
+                  <option value="openai-compatible" disabled={!apiSupported}>
+                    API 服务（DeepSeek / 硅基流动 / Kimi）
+                  </option>
                   <option value="oracle" disabled={selectedBenchmark?.executor !== "native"}>
                     Oracle 管线自检
                   </option>
@@ -360,37 +393,49 @@ export function EvaluationForm({
             </div>
           )}
 
-          <div>
-            <ModelSelector
-              id="model"
-              label={evaluationType === "agent" ? "Agent 基模" : "模型"}
-              options={applicableModels}
-              value={model}
-              describedBy={missingOllamaModel ? "model-error" : undefined}
-              onChange={onModelChange}
+          {evaluationType === "model" && adapter === "openai-compatible" ? (
+            <ProviderSettings
+              model={apiModel}
+              modelError={errors.model}
+              providerError={errors.provider}
+              onModelChange={setApiModel}
+              onSelectionChange={selectApiProvider}
             />
-            {missingOllamaModel ? (
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
-                <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
-                  前往资产管理
-                </Button>
+          ) : (
+            <>
+              <div>
+                <ModelSelector
+                  id="model"
+                  label={evaluationType === "agent" ? "Agent 基模" : "模型"}
+                  options={applicableModels}
+                  value={model}
+                  describedBy={missingOllamaModel ? "model-error" : undefined}
+                  onChange={onModelChange}
+                />
+                {missingOllamaModel ? (
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <FieldMessage id="model-error">先下载模型或选择已安装模型</FieldMessage>
+                    <Button size="sm" variant="ghost" className="h-7 px-2 text-primary" onClick={onManageAssets}>
+                      前往资产管理
+                    </Button>
+                  </div>
+                ) : null}
               </div>
-            ) : null}
-          </div>
 
-          <div>
-            <label htmlFor="base-url" className="mb-1.5 block text-xs font-medium text-muted">
-              Ollama 地址
-            </label>
-            <input
-              id="base-url"
-              className={`${controlClass} font-mono text-xs`}
-              value={baseUrlDraft}
-              onChange={(event) => setBaseUrlDraft(event.target.value)}
-              onBlur={() => onBaseUrlCommit(baseUrlDraft)}
-            />
-          </div>
+              <div>
+                <label htmlFor="base-url" className="mb-1.5 block text-xs font-medium text-muted">
+                  Ollama 地址
+                </label>
+                <input
+                  id="base-url"
+                  className={`${controlClass} font-mono text-xs`}
+                  value={baseUrlDraft}
+                  onChange={(event) => setBaseUrlDraft(event.target.value)}
+                  onBlur={() => onBaseUrlCommit(baseUrlDraft)}
+                />
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex min-w-0 flex-col p-5 sm:p-6">
@@ -507,7 +552,10 @@ export function EvaluationForm({
                       : "缓存当前数据集"}
                 </Button>
               ) : null}
-              <Button type="submit" disabled={running || preparing || missingOllamaModel}>
+              <Button
+                type="submit"
+                disabled={running || preparing || missingOllamaModel || missingApiConfiguration}
+              >
                 <Play className="h-4 w-4" aria-hidden="true" />
                 {running ? "正在评测" : evaluationType === "agent" ? "发起 Agent 评测" : "发起评测"}
               </Button>

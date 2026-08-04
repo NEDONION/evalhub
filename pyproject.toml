@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "EvalHub Team" }]
 dependencies = [
+  "cryptography>=43.0",
   "psutil>=6.0",
 ]
 

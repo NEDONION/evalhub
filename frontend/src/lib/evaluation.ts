@@ -18,6 +18,7 @@ export interface EvaluationFormValues {
   agentDifficulty: AgentDifficulty;
   limit: string;
   suiteId: string | null;
+  providerId: string | null;
 }
 
 /**
@@ -53,6 +54,10 @@ export function buildEvaluationRequest(values: EvaluationFormValues): Evaluation
     request.suite_id = values.suiteId;
   }
 
+  if (values.adapter === "openai-compatible" && values.providerId) {
+    request.provider_id = values.providerId;
+  }
+
   if (!values.suiteId && values.dataset === "mmlu") {
     request.subject = values.subject;
   }
@@ -65,10 +70,15 @@ export function buildEvaluationRequest(values: EvaluationFormValues): Evaluation
 }
 
 export function validateEvaluation(values: EvaluationFormValues): Record<string, string> {
+  const errors: Record<string, string> = {};
   if (values.sampleMode === "custom" && !/^[1-9]\d*$/.test(values.limit)) {
-    return { limit: "样本数量必须是大于 0 的整数" };
+    errors.limit = "样本数量必须是大于 0 的整数";
   }
-  return {};
+  if (values.adapter === "openai-compatible") {
+    if (!values.providerId) errors.provider = "请选择模型服务商";
+    if (!values.model.trim()) errors.model = "请输入模型 ID";
+  }
+  return errors;
 }
 
 export function formatScore(value: number): string {

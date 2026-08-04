@@ -69,6 +69,56 @@ def test_evaluation_process_reports_progress_and_result(monkeypatch: pytest.Monk
     ]
 
 
+def test_evaluation_process_forwards_api_provider_to_native_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """原生评测应把服务商引用传到模型构造边界，任务载荷不得含 API Key。"""
+    request = replace(
+        request_fixture(),
+        adapter="openai-compatible",
+        provider_id="deepseek",
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_benchmark(**kwargs: object) -> dict[str, object]:
+        """记录原生执行参数而不连接真实模型服务。"""
+        observed.update(kwargs)
+        return {"job_id": kwargs["job_id"], "total_samples": 0}
+
+    monkeypatch.setattr(executor_module, "run_real_benchmark", fake_benchmark)
+    payload = asdict(request)
+    _evaluation_process("job_api", payload, event_queue)
+
+    assert observed["provider_id"] == "deepseek"
+    assert observed["base_url"] == "https://api.deepseek.com"
+    assert all("api_key" not in key for key in payload)
+    assert event_queue.events[-1]["type"] == "result"
+
+
+def test_evaluation_process_rejects_api_provider_for_harness_benchmark() -> None:
+    """首期未接入的核心 Harness 路径应明确失败，不能产生虚假成功结果。"""
+    request = replace(
+        request_fixture(),
+        dataset="ifeval",
+        adapter="openai-compatible",
+        provider_id="deepseek",
+        base_url="https://api.deepseek.com",
+    )
+    event_queue = RecordingQueue()
+
+    _evaluation_process("job_api_harness", asdict(request), event_queue)
+
+    assert event_queue.events == [
+        {
+            "type": "error",
+            "message": "IFEval暂不支持 API 服务商；仅支持 Ollama 本地模型",
+        }
+    ]
+
+
 def test_evaluation_process_dispatches_lm_eval_benchmark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

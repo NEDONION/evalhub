@@ -1,10 +1,12 @@
 """提供本地 React 静态资源与 EvalHub JSON API 的轻量多线程 HTTP 服务。"""
 
+import ipaddress
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from evalhub.adapters import discover_models
 from evalhub.benchmarks import (
     BenchmarkSpec,
     Capability,
@@ -19,6 +21,14 @@ from evalhub.benchmarks import (
 from evalhub.benchmarks.harness import prepare_harness_benchmark
 from evalhub.cli import run_real_benchmark
 from evalhub.datasets import dataset_catalog, load_samples, prepare_dataset
+from evalhub.model_providers import (
+    BUILTIN_PROVIDERS,
+    ModelProvider,
+    ModelProviderCredentialError,
+    ModelProviderNotFoundError,
+    ModelProviderRepository,
+    default_model_provider_repository,
+)
 from evalhub.ollama import DEFAULT_OLLAMA_BASE_URL, DEFAULT_OLLAMA_MODEL, get_ollama_status
 from evalhub.ollama_pull import OllamaPullManager
 from evalhub.tasks import (
@@ -76,6 +86,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
     # 自定义服务器标识便于本地诊断时区分 Python 开发服务与其他静态服务器。
     server_version = "EvalHubLocal/0.1"
     task_service: EvaluationTaskService | None = None
+    provider_repository: ModelProviderRepository | None = None
 
     def __init__(self, *args: object, directory: str | None = None, **kwargs: object) -> None:
         """初始化请求处理器并选择显式目录或默认前端构建目录。
@@ -104,6 +115,14 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
             self._json({"status": "ok", "service": "evalhub"})
+            return
+        if parsed.path == "/api/model-providers":
+            # 列表只序列化脱敏领域对象，因此允许控制台在未配置密钥时直接展示预设。
+            providers = [
+                _model_provider_payload(provider)
+                for provider in self._require_provider_repository().list()
+            ]
+            self._json({"providers": providers})
             return
         # 数据集端点会动态计算本地准备状态，与静态健康响应保持职责分离。
         if parsed.path == "/api/datasets":
@@ -217,6 +236,19 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         """
         # 路径先于正文解析，未知端点无需读取可能很大的请求负载。
         parsed = urlparse(self.path)
+        if parsed.path == "/api/model-providers":
+            if not self._require_loopback_client():
+                return
+            self._create_model_provider()
+            return
+
+        provider_test_id = _model_provider_test_id(parsed.path)
+        if provider_test_id is not None:
+            if not self._require_loopback_client():
+                return
+            self._test_model_provider(provider_test_id)
+            return
+
         if parsed.path == "/api/ollama/pulls":
             payload = self._read_json()
             model = payload.get("model")
@@ -241,7 +273,10 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
 
         if parsed.path == "/api/evaluations":
             try:
-                request = _task_request(self._read_json())
+                request = _task_request(
+                    self._read_json(),
+                    provider_repository=self._require_provider_repository(optional=True),
+                )
                 task = self._require_task_service().submit(request)
             except (TypeError, ValueError) as exc:
                 # 无效组合不得写入持久队列，浏览器可以直接展示字段级诊断。
@@ -347,13 +382,33 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         # 所有未注册 POST 路径返回结构化 404，避免落入静态文件处理器。
         self._json({"ok": False, "error": "not found"}, status=404)
 
-    def do_DELETE(self) -> None:
-        """取消仍在进行的本地模型下载任务。
+    def do_PUT(self) -> None:
+        """更新一个模型服务商的公开配置或加密凭据。
 
         Side Effects:
-            设置下载线程取消事件并尽力关闭当前 Ollama 流式响应；未知任务返回 404。
+            仅回环客户端可以修改独立服务商数据库；留空 API Key 会保留旧密文。
+        """
+        provider_id = _model_provider_id(urlparse(self.path).path)
+        if provider_id is None:
+            self._json({"ok": False, "error": "not found"}, status=404)
+            return
+        if not self._require_loopback_client():
+            return
+        self._update_model_provider(provider_id)
+
+    def do_DELETE(self) -> None:
+        """删除模型服务商配置或取消仍在进行的本地模型下载任务。
+
+        Side Effects:
+            回环客户端可删除自定义服务商或重置内置项；下载路径继续取消 Ollama 线程。
         """
         parsed = urlparse(self.path)
+        provider_id = _model_provider_id(parsed.path)
+        if provider_id is not None:
+            if not self._require_loopback_client():
+                return
+            self._delete_model_provider(provider_id)
+            return
         if parsed.path != "/api/ollama/pulls":
             self._json({"ok": False, "error": "not found"}, status=404)
             return
@@ -368,6 +423,106 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
             return
         self._json({"ok": True, "task": task})
 
+    def _create_model_provider(self) -> None:
+        """校验正文并创建一个带加密凭据的自定义服务商。
+
+        Side Effects:
+            写入脱敏配置和 Fernet 密文，响应中只返回公开服务商字段。
+        """
+        try:
+            payload = self._read_json()
+            name = _required_string(payload, "name")
+            base_url = _required_string(payload, "base_url")
+            api_key = _required_string(payload, "api_key")
+            provider = self._require_provider_repository().save(
+                None,
+                name=name,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        except ValueError as exc:
+            self._json({"ok": False, "error": str(exc)}, status=400)
+            return
+        self._json({"ok": True, "provider": _model_provider_payload(provider)}, status=201)
+
+    def _update_model_provider(self, provider_id: str) -> None:
+        """更新已有服务商，未提供字段沿用当前公开值。
+
+        Args:
+            provider_id: 内置稳定 ID 或已存在的自定义 ID。
+
+        Side Effects:
+            保存地址、名称和可选新密钥；空密钥按仓储语义保留旧值。
+        """
+        repository = self._require_provider_repository()
+        try:
+            current = repository.get(provider_id)
+            payload = self._read_json()
+            name = _optional_string(payload, "name", current.name)
+            base_url = _optional_string(payload, "base_url", current.base_url)
+            api_key = _optional_string(payload, "api_key", None)
+            provider = repository.save(
+                provider_id,
+                name=name,
+                base_url=base_url,
+                api_key=api_key,
+            )
+        except ModelProviderNotFoundError as exc:
+            self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+            return
+        except ValueError as exc:
+            self._json({"ok": False, "error": str(exc)}, status=400)
+            return
+        self._json({"ok": True, "provider": _model_provider_payload(provider)})
+
+    def _delete_model_provider(self, provider_id: str) -> None:
+        """删除自定义服务商，或把内置服务商恢复成无凭据默认项。
+
+        Args:
+            provider_id: 请求删除或重置的服务商标识。
+
+        Side Effects:
+            从独立 SQLite 表删除对应记录，不修改任何历史评测任务。
+        """
+        try:
+            self._require_provider_repository().delete(provider_id)
+        except ModelProviderNotFoundError as exc:
+            self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+            return
+        self._json(
+            {
+                "ok": True,
+                "provider_id": provider_id,
+                "reset": provider_id in BUILTIN_PROVIDERS,
+            }
+        )
+
+    def _test_model_provider(self, provider_id: str) -> None:
+        """使用已保存凭据探测服务商模型列表。
+
+        Args:
+            provider_id: 已配置凭据的服务商标识。
+
+        Side Effects:
+            发起一次短超时 ``GET /models``，但不接收或返回浏览器传入的明文密钥。
+        """
+        repository = self._require_provider_repository()
+        try:
+            provider = repository.get(provider_id)
+            api_key = repository.resolve_api_key(provider_id)
+            models = discover_models(provider.base_url, api_key)
+        except ModelProviderNotFoundError as exc:
+            self._json({"ok": False, "error": _exception_message(exc)}, status=404)
+            return
+        except (ModelProviderCredentialError, ValueError) as exc:
+            self._json({"ok": False, "error": str(exc)}, status=400)
+            return
+        except RuntimeError as exc:
+            # 适配器错误已经执行密钥脱敏，502 明确表示配置已保存但上游探测失败。
+            self._json({"ok": False, "error": str(exc)}, status=502)
+            return
+        self._json({"ok": True, "models": models})
+
     def _require_task_service(self) -> EvaluationTaskService:
         """返回处理器已经装配的任务服务。
 
@@ -380,6 +535,45 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         if self.task_service is None:
             raise RuntimeError("evaluation task service is not configured")
         return self.task_service
+
+    def _require_provider_repository(
+        self,
+        *,
+        optional: bool = False,
+    ) -> ModelProviderRepository | None:
+        """返回处理器已经装配的模型服务商仓储。
+
+        Args:
+            optional: 兼容不使用 API 模型的旧测试和入口；为真时允许返回 ``None``。
+
+        Returns:
+            已配置的独立服务商仓储，或可选模式下的 ``None``。
+
+        Raises:
+            RuntimeError: 必需模式下服务入口没有装配仓储。
+        """
+        if self.provider_repository is None and not optional:
+            raise RuntimeError("model provider repository is not configured")
+        return self.provider_repository
+
+    def _require_loopback_client(self) -> bool:
+        """拒绝来自非回环客户端的凭据写入和凭据使用操作。
+
+        Returns:
+            客户端地址为回环 IP 时返回 ``True``；否则发送 403 并返回 ``False``。
+        """
+        try:
+            is_loopback = ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            is_loopback = False
+        if is_loopback:
+            return True
+        # 即使服务被用户主动绑定公网地址，凭据管理边界也不能随监听地址一起放宽。
+        self._json(
+            {"ok": False, "error": "provider credentials are loopback-only"},
+            status=403,
+        )
+        return False
 
     def _dataset_status(self) -> dict[str, object]:
         """汇总数据集元数据、本地准备状态和可读取样本数。
@@ -498,7 +692,9 @@ def serve(host: str = "127.0.0.1", port: int = 8000) -> None:
     project_root = Path(__file__).resolve().parents[2]
     task_repository = SQLiteTaskRepository(project_root / ".runtime" / "evalhub.db")
     task_service = EvaluationTaskService(task_repository)
+    provider_repository = default_model_provider_repository()
     EvalHubRequestHandler.task_service = task_service
+    EvalHubRequestHandler.provider_repository = provider_repository
 
     # 先绑定端口再启动 Worker，端口冲突时不会遗留不可访问的执行线程。
     server = ThreadingHTTPServer((host, port), EvalHubRequestHandler)
@@ -670,6 +866,103 @@ def _first(query: dict[str, list[str]], key: str, default: str) -> str:
     return values[0] or default
 
 
+def _required_string(payload: dict[str, object], key: str) -> str:
+    """读取必填非空字符串字段并去除复制时产生的首尾空白。
+
+    Args:
+        payload: 已解析为对象的请求正文。
+        key: 需要读取的稳定字段名。
+
+    Returns:
+        去除首尾空白后的非空字符串。
+
+    Raises:
+        ValueError: 字段缺失、类型错误或内容为空。
+    """
+    value = payload.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{key} is required")
+    return value.strip()
+
+
+def _optional_string(
+    payload: dict[str, object],
+    key: str,
+    default: str | None,
+) -> str | None:
+    """读取可选字符串字段，缺失时沿用调用方提供的当前值。
+
+    Args:
+        payload: 已解析为对象的请求正文。
+        key: 允许更新的稳定字段名。
+        default: 字段未出现时返回的当前值。
+
+    Returns:
+        用户提交的原字符串，或未提交时的默认值。
+
+    Raises:
+        ValueError: 字段存在但不是字符串。
+    """
+    if key not in payload:
+        return default
+    value = payload[key]
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    return value
+
+
+def _model_provider_payload(provider: ModelProvider) -> dict[str, object]:
+    """把脱敏服务商对象转换成稳定 JSON 字段。
+
+    Args:
+        provider: 不包含密文和明文凭据的公开服务商对象。
+
+    Returns:
+        含配置状态、末四位提示和 ISO 时间的响应字典。
+    """
+    return {
+        "id": provider.id,
+        "name": provider.name,
+        "kind": provider.kind,
+        "base_url": provider.base_url,
+        "key_configured": provider.key_configured,
+        "key_hint": provider.key_hint,
+        "created_at": provider.created_at.isoformat() if provider.created_at else None,
+        "updated_at": provider.updated_at.isoformat() if provider.updated_at else None,
+    }
+
+
+def _model_provider_id(path: str) -> str | None:
+    """从服务商详情路径提取一个不含额外层级的稳定标识。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        匹配详情路由时返回 ID，否则返回 ``None``。
+    """
+    parts = path.strip("/").split("/")
+    if len(parts) == 3 and parts[:2] == ["api", "model-providers"] and parts[2]:
+        return parts[2]
+    return None
+
+
+def _model_provider_test_id(path: str) -> str | None:
+    """从模型探测路径提取服务商标识。
+
+    Args:
+        path: 不含查询参数的 HTTP 路径。
+
+    Returns:
+        匹配 ``/api/model-providers/{id}/test`` 时返回 ID，否则返回 ``None``。
+    """
+    parts = path.strip("/").split("/")
+    if len(parts) == 4 and parts[:2] == ["api", "model-providers"]:
+        if parts[2] and parts[3] == "test":
+            return parts[2]
+    return None
+
+
 def _parse_limit(payload: dict[str, object]) -> int | None:
     """把前端采样模式和自定义数量转换为统一样本上限。
 
@@ -693,11 +986,15 @@ def _parse_limit(payload: dict[str, object]) -> int | None:
     return int(raw_limit)
 
 
-def _task_request(payload: object) -> TaskRequest:
+def _task_request(
+    payload: object,
+    provider_repository: ModelProviderRepository | None = None,
+) -> TaskRequest:
     """校验任务创建正文并转换为可持久化请求。
 
     Args:
         payload: 浏览器提交并已完成 JSON 解析的值。
+        provider_repository: API 模型请求用于解析脱敏配置的服务商仓储。
 
     Returns:
         字段完整且样本数量合法的任务请求。
@@ -730,9 +1027,29 @@ def _task_request(payload: object) -> TaskRequest:
     if not dataset or not model:
         raise ValueError("dataset and model are required")
 
-    adapter = str(payload.get("adapter", "ollama"))
-    if adapter not in {"ollama", "oracle"}:
-        raise ValueError("adapter must be one of: ollama, oracle")
+    adapter = str(payload.get("adapter", "ollama")).strip()
+    if adapter not in {"ollama", "oracle", "openai-compatible"}:
+        raise ValueError("adapter must be one of: ollama, oracle, openai-compatible")
+
+    # API 模型只接受服务商引用，地址始终取仓储快照，浏览器无法覆盖为任意目标。
+    raw_provider_id = payload.get("provider_id")
+    provider_id: str | None = None
+    base_url = str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL))
+    if adapter == "openai-compatible":
+        if not isinstance(raw_provider_id, str) or not raw_provider_id.strip():
+            raise ValueError("provider_id is required for openai-compatible adapter")
+        if provider_repository is None:
+            raise ValueError("model provider repository is not configured")
+        provider_id = raw_provider_id.strip()
+        try:
+            provider = provider_repository.get(provider_id)
+        except ModelProviderNotFoundError as exc:
+            raise ValueError(_exception_message(exc)) from exc
+        if not provider.key_configured:
+            raise ValueError(f"model provider {provider_id} has no API Key")
+        base_url = provider.base_url
+    elif raw_provider_id not in (None, ""):
+        raise ValueError("provider_id is only valid for openai-compatible adapter")
     agent_framework: str | None = None
     agent_difficulty: str | None = None
     if evaluation_type == "agent":
@@ -777,7 +1094,7 @@ def _task_request(payload: object) -> TaskRequest:
         dataset=dataset,
         adapter=adapter,
         model=model,
-        base_url=str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
+        base_url=base_url,
         sample_mode=sample_mode,
         subject=(
             "all" if suite_id is not None else str(payload.get("subject", "all"))
@@ -787,6 +1104,7 @@ def _task_request(payload: object) -> TaskRequest:
         agent_framework=agent_framework,
         suite_id=suite_id,
         agent_difficulty=agent_difficulty,
+        provider_id=provider_id,
     )
 
 

@@ -32,6 +32,24 @@ class CliParserTest(unittest.TestCase):
         # 下游加载器期望整数上限，因此断言同时保护值和隐式类型转换结果。
         self.assertEqual(args.limit, 5)
 
+    def test_run_benchmark_accepts_api_provider(self) -> None:
+        """CLI 应允许显式选择兼容协议并携带已保存的服务商标识。"""
+        args = build_parser().parse_args(
+            [
+                "run-benchmark",
+                "--adapter",
+                "openai-compatible",
+                "--provider-id",
+                "deepseek",
+                "--model",
+                "deepseek-v4-pro",
+            ]
+        )
+
+        # CLI 只保存引用，不接受或展示 API Key，凭据由统一仓储在运行时解析。
+        self.assertEqual(args.adapter, "openai-compatible")
+        self.assertEqual(args.provider_id, "deepseek")
+
 
 if __name__ == "__main__":
     # 保留 unittest 直接执行入口，方便在不经过 pytest 时单独排查解析器测试。

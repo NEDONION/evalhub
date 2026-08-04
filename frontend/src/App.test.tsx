@@ -15,11 +15,16 @@ import {
   getEvaluationTasks,
   getHealth,
   getModelPerformance,
+  getModelProviders,
   getModelPull,
   getOllamaStatus,
   getSuites,
   prepareDataset,
   startModelPull,
+  testModelProvider,
+  updateModelProvider,
+  createModelProvider,
+  deleteModelProvider,
 } from "./lib/api";
 import type {
   BenchmarkDefinition,
@@ -36,6 +41,8 @@ vi.mock("./lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
   createEvaluation: vi.fn(),
+  createModelProvider: vi.fn(),
+  deleteModelProvider: vi.fn(),
   getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
   getEvaluationNode: vi.fn(),
@@ -44,11 +51,14 @@ vi.mock("./lib/api", () => ({
   getEvaluationTasks: vi.fn(),
   getHealth: vi.fn(),
   getModelPerformance: vi.fn(),
+  getModelProviders: vi.fn(),
   getModelPull: vi.fn(),
   getOllamaStatus: vi.fn(),
   getSuites: vi.fn(),
   prepareDataset: vi.fn(),
   startModelPull: vi.fn(),
+  testModelProvider: vi.fn(),
+  updateModelProvider: vi.fn(),
 }));
 
 const datasetFixture = {
@@ -376,6 +386,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getModelPerformance).mockResolvedValue(emptyPerformance);
+  vi.mocked(getModelProviders).mockResolvedValue([
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      kind: "builtin",
+      base_url: "https://api.deepseek.com",
+      key_configured: true,
+      key_hint: "1234",
+      created_at: null,
+      updated_at: null,
+    },
+  ]);
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
   vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
   vi.mocked(getSuites).mockResolvedValue({ suites: [] });
@@ -408,6 +430,10 @@ beforeEach(() => {
   vi.mocked(getEvaluationTask).mockReset();
   vi.mocked(createEvaluation).mockReset();
   vi.mocked(cancelEvaluationTask).mockReset();
+  vi.mocked(createModelProvider).mockReset();
+  vi.mocked(deleteModelProvider).mockReset();
+  vi.mocked(testModelProvider).mockReset();
+  vi.mocked(updateModelProvider).mockReset();
 });
 
 describe("EvalHub console", () => {
@@ -564,6 +590,31 @@ describe("EvalHub console", () => {
 
     await user.selectOptions(screen.getByLabelText("模型适配器"), "oracle");
     expect(screen.getByRole("button", { name: "发起评测" })).toBeEnabled();
+  });
+
+  it("submits an encrypted API provider reference with a manually entered model ID", async () => {
+    const user = userEvent.setup();
+    vi.mocked(createEvaluation).mockResolvedValue(pendingTask);
+    render(<App />);
+
+    await user.click(navigationButton("发起评测"));
+    await user.selectOptions(
+      await screen.findByLabelText("模型适配器"),
+      "openai-compatible",
+    );
+    expect(await screen.findByLabelText("API 服务商")).toHaveValue("deepseek");
+    await user.type(screen.getByLabelText("模型 ID"), "deepseek-v4-pro");
+    await user.click(screen.getByRole("button", { name: "发起评测" }));
+
+    expect(createEvaluation).toHaveBeenCalledWith({
+      evaluation_type: "model",
+      dataset: "gsm8k",
+      adapter: "openai-compatible",
+      provider_id: "deepseek",
+      model: "deepseek-v4-pro",
+      base_url: "https://api.deepseek.com",
+      sample_mode: "all",
+    });
   });
 
   it("按评测类型过滤模型并在当前模型不适用时回退到已安装项", async () => {
