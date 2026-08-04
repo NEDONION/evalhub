@@ -73,4 +73,27 @@ describe("ModelSelector", () => {
     expect(screen.getByRole("button", { name: "模型" })).toBeDisabled();
     expect(screen.getByText("暂无可用模型")).toBeInTheDocument();
   });
+
+  it("触发器下方空间不足时向上展开", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelSelector id="model" label="模型" options={options} value="granite4.1:3b" onChange={vi.fn()} />,
+    );
+
+    const trigger = screen.getByRole("button", { name: "模型" });
+    vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+      top: 680,
+      bottom: 736,
+      left: 20,
+      right: 320,
+      width: 300,
+      height: 56,
+      x: 20,
+      y: 680,
+      toJSON: () => ({}),
+    });
+    await user.click(trigger);
+
+    expect(screen.getByRole("listbox")).toHaveClass("bottom-full");
+  });
 });

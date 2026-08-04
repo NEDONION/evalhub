@@ -21,6 +21,7 @@ interface ModelSelectorProps {
  */
 export function ModelSelector({ id, label, options, value, describedBy, onChange }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const [openAbove, setOpenAbove] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -51,6 +52,16 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
   function close(returnFocus = false) {
     setOpen(false);
     if (returnFocus) triggerRef.current?.focus();
+  }
+
+  /** 根据触发器上下可用空间选择列表展开方向，避免候选项被视口裁切。 */
+  function showList() {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      const spaceBelow = window.innerHeight - rect.bottom;
+      setOpenAbove(spaceBelow < 384 && rect.top > spaceBelow);
+    }
+    setOpen(true);
   }
 
   /** 聚焦指定候选项，并把越界索引限制在当前列表内。 */
@@ -143,11 +154,11 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
         aria-controls={listboxId}
         aria-describedby={describedBy}
         disabled={options.length === 0}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => (open ? close() : showList())}
         onKeyDown={(event) => {
           if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
           event.preventDefault();
-          setOpen(true);
+          showList();
         }}
         className="flex min-h-14 w-full items-center gap-3 rounded-md border border-border bg-white px-3 py-2 text-left shadow-[0_1px_2px_rgba(15,23,42,0.025)] outline-none transition-colors hover:border-slate-300 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-50"
       >
@@ -176,7 +187,9 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
           id={listboxId}
           role="listbox"
           aria-labelledby={`${id}-label`}
-          className="absolute z-30 mt-2 max-h-96 w-full min-w-[20rem] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)]"
+          className={`absolute z-30 max-h-96 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-[0_18px_44px_rgba(15,23,42,0.16)] ${
+            openAbove ? "bottom-full mb-2" : "mt-2"
+          }`}
         >
           {renderGroup("已安装", installed, HardDrive)}
           {renderGroup("推荐下载", recommended, Download)}
