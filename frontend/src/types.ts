@@ -1,4 +1,5 @@
 export type DatasetName = string;
+export type BenchmarkExecutor = "native" | "lm_eval" | "sandboxed_code";
 export type AdapterType = "ollama" | "oracle";
 export type SampleMode = "all" | "quick" | "custom";
 export type EvaluationType = "model" | "agent";
@@ -14,6 +15,11 @@ export interface Dataset {
   source_url: string;
   local_path: string;
   description: string;
+  executor?: BenchmarkExecutor;
+  capability?: string;
+  capability_label?: string;
+  locally_runnable?: boolean;
+  readiness_reason?: string | null;
   prepared: boolean;
   sample_count: number | null;
 }
@@ -70,8 +76,6 @@ export interface EvaluationRequest {
   limit?: number;
   suite_id?: string;
 }
-
-export type BenchmarkExecutor = "native" | "lm_eval" | "sandboxed_code";
 
 export interface BenchmarkDefinition {
   id: string;
@@ -379,5 +383,5 @@ export interface PrepareDatasetResponse {
   dataset: DatasetName;
   path: string;
   operation: "cached" | "updated";
-  sample_count: number;
+  sample_count: number | null;
 }

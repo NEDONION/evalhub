@@ -425,8 +425,12 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
       try {
         const response = await prepareDataset(dataset, force);
         if (!mountedRef.current) return;
+        const count =
+          response.sample_count === null
+            ? ""
+            : `，${response.sample_count.toLocaleString("zh-CN")} 条样本`;
         setDatasetNotice(
-          `${dataset.toUpperCase()} 已${response.operation === "updated" ? "更新" : "缓存"}，${response.sample_count.toLocaleString("zh-CN")} 条样本`,
+          `${dataset.toUpperCase()} 已${response.operation === "updated" ? "更新" : "缓存"}${count}`,
         );
         await refresh();
       } catch (error) {

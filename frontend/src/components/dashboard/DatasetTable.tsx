@@ -18,6 +18,12 @@ const taskLabels: Record<string, string> = {
   multiple_choice: "多选问答",
 };
 
+const executorLabels = {
+  native: "EvalHub 原生",
+  lm_eval: "lm-eval",
+  sandboxed_code: "Docker 沙箱",
+};
+
 const metricLabels: Record<string, string> = {
   numeric_exact_match: "数值匹配",
   choice_letter: "选项匹配",
@@ -78,6 +84,9 @@ export function DatasetTable({ datasets, preparingDataset, error, notice, onPrep
         ) : (
           datasets.map((dataset) => {
             const preparing = preparingDataset === dataset.name;
+            const runnable = dataset.locally_runnable !== false;
+            const executor = executorLabels[dataset.executor || "native"];
+            const status = !runnable ? "未就绪" : dataset.prepared ? "已缓存" : "未缓存";
             return (
               <div key={dataset.name} role="row" className="dataset-grid space-y-3 border-b border-border px-5 py-4 last:border-b-0 md:grid md:items-center md:gap-4 md:space-y-0 sm:px-6">
                 <div role="cell" className="min-w-0">
@@ -98,15 +107,19 @@ export function DatasetTable({ datasets, preparingDataset, error, notice, onPrep
                   </p>
                 </div>
                 <div role="cell" className="min-w-0 text-xs text-muted">
-                  <span className="block text-ink">{taskLabels[dataset.task_type] || dataset.task_type}</span>
-                  <span className="mt-1 block text-slate-400">{metricLabels[dataset.evaluator_type] || dataset.evaluator_type}</span>
+                  <span className="block text-ink">
+                    {dataset.capability_label || taskLabels[dataset.task_type] || dataset.task_type}
+                  </span>
+                  <span className="mt-1 block text-slate-400">
+                    {executor} · {metricLabels[dataset.evaluator_type] || dataset.evaluator_type}
+                  </span>
                 </div>
                 <div role="cell" className="text-sm font-medium text-ink">
                   {dataset.sample_count === null ? "—" : dataset.sample_count.toLocaleString("zh-CN")}
                 </div>
                 <div role="cell">
-                  <Badge tone={dataset.prepared ? "success" : "neutral"} dot>
-                    {dataset.prepared ? "已缓存" : "未缓存"}
+                  <Badge tone={!runnable ? "warning" : dataset.prepared ? "success" : "neutral"} dot>
+                    {status}
                   </Badge>
                 </div>
                 <div role="cell" className="flex justify-start md:justify-end">
@@ -114,7 +127,8 @@ export function DatasetTable({ datasets, preparingDataset, error, notice, onPrep
                     variant="secondary"
                     size="sm"
                     onClick={() => onPrepare(dataset.name, dataset.prepared)}
-                    disabled={Boolean(preparingDataset)}
+                    disabled={Boolean(preparingDataset) || !runnable}
+                    title={dataset.readiness_reason || undefined}
                     aria-label={`${dataset.prepared ? "更新" : "缓存"} ${dataset.display_name}`}
                   >
                     {dataset.prepared ? (
