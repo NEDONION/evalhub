@@ -6,7 +6,11 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from evalhub.benchmarks.humaneval import DockerHumanEvalSandbox
+from evalhub.benchmarks.humaneval import (
+    DockerHumanEvalSandbox,
+    SandboxInfrastructureError,
+    resolve_humaneval_image,
+)
 from evalhub.benchmarks.models import BenchmarkSpec, ExecutorKind
 
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
@@ -52,11 +56,13 @@ def benchmark_readiness(
             f"Docker 服务不可用；构建并启动固定镜像：{_BUILD_COMMAND}",
         )
     image = DockerHumanEvalSandbox.image
-    if not _command_succeeds(["docker", "image", "inspect", image], command_runner):
+    try:
+        resolve_humaneval_image(command_runner)
+    except SandboxInfrastructureError:
         return ExecutorReadiness(
             False,
             "executor_not_ready",
-            f"HumanEval 固定镜像 {image} 不存在；请运行 {_BUILD_COMMAND}",
+            f"HumanEval 固定镜像 {image} 缺失或配置不可信；请运行 {_BUILD_COMMAND}",
         )
     return ExecutorReadiness(True, "ready", f"HumanEval 固定镜像 {image} 已就绪")
 

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import importlib.util
 import json
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -16,12 +19,38 @@ from evalhub.benchmarks import Capability, ExecutorKind, get_benchmark_spec
 from evalhub.benchmarks.humaneval import (
     DockerHumanEvalSandbox,
     HumanEvalProblem,
+    SandboxInfrastructureError,
     SandboxResult,
     load_humaneval_problems,
     run_humaneval_benchmark,
 )
 from evalhub.benchmarks.readiness import benchmark_readiness
 from evalhub.datasets.hexagon_manifest import HexagonSampleSpec
+
+_IMAGE_ID = f"sha256:{'a' * 64}"
+_CONTAINER_TOKEN = "b" * 32
+_CONTAINER_NAME = f"evalhub-humaneval-{_CONTAINER_TOKEN}"
+_IMAGE_INSPECT_OUTPUT = (
+    f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]\n'
+)
+
+
+def _load_verifier_controller() -> ModuleType:
+    """只导入可信 verifier controller，测试不会调用或执行任何候选源码。
+
+    Returns:
+        从 Docker 构建上下文加载且未执行 ``main`` 的 controller 模块。
+
+    Raises:
+        RuntimeError: Python 无法为 verifier 文件创建导入规格时抛出。
+    """
+    path = Path("docker/hexagon-humaneval/verify.py")
+    spec = importlib.util.spec_from_file_location("hexagon_humaneval_verify", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("cannot load HumanEval verifier controller")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _digest(value: str) -> str:
@@ -82,9 +111,223 @@ class FakeSandbox:
         return self.result
 
 
+def test_verifier_controller_uses_worker_only_as_candidate_rpc() -> None:
+    """可信 controller 必须隔离候选调用，且 worker 输入不得包含隐藏测试。"""
+    verifier = _load_verifier_controller()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    class FakeProcess:
+        """模拟只返回候选函数值、无权返回最终 verdict 的隔离 worker。"""
+
+        returncode = 0
+        pid = 12345
+
+        def communicate(self, input: bytes, timeout: int) -> tuple[None, None]:
+            """记录有界 RPC 输入，并向容器内临时通道写入候选返回值。
+
+            Args:
+                input: controller 传给 worker stdin 的候选源码与调用参数。
+                timeout: controller 对单次候选调用施加的秒级硬超时。
+
+            Returns:
+                输出写入独立临时文件，因此进程等待接口不返回动态文本。
+            """
+            calls.append((["communicate"], {"input": input, "timeout": timeout}))
+            output = calls[0][1]["stdout"]
+            output.write(b'{"ok":true,"value":3}\n')
+            output.flush()
+            return None, None
+
+    def process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+        """记录 worker 创建参数并返回不执行任何源码的假进程。
+
+        Args:
+            command: controller 固定的 Python worker argv。
+            **kwargs: stdin、容器内临时输出、会话和句柄继承配置。
+
+        Returns:
+            可由 controller 等待的假进程。
+        """
+        calls.append((command, kwargs))
+        return FakeProcess()
+
+    payload = {
+        "prompt": "def add(a, b):\n",
+        "completion": "    return a + b\n",
+        "test": "SECRET_HIDDEN_TEST",
+        "entry_point": "add",
+    }
+    killed_groups: list[int] = []
+    result = verifier._run_candidate(
+        payload,
+        (1, 2),
+        {},
+        process_factory=process_factory,
+        group_killer=lambda process_id: killed_groups.append(process_id),
+    )
+
+    command, kwargs = calls[0]
+    assert command == [sys.executable, "/opt/evalhub/worker.py"]
+    assert kwargs["stdin"] is subprocess.PIPE
+    assert kwargs["stdout"] is not subprocess.PIPE
+    assert kwargs["stdout"] is not sys.stdout
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["close_fds"] is True
+    assert kwargs["start_new_session"] is True
+    call_payload = json.loads(bytes(calls[1][1]["input"]))
+    assert call_payload == {
+        "prompt": "def add(a, b):\n",
+        "completion": "    return a + b\n",
+        "entry_point": "add",
+        "args": [1, 2],
+        "kwargs": {},
+    }
+    assert "SECRET_HIDDEN_TEST" not in bytes(calls[1][1]["input"]).decode()
+    assert killed_groups == [12345]
+    assert result == 3
+
+
+def test_verifier_controller_owns_hidden_check_and_final_verdict() -> None:
+    """隐藏 check 只能调用 RPC 代理，候选源码不能在 controller 内设置通过状态。"""
+    verifier = _load_verifier_controller()
+    payload = {
+        "prompt": "def add(a, b):\n",
+        "completion": "    import os\n    os._exit(73)\n",
+        "test": "def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        "entry_point": "add",
+    }
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def candidate_runner(
+        received: dict[str, str], args: tuple[object, ...], kwargs: dict[str, object]
+    ) -> int:
+        """模拟 worker 仅按调用参数返回值，并确认它没有获得隐藏 check 源码。
+
+        Args:
+            received: controller 保存的完整载荷，只由受信任代理读取必要候选字段。
+            args: 隐藏测试传给候选的位置参数。
+            kwargs: 隐藏测试传给候选的关键字参数。
+
+        Returns:
+            与 ``add`` 合同一致的整数，供可信隐藏断言独立判断。
+        """
+        assert received["test"] == payload["test"]
+        calls.append((args, kwargs))
+        return int(args[0]) + int(args[1])
+
+    result = verifier._verify(payload, candidate_runner=candidate_runner)
+
+    assert result == {"passed": True}
+    assert calls == [((2, 3), {})]
+
+
+def test_verifier_controller_disables_ptrace_access_before_spawning_worker() -> None:
+    """可信 controller 必须设为不可转储，阻止同 UID worker 打开其 proc 文件描述符。"""
+    verifier = _load_verifier_controller()
+    calls: list[tuple[int, int, int, int, int]] = []
+
+    def prctl(option: int, value: int, arg3: int, arg4: int, arg5: int) -> int:
+        """记录 Linux prctl 参数并模拟成功。
+
+        Args:
+            option: 要设置的进程安全属性。
+            value: 属性的新整数值。
+            arg3: 当前操作未使用的第三参数。
+            arg4: 当前操作未使用的第四参数。
+            arg5: 当前操作未使用的第五参数。
+
+        Returns:
+            零表示内核接受安全设置。
+        """
+        calls.append((option, value, arg3, arg4, arg5))
+        return 0
+
+    verifier._lock_controller_process(prctl=prctl)
+
+    assert calls == [(4, 0, 0, 0, 0)]
+
+
+def test_verifier_controller_classifies_worker_cleanup_failure_as_infrastructure() -> None:
+    """controller 无法回收候选进程组时必须报告基础设施故障，不能记作断言失败。"""
+    verifier = _load_verifier_controller()
+
+    class FakeProcess:
+        """模拟已经正常写出候选返回值、但进程组清理被内核拒绝的 worker。"""
+
+        returncode = 0
+        pid = 12345
+
+        def __init__(self, output: object) -> None:
+            """保存 controller 创建的容器内临时输出通道。
+
+            Args:
+                output: ``_run_candidate`` 传给 worker stdout 的二进制临时文件。
+            """
+            self.output = output
+
+        def communicate(self, input: bytes, timeout: int) -> tuple[None, None]:
+            """写入一个合法候选值并模拟 worker 正常结束。
+
+            Args:
+                input: 本测试无需解析的候选 RPC 字节。
+                timeout: controller 设置的单次调用硬超时。
+
+            Returns:
+                动态返回值已写入独立文件，因此等待接口没有管道输出。
+            """
+            del input, timeout
+            self.output.write(b'{"ok":true,"value":1}')
+            self.output.flush()
+            return None, None
+
+    def process_factory(command: list[str], **kwargs: object) -> FakeProcess:
+        """返回绑定到临时输出通道的假 worker。
+
+        Args:
+            command: 固定 Python worker argv，本测试不执行它。
+            **kwargs: 包含 controller 创建的 stdout 临时通道。
+
+        Returns:
+            可由 controller 等待的正常假进程。
+        """
+        del command
+        return FakeProcess(kwargs["stdout"])
+
+    def deny_cleanup(process_id: int) -> None:
+        """模拟内核拒绝 controller 终止指定 worker 进程组。
+
+        Args:
+            process_id: 待清理 worker 的固定假 PID。
+
+        Raises:
+            PermissionError: 每次调用均表示进程回收基础设施失败。
+        """
+        del process_id
+        raise PermissionError("SECRET_KERNEL_DETAIL")
+
+    payload = {
+        "prompt": "def one():\n",
+        "completion": "    return 1\n",
+        "test": "SECRET_HIDDEN_TEST",
+        "entry_point": "one",
+    }
+    with pytest.raises(verifier.ControllerInfrastructureError) as raised:
+        verifier._run_candidate(
+            payload,
+            (),
+            {},
+            process_factory=process_factory,
+            group_killer=deny_cleanup,
+        )
+
+    assert "SECRET_KERNEL_DETAIL" not in str(raised.value)
+
+
 def test_docker_command_has_fixed_isolation_and_no_host_mount() -> None:
     """Docker 命令必须禁网、只读、降权、限额且不允许任何宿主挂载。"""
-    command = DockerHumanEvalSandbox().command()
+    command = DockerHumanEvalSandbox().command(
+        image_id=_IMAGE_ID, container_name=_CONTAINER_NAME
+    )
 
     # 字面参数是安全边界本身；缺少任一项都会让不可信代码获得额外宿主能力。
     assert "--network=none" in command
@@ -95,8 +338,11 @@ def test_docker_command_has_fixed_isolation_and_no_host_mount() -> None:
     # 进程、CPU、临时目录和固定镜像共同限制单题可消耗的宿主资源。
     assert "--cpus=1" in command
     assert "--pids-limit=64" in command
+    assert "--pull=never" in command
+    assert command[command.index("--user") + 1] == "10001:10001"
+    assert command[command.index("--name") + 1] == _CONTAINER_NAME
     assert "/tmp:rw,noexec,nosuid,size=16m" in command
-    assert command[-1] == "evalhub-humaneval:1.0.0"
+    assert command[-1] == _IMAGE_ID
     assert not any(item in {"-v", "--volume", "--mount"} for item in command)
 
 
@@ -115,13 +361,21 @@ def test_sandbox_sends_hidden_payload_only_to_fixed_docker_stdin() -> None:
             模拟固定镜像成功完成的文本进程结果。
         """
         calls.append((command, kwargs))
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         return subprocess.CompletedProcess(command, 0, '{"passed": true}\n', "")
 
-    result = DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 1\n")
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    result = sandbox.run(_problem(), "    return 1\n")
 
     assert result == SandboxResult(passed=True, reason=None)
-    assert len(calls) == 1
-    command, kwargs = calls[0]
+    assert len(calls) == 2
+    inspect_command, inspect_kwargs = calls[0]
+    assert inspect_command[-1] == "evalhub-humaneval:1.0.0"
+    assert "{{.Id}}" in str(inspect_kwargs.get("input", "")) or "--format" in inspect_command
+    command, kwargs = calls[1]
     payload = json.loads(str(kwargs["input"]))
     # 标准实现只用于显式集成自测，模型候选验证不得把它发送给镜像或回显。
     assert payload == {
@@ -130,7 +384,7 @@ def test_sandbox_sends_hidden_payload_only_to_fixed_docker_stdin() -> None:
         "test": "SECRET_HIDDEN_TEST",
         "entry_point": "one",
     }
-    assert command == DockerHumanEvalSandbox().command()
+    assert command == sandbox.command(image_id=_IMAGE_ID, container_name=_CONTAINER_NAME)
     assert kwargs["timeout"] == 10
 
 
@@ -156,11 +410,11 @@ def test_sandbox_failures_are_closed_and_do_not_echo_process_output(
     | UnicodeError,
     expected_reason: str,
 ) -> None:
-    """缺失、超时、非零、畸形或超长输出都必须变成固定失败原因且不泄漏正文。
+    """Docker 或协议故障必须抛出脱敏基础设施异常，不能被记作样本零分。
 
     Args:
         outcome: 注入到宿主命令边界的进程结果或边界异常。
-        expected_reason: 对应失败类别允许公开的固定短原因。
+        expected_reason: 对应基础设施异常允许公开的固定短状态码。
     """
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
@@ -178,20 +432,105 @@ def test_sandbox_failures_are_closed_and_do_not_echo_process_output(
             subprocess.TimeoutExpired: 模拟容器超过宿主硬超时。
             UnicodeError: 模拟 Docker 输出无法按文本边界解码。
         """
-        del command, kwargs
+        del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm"}:
+            return subprocess.CompletedProcess(command, 0, "", "")
         if isinstance(outcome, BaseException):
             raise outcome
         return outcome
 
-    result = DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 1\n")
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError) as raised:
+        sandbox.run(_problem(), "    return 1\n")
 
-    assert result == SandboxResult(passed=False, reason=expected_reason)
-    assert "SECRET_HIDDEN_TEST" not in json.dumps(result.__dict__)
-    assert len(result.reason or "") <= 32
+    assert raised.value.code == expected_reason
+    assert "SECRET_HIDDEN_TEST" not in str(raised.value)
+    assert len(str(raised.value)) <= 32
+
+
+def test_sandbox_timeout_kills_and_removes_named_container() -> None:
+    """宿主硬超时必须按 controller 生成的名字先 kill 再 rm，且始终抛出基础设施异常。"""
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """模拟容器超时并记录后续两条幂等清理命令。
+
+        Args:
+            command: 镜像探测、容器执行或固定名字清理命令。
+            **kwargs: 命令边界接收的输入、输出和硬超时配置。
+
+        Returns:
+            镜像探测与清理成功时返回零状态。
+
+        Raises:
+            subprocess.TimeoutExpired: 真正的容器执行调用固定超时时抛出。
+        """
+        del kwargs
+        calls.append(command)
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] in {"kill", "rm"}:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        raise subprocess.TimeoutExpired(command, 10, output="SECRET_HIDDEN_TEST")
+
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError, match="^timeout$"):
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert calls[-2:] == [
+        ["docker", "kill", _CONTAINER_NAME],
+        ["docker", "rm", "-f", _CONTAINER_NAME],
+    ]
+
+
+@pytest.mark.parametrize(
+    "inspect_output",
+    [
+        f'{_IMAGE_ID}\t0:0\t["python","/opt/evalhub/verify.py"]\n',
+        f'{_IMAGE_ID}\t10001:10001\t["python","-c","pass"]\n',
+        'sha256:not-an-id\t10001:10001\t["python","/opt/evalhub/verify.py"]\n',
+    ],
+)
+def test_sandbox_rejects_untrusted_local_image_before_sending_payload(
+    inspect_output: str,
+) -> None:
+    """本地标签若不是固定用户、入口点和合法镜像 ID，隐藏载荷不得进入 docker run。
+
+    Args:
+        inspect_output: 模拟镜像检查返回的 ID、用户和入口点三元组。
+    """
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """只允许执行一次镜像检查，记录是否意外收到候选标准输入。
+
+        Args:
+            command: 应为固定标签的只读镜像检查命令。
+            **kwargs: 不应包含隐藏题目标准输入的检查参数。
+
+        Returns:
+            配置不可信但命令本身成功的镜像元数据。
+        """
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, inspect_output, "")
+
+    sandbox = DockerHumanEvalSandbox(command_runner=runner)
+    with pytest.raises(SandboxInfrastructureError, match="^image_untrusted$"):
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert len(calls) == 1
+    assert "input" not in calls[0][1]
+    assert "SECRET_HIDDEN_TEST" not in json.dumps(calls)
 
 
 def test_sandbox_rejects_unexpected_verifier_fields() -> None:
-    """即使容器返回通过，附带源码等额外字段的对象也必须整体拒绝。"""
+    """即使容器返回通过，附带源码等额外字段也必须触发基础设施异常。"""
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         """返回伪装成通过但携带隐藏内容的镜像响应。
@@ -204,6 +543,8 @@ def test_sandbox_rejects_unexpected_verifier_fields() -> None:
             带未授权字段的零退出码进程结果。
         """
         del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         return subprocess.CompletedProcess(
             command,
             0,
@@ -211,13 +552,13 @@ def test_sandbox_rejects_unexpected_verifier_fields() -> None:
             "",
         )
 
-    result = DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 1\n")
+    sandbox = DockerHumanEvalSandbox(command_runner=runner)
+    with pytest.raises(SandboxInfrastructureError, match="^invalid_result$"):
+        sandbox.run(_problem(), "    return 1\n")
 
-    assert result == SandboxResult(passed=False, reason="invalid_result")
 
-
-def test_sandbox_rejects_non_string_failure_reason_without_raising() -> None:
-    """验证器失败原因即使是不可哈希对象，宿主也必须安全拒绝而不是传播解析异常。"""
+def test_sandbox_rejects_non_string_failure_reason_as_infrastructure_error() -> None:
+    """验证器原因即使是不可哈希对象，也必须安全转成脱敏基础设施异常。"""
 
     def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         """返回带数组原因的畸形失败对象。
@@ -230,11 +571,71 @@ def test_sandbox_rejects_non_string_failure_reason_without_raising() -> None:
             零退出码但原因类型不合法的进程结果。
         """
         del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         return subprocess.CompletedProcess(command, 0, '{"passed":false,"reason":[]}', "")
 
-    result = DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 1\n")
+    sandbox = DockerHumanEvalSandbox(command_runner=runner)
+    with pytest.raises(SandboxInfrastructureError, match="^invalid_result$"):
+        sandbox.run(_problem(), "    return 1\n")
 
-    assert result == SandboxResult(passed=False, reason="invalid_result")
+
+@pytest.mark.parametrize("reason", ["verification_failed", "timeout"])
+def test_sandbox_scores_only_genuine_verifier_failures_as_zero(reason: str) -> None:
+    """只有可信 controller 的断言失败或候选调用超时可成为正常零分。
+
+    Args:
+        reason: controller 明确定义为候选未通过的固定原因。
+    """
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """返回可信镜像元数据和一个协议合法的候选失败对象。
+
+        Args:
+            command: 固定镜像探测或不可变 ID 容器执行命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            对应阶段的零退出码进程结果。
+        """
+        del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        output = json.dumps({"passed": False, "reason": reason})
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    result = DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 0\n")
+
+    assert result == SandboxResult(passed=False, reason=reason)
+
+
+@pytest.mark.parametrize("reason", ["invalid_payload", "execution_failed"])
+def test_sandbox_treats_verifier_infrastructure_reasons_as_exceptions(reason: str) -> None:
+    """controller 自身输入或执行故障不得伪装成候选零分。
+
+    Args:
+        reason: controller 固定报告的基础设施类失败原因。
+    """
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """返回可信镜像元数据和一个协议合法但不可评分的故障对象。
+
+        Args:
+            command: 固定镜像探测或不可变 ID 容器执行命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            对应阶段的零退出码进程结果。
+        """
+        del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        output = json.dumps({"passed": False, "reason": reason})
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    sandbox = DockerHumanEvalSandbox(command_runner=runner)
+    with pytest.raises(SandboxInfrastructureError, match=f"^{reason}$"):
+        sandbox.run(_problem(), "    return 0\n")
 
 
 def test_runner_reports_pass_at_one_without_exposing_tests_or_solution() -> None:
@@ -284,6 +685,38 @@ def test_runner_marks_failed_candidate_without_leaking_sandbox_details() -> None
     assert sample["reason"] == "verification_failed"
 
 
+def test_runner_aborts_when_sandbox_reports_infrastructure_error() -> None:
+    """沙箱基础设施故障必须中止评测，不得生成零分样本或成功摘要。"""
+    emitted: list[dict[str, object]] = []
+
+    class FailingSandbox:
+        """模拟在候选提交后发现执行环境不可用的沙箱。"""
+
+        def run(self, problem: HumanEvalProblem, completion: str) -> SandboxResult:
+            """无条件抛出类型化故障，证明 Runner 不会把它转换为判题失败。
+
+            Args:
+                problem: 当前待评测问题，本测试不读取其隐藏字段。
+                completion: 已生成候选，本测试不执行它。
+
+            Raises:
+                SandboxInfrastructureError: 每次调用均报告固定镜像不可信。
+            """
+            del problem, completion
+            raise SandboxInfrastructureError("image_untrusted")
+
+    with pytest.raises(SandboxInfrastructureError, match="^image_untrusted$"):
+        run_humaneval_benchmark(
+            job_id="job_1",
+            adapter=StaticMappingAdapter({"def one():\n": "    return 1\n"}),
+            problems=[_problem()],
+            sandbox=FailingSandbox(),
+            on_sample_result=lambda sample, completed, total: emitted.append(sample),
+        )
+
+    assert emitted == []
+
+
 def test_runner_replaces_dynamic_sandbox_reason_before_emitting_result() -> None:
     """替代沙箱返回的动态错误文本不得绕过 Docker 解析器进入持久化结果。"""
     sandbox = FakeSandbox(SandboxResult(passed=False, reason="SECRET_HIDDEN_TEST traceback"))
@@ -298,6 +731,62 @@ def test_runner_replaces_dynamic_sandbox_reason_before_emitting_result() -> None
     serialized = json.dumps(result)
     assert "SECRET_HIDDEN_TEST" not in serialized
     assert result["sample_results"][0]["reason"] == "sandbox_failed"
+
+
+def test_resume_summary_separates_evaluated_and_skipped_samples() -> None:
+    """混合恢复运行必须明确是增量摘要，并仅对本轮新判题计算 Pass@1。"""
+    first = _problem()
+    second = replace(
+        first,
+        sample_id="hexagon_humaneval_02",
+        source_key="HumanEval/2",
+        prompt="def two():\n",
+        entry_point="two",
+    )
+    sandbox = FakeSandbox(SandboxResult(passed=True))
+    progress: list[tuple[int, int]] = []
+
+    result = run_humaneval_benchmark(
+        job_id="job_resume",
+        adapter=StaticMappingAdapter({"def two():\n": "    return 2\n"}),
+        problems=[first, second],
+        sandbox=sandbox,
+        skip_sample_ids=frozenset({first.sample_id}),
+        on_progress=lambda completed, total: progress.append((completed, total)),
+    )
+
+    assert result["incremental"] is True
+    assert result["total_samples"] == 2
+    assert result["evaluated_samples"] == 1
+    assert result["skipped_samples"] == 1
+    assert result["passed_samples"] == 1
+    assert result["average_score"] == 1.0
+    assert progress == [(1, 2), (2, 2)]
+    assert sandbox.calls == [("HumanEval/2", "    return 2\n")]
+
+
+def test_resume_summary_uses_none_average_when_every_sample_is_skipped() -> None:
+    """全量命中恢复缓存时不得伪造零分平均值，并应报告零条本轮评测。"""
+    first = _problem()
+    second = replace(first, sample_id="hexagon_humaneval_02", source_key="HumanEval/2")
+    sandbox = FakeSandbox(SandboxResult(passed=True))
+
+    result = run_humaneval_benchmark(
+        job_id="job_resume",
+        adapter=StaticMappingAdapter({}),
+        problems=[first, second],
+        sandbox=sandbox,
+        skip_sample_ids=frozenset({first.sample_id, second.sample_id}),
+    )
+
+    assert result["incremental"] is True
+    assert result["total_samples"] == 2
+    assert result["evaluated_samples"] == 0
+    assert result["skipped_samples"] == 2
+    assert result["passed_samples"] == 0
+    assert result["average_score"] is None
+    assert result["sample_results"] == []
+    assert sandbox.calls == []
 
 
 def test_loader_keeps_only_manifest_selected_humaneval_ids_in_memory(tmp_path: Path) -> None:
@@ -352,6 +841,63 @@ def test_loader_keeps_only_manifest_selected_humaneval_ids_in_memory(tmp_path: P
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_default_loader_rechecks_pinned_gzip_digest_immediately_before_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """生产缺省加载必须在读取 gzip 前复核固定摘要，拒绝准备后被替换的资产。
+
+    Args:
+        tmp_path: pytest 提供的隔离文件目录。
+        monkeypatch: 用于把完整生产清单收窄为单条离线夹具的补丁工具。
+    """
+    import evalhub.datasets.hexagon_manifest as manifest_module
+    import evalhub.datasets.hexagon_sources as sources_module
+
+    selected = {
+        "task_id": "HumanEval/1",
+        "prompt": "def one():\n",
+        "canonical_solution": "    return 1\n",
+        "test": "def check(candidate):\n    assert candidate() == 1\n",
+        "entry_point": "one",
+    }
+    path = tmp_path / "HumanEval.jsonl.gz"
+    with gzip.open(path, "wt", encoding="utf-8") as stream:
+        stream.write(json.dumps(selected) + "\n")
+    expected_digest = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    spec = HexagonSampleSpec(
+        id="hexagon_humaneval_01",
+        benchmark_id="hexagon-humaneval",
+        capability=Capability.CODING,
+        source_key="HumanEval/1",
+        selection_stratum="HumanEval/1",
+        input_sha256=_digest(selected["prompt"]),
+        reference_sha256=_digest(selected["canonical_solution"]),
+        input_zh="实现返回 1 的函数。",
+        reference_zh=None,
+        input_zh_sha256=_digest("实现返回 1 的函数。"),
+        reference_zh_sha256=None,
+        translation_version="evalhub-zh-v1",
+    )
+    source = replace(
+        sources_module.hexagon_source_specs()["hexagon-humaneval"],
+        sha256=expected_digest,
+    )
+    monkeypatch.setattr(manifest_module, "hexagon_manifest", lambda: (spec,))
+    monkeypatch.setattr(
+        sources_module,
+        "hexagon_source_specs",
+        lambda: {"hexagon-humaneval": source},
+    )
+
+    # 模拟 prepare 成功后、Runner 真正加载前被替换；内容故意不是 gzip 以证明先验摘要顺序。
+    path.write_bytes(b"SECRET_CORRUPTED_ARCHIVE")
+    with pytest.raises(ValueError, match="source SHA-256 mismatch") as raised:
+        load_humaneval_problems(path)
+
+    assert "SECRET_CORRUPTED_ARCHIVE" not in str(raised.value)
+
+
 def test_readiness_requires_docker_daemon_and_fixed_image() -> None:
     """HumanEval 就绪必须依次证明 Docker 服务和固定标签镜像都可访问。"""
     commands: list[list[str]] = []
@@ -368,7 +914,8 @@ def test_readiness_requires_docker_daemon_and_fixed_image() -> None:
         """
         del kwargs
         commands.append(command)
-        return subprocess.CompletedProcess(command, 0, "ok", "")
+        output = "ok" if command[1] == "version" else _IMAGE_INSPECT_OUTPUT
+        return subprocess.CompletedProcess(command, 0, output, "")
 
     readiness = benchmark_readiness(
         get_benchmark_spec("hexagon-humaneval"), command_runner=runner
@@ -377,7 +924,37 @@ def test_readiness_requires_docker_daemon_and_fixed_image() -> None:
     assert readiness.ready is True
     assert readiness.code == "ready"
     assert commands[0][:2] == ["docker", "version"]
-    assert commands[1] == ["docker", "image", "inspect", "evalhub-humaneval:1.0.0"]
+    assert commands[1][:3] == ["docker", "image", "inspect"]
+    assert "--format" in commands[1]
+    assert commands[1][-1] == "evalhub-humaneval:1.0.0"
+
+
+def test_readiness_rejects_image_with_untrusted_runtime_config() -> None:
+    """标签存在但用户或入口点不符时仍必须未就绪，避免隐藏载荷进入替代镜像。"""
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """让 Docker 服务成功，并返回使用 root 用户的镜像元数据。
+
+        Args:
+            command: Docker 服务版本或固定标签镜像检查命令。
+            **kwargs: readiness 的只读捕获与短超时参数。
+
+        Returns:
+            服务探测或不可信镜像检查的零状态结果。
+        """
+        del kwargs
+        if command[1] == "version":
+            return subprocess.CompletedProcess(command, 0, "ok", "")
+        output = f'{_IMAGE_ID}\t0:0\t["python","/opt/evalhub/verify.py"]\n'
+        return subprocess.CompletedProcess(command, 0, output, "")
+
+    readiness = benchmark_readiness(
+        get_benchmark_spec("hexagon-humaneval"), command_runner=runner
+    )
+
+    assert readiness.ready is False
+    assert readiness.code == "executor_not_ready"
+    assert "./scripts/build_humaneval_image.sh" in readiness.message
 
 
 def test_readiness_fails_closed_with_exact_build_command() -> None:

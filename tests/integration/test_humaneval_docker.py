@@ -36,3 +36,75 @@ def test_fixed_docker_image_accepts_canonical_and_rejects_incorrect_completion()
     assert passed.reason is None
     assert failed.passed is False
     assert failed.reason == "verification_failed"
+
+
+def test_hostile_candidate_cannot_reach_controller_frames_or_globals() -> None:
+    """候选枚举父帧与全局表时看不到可信 controller，正确函数值仍由 check 判定。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_hostile_humaneval",
+        source_key="HumanEval/integration-hostile",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import inspect, signal\n"
+        "    signal.alarm(0)\n"
+        "    frame = inspect.currentframe()\n"
+        "    while frame is not None:\n"
+        "        frame.f_globals.get('_write_result', lambda *args: None)(True)\n"
+        "        frame = frame.f_back\n"
+        "    return a + b\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is True
+    assert result.reason is None
+
+
+def test_candidate_file_descriptor_writes_cannot_pollute_host_verdict() -> None:
+    """候选写遍常见文件描述符时只会破坏自己的 RPC，宿主仍收到固定失败原因。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_fd_humaneval",
+        source_key="HumanEval/integration-fd",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import os\n"
+        "    for fd in range(1, 64):\n"
+        "        try:\n"
+        "            os.write(fd, b'SECRET_HIDDEN_TEST\\n')\n"
+        "        except OSError:\n"
+        "            pass\n"
+        "    return a + b\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is False
+    assert result.reason == "verification_failed"
+
+
+def test_candidate_cannot_forge_pass_by_exiting_with_old_success_code() -> None:
+    """候选主动使用旧版成功退出码时必须失败，最终 verdict 只能来自隐藏 check。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_exit_forgery_humaneval",
+        source_key="HumanEval/integration-exit-forgery",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, "    import os\n    os._exit(73)\n")
+
+    assert result.passed is False
+    assert result.reason == "verification_failed"

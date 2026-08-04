@@ -496,21 +496,31 @@ def parse_humaneval_rows(path: Path) -> dict[str, NormalizedSourceRow]:
 
 
 def load_selected_humaneval_rows(
-    path: Path, source_keys: Iterable[str]
+    path: Path,
+    source_keys: Iterable[str],
+    *,
+    expected_sha256: str | None = None,
 ) -> dict[str, HumanEvalSourceRow]:
     """从 gzip 流中只保留固定选择的 HumanEval 执行记录，不解压到磁盘。
 
     Args:
         path: 已通过固定摘要校验的官方 HumanEval gzip JSONL 路径。
         source_keys: 冻结清单要求加载的唯一官方 ``HumanEval/N`` 标识。
+        expected_sha256: 生产加载时必须再次匹配的固定 gzip 摘要；离线夹具可省略。
 
     Returns:
         仅包含选中 ID 的执行记录映射；标准实现和隐藏测试不会进入领域样本元数据。
 
     Raises:
-        ValueError: 选择器重复、来源记录无效、选中记录重复或缺失必填执行字段时抛出。
+        ValueError: 摘要、选择器、来源记录或选中记录不符合固定协议时抛出。
         OSError: gzip 来源文件不可读时保留底层文件系统错误。
     """
+    if expected_sha256 is not None:
+        actual_sha256 = _file_sha256(path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError(
+                f"source SHA-256 mismatch: expected {expected_sha256}, got {actual_sha256}"
+            )
     requested = tuple(source_keys)
     if len(requested) != len(set(requested)):
         raise ValueError("duplicate HumanEval source selectors")

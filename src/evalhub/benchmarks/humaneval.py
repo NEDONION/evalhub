@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,14 +20,19 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[[int, int], None]
 SampleDictCallback = Callable[[dict[str, object], int, int], None]
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
+TokenFactory = Callable[[], str]
 
 _IMAGE = "evalhub-humaneval:1.0.0"
+_IMAGE_USER = "10001:10001"
+_IMAGE_ENTRYPOINT = ["python", "/opt/evalhub/verify.py"]
+_IMAGE_INSPECT_FORMAT = "{{.Id}}\t{{.Config.User}}\t{{json .Config.Entrypoint}}"
+_IMAGE_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+_CONTAINER_NAME_PATTERN = re.compile(r"evalhub-humaneval-[0-9a-f]{32}")
 _MAX_PAYLOAD_BYTES = 1024 * 1024
 _MAX_RESULT_BYTES = 1024
-_VERIFIER_REASONS = frozenset(
-    {"invalid_payload", "timeout", "execution_failed", "verification_failed"}
-)
-_PUBLIC_FAILURE_REASONS = _VERIFIER_REASONS | frozenset(
+_VERIFICATION_FAILURE_REASONS = frozenset({"timeout", "verification_failed"})
+_INFRASTRUCTURE_REASONS = frozenset({"invalid_payload", "execution_failed"})
+_PUBLIC_FAILURE_REASONS = _VERIFICATION_FAILURE_REASONS | frozenset(
     {"executor_not_ready", "sandbox_failed", "invalid_result"}
 )
 
@@ -51,6 +58,19 @@ class SandboxResult:
     reason: str | None = None
 
 
+class SandboxInfrastructureError(RuntimeError):
+    """表示当前样本无法获得可信判定，调用方必须中止而不是记零分。"""
+
+    def __init__(self, code: str) -> None:
+        """保存固定短状态码，异常文本不包含进程输出、源码或镜像动态内容。
+
+        Args:
+            code: 调用方可稳定识别和安全展示的基础设施状态码。
+        """
+        self.code = code
+        super().__init__(code)
+
+
 class HumanEvalSandbox(Protocol):
     """描述 HumanEval Runner 依赖的最小隔离执行接口。"""
 
@@ -63,25 +83,48 @@ class DockerHumanEvalSandbox:
 
     image = _IMAGE
 
-    def __init__(self, *, command_runner: CommandRunner = subprocess.run) -> None:
+    def __init__(
+        self,
+        *,
+        command_runner: CommandRunner = subprocess.run,
+        token_factory: TokenFactory | None = None,
+    ) -> None:
         """注入宿主命令边界，生产环境缺省使用 ``subprocess.run``。
 
         Args:
             command_runner: 接收固定 argv、stdin 和超时参数的文本命令执行器。
+            token_factory: 测试可注入的容器名随机令牌生成器；生产缺省使用 UUID4。
         """
         self._command_runner = command_runner
+        self._token_factory = token_factory or _container_token
 
-    def command(self) -> list[str]:
-        """返回固定 Docker argv，明确禁网、只读、降权且限制资源。
+    def command(self, *, image_id: str, container_name: str) -> list[str]:
+        """返回固定 Docker argv，以不可变镜像 ID 和 controller 名字运行容器。
+
+        Args:
+            image_id: 刚刚从固定本地标签检查并验证的不可变 SHA-256 镜像 ID。
+            container_name: controller 生成且符合固定格式的随机容器名。
 
         Returns:
-            不含 shell、宿主挂载或动态镜像名的 Docker 参数列表。
+            不含 shell、宿主挂载、可变标签或调用方输入名称的 Docker 参数列表。
+
+        Raises:
+            SandboxInfrastructureError: ID 或名字不符合固定安全格式时抛出。
         """
+        if _IMAGE_ID_PATTERN.fullmatch(image_id) is None:
+            raise SandboxInfrastructureError("image_untrusted")
+        if _CONTAINER_NAME_PATTERN.fullmatch(container_name) is None:
+            raise SandboxInfrastructureError("sandbox_failed")
         return [
             "docker",
             "run",
             "--rm",
             "-i",
+            "--pull=never",
+            "--name",
+            container_name,
+            "--user",
+            _IMAGE_USER,
             "--network=none",
             "--read-only",
             "--cap-drop=ALL",
@@ -91,43 +134,132 @@ class DockerHumanEvalSandbox:
             "--pids-limit=64",
             "--tmpfs",
             "/tmp:rw,noexec,nosuid,size=16m",
-            self.image,
+            image_id,
         ]
 
     def run(self, problem: HumanEvalProblem, completion: str) -> SandboxResult:
-        """把单题执行载荷写入固定容器 stdin，并把所有宿主故障收敛为安全失败。
+        """检查本地镜像后执行单题；基础设施故障以类型化异常中止评测。
 
         Args:
             problem: 包含英文提示、隐藏测试和入口点的选中官方题目。
             completion: 模型针对该提示生成的唯一候选补全。
 
         Returns:
-            通过状态，或不包含进程输出、源码和异常细节的固定失败原因。
+            仅包含真实隐藏测试通过或候选未通过的安全判定。
+
+        Raises:
+            SandboxInfrastructureError: 镜像、Docker、协议或宿主硬超时不可信时抛出。
         """
+        image_id = resolve_humaneval_image(self._command_runner)
         try:
             payload = _sandbox_payload(problem, completion)
-        except ValueError:
-            return SandboxResult(False, "invalid_payload")
+        except ValueError as exc:
+            raise SandboxInfrastructureError("invalid_payload") from exc
+        container_name = f"evalhub-humaneval-{self._token_factory()}"
+        command = self.command(image_id=image_id, container_name=container_name)
 
-        # Docker CLI 使用硬超时并捕获输出；不经过 shell，也不继承任何动态容器参数。
+        # 只有验证后的不可变 ID 会收到隐藏载荷，controller 是唯一宿主输出来源。
         try:
             completed = self._command_runner(
-                self.command(),
+                command,
                 input=payload,
                 text=True,
                 capture_output=True,
                 timeout=10,
                 check=False,
             )
-        except subprocess.TimeoutExpired:
-            return SandboxResult(False, "timeout")
-        except UnicodeError:
-            return SandboxResult(False, "invalid_result")
-        except (FileNotFoundError, OSError):
-            return SandboxResult(False, "executor_not_ready")
+        except subprocess.TimeoutExpired as exc:
+            self._cleanup_container(container_name)
+            raise SandboxInfrastructureError("timeout") from exc
+        except UnicodeError as exc:
+            raise SandboxInfrastructureError("invalid_result") from exc
+        except OSError as exc:
+            raise SandboxInfrastructureError("executor_not_ready") from exc
         if completed.returncode != 0:
-            return SandboxResult(False, "sandbox_failed")
+            raise SandboxInfrastructureError("sandbox_failed")
         return _parse_sandbox_result(completed.stdout)
+
+    def _cleanup_container(self, container_name: str) -> None:
+        """在宿主硬超时后按固定名字 kill 并强制 rm，容忍并发退出竞态。
+
+        Args:
+            container_name: 本次运行前由 controller 生成并写入 ``--name`` 的名字。
+        """
+        commands = (
+            ["docker", "kill", container_name],
+            ["docker", "rm", "-f", container_name],
+        )
+        # 两步都必须尝试；自动删除或先行退出导致的非零状态只是幂等清理竞态。
+        for command in commands:
+            try:
+                self._command_runner(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired, UnicodeError):
+                continue
+
+
+def _container_token() -> str:
+    """生成只由宿主 controller 控制的随机容器名令牌。
+
+    Returns:
+        UUID4 的 32 位小写十六进制表示，不含 shell 或 Docker 名称分隔字符。
+    """
+    return uuid.uuid4().hex
+
+
+def resolve_humaneval_image(command_runner: CommandRunner = subprocess.run) -> str:
+    """检查固定本地标签的用户、入口点和 ID，并返回不可变镜像 ID。
+
+    Args:
+        command_runner: 用于只读 ``docker image inspect`` 的可替换命令边界。
+
+    Returns:
+        与固定标签当前指向一致、格式合法的 ``sha256:...`` 镜像 ID。
+
+    Raises:
+        SandboxInfrastructureError: Docker 不可用、标签缺失或配置不符合固定边界时抛出。
+    """
+    command = [
+        "docker",
+        "image",
+        "inspect",
+        "--format",
+        _IMAGE_INSPECT_FORMAT,
+        _IMAGE,
+    ]
+    try:
+        completed = command_runner(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except UnicodeError as exc:
+        raise SandboxInfrastructureError("image_untrusted") from exc
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SandboxInfrastructureError("executor_not_ready") from exc
+    if completed.returncode != 0:
+        raise SandboxInfrastructureError("executor_not_ready")
+
+    # 元数据协议同样有界且严格；任何额外行或字段都拒绝后再接触隐藏测试。
+    try:
+        if len(completed.stdout.encode("utf-8")) > _MAX_RESULT_BYTES:
+            raise ValueError("image metadata is too large")
+        image_id, user, entrypoint_raw = completed.stdout.rstrip("\n").split("\t")
+        entrypoint = json.loads(entrypoint_raw)
+    except (AttributeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise SandboxInfrastructureError("image_untrusted") from exc
+    if _IMAGE_ID_PATTERN.fullmatch(image_id) is None or user != _IMAGE_USER:
+        raise SandboxInfrastructureError("image_untrusted")
+    if entrypoint != _IMAGE_ENTRYPOINT:
+        raise SandboxInfrastructureError("image_untrusted")
+    return image_id
 
 
 def load_humaneval_problems(
@@ -150,12 +282,18 @@ def load_humaneval_problems(
     """
     # 数据集模块本身依赖 Benchmark 模型；延迟导入避免包级公开导出形成循环初始化。
     from evalhub.datasets.hexagon_manifest import hexagon_manifest
-    from evalhub.datasets.hexagon_sources import load_selected_humaneval_rows
+    from evalhub.datasets.hexagon_sources import (
+        hexagon_source_specs,
+        load_selected_humaneval_rows,
+    )
 
     frozen = manifest if manifest is not None else hexagon_manifest()
+    expected_sha256 = (
+        None if manifest is not None else hexagon_source_specs()["hexagon-humaneval"].sha256
+    )
     selected = [item for item in frozen if item.benchmark_id == "hexagon-humaneval"]
     keys = [item.source_key for item in selected]
-    rows = load_selected_humaneval_rows(path, keys)
+    rows = load_selected_humaneval_rows(path, keys, expected_sha256=expected_sha256)
 
     # 清单顺序是固定评测协议的一部分，来源文件的原始排列不能改变模型调用顺序。
     problems: list[HumanEvalProblem] = []
@@ -205,7 +343,7 @@ def run_humaneval_benchmark(
         on_sample_result: 每条新样本判定完成后接收脱敏结果的可选回调。
 
     Returns:
-        包含 Pass@1 汇总和脱敏样本结果的 JSON 兼容字典。
+        包含本轮增量属性、评测/跳过计数、Pass@1 和脱敏样本结果的字典。
 
     Raises:
         ValueError: 问题样本 ID 重复，无法安全支持断点恢复时抛出。
@@ -213,7 +351,8 @@ def run_humaneval_benchmark(
     sample_ids = [problem.sample_id for problem in problems]
     if len(sample_ids) != len(set(sample_ids)):
         raise ValueError("duplicate HumanEval sample IDs")
-    completed = sum(sample_id in skip_sample_ids for sample_id in sample_ids)
+    skipped_samples = sum(sample_id in skip_sample_ids for sample_id in sample_ids)
+    completed = skipped_samples
     if on_progress is not None:
         on_progress(completed, len(problems))
     sample_results: list[dict[str, object]] = []
@@ -243,11 +382,14 @@ def run_humaneval_benchmark(
         "dataset": "hexagon-humaneval",
         "benchmark": "Hexagon · HumanEval",
         "metric": "pass@1",
+        "incremental": skipped_samples > 0,
         "total_samples": len(problems),
+        "evaluated_samples": len(sample_results),
+        "skipped_samples": skipped_samples,
         "passed_samples": passed_samples,
         "average_score": round(passed_samples / len(sample_results), 4)
         if sample_results
-        else 0.0,
+        else None,
         "failed_sample_ids": failed_ids,
         "failed_examples": [item for item in sample_results if float(item["score"]) < 1.0][:5],
         "sample_results": sample_results,
@@ -283,40 +425,43 @@ def _sandbox_payload(problem: HumanEvalProblem, completion: str) -> str:
 
 
 def _parse_sandbox_result(output: str) -> SandboxResult:
-    """严格解析有界验证器输出，拒绝额外字段、未知原因和非布尔状态。
+    """严格解析有界验证器输出，只把真实候选失败转换为正常判定。
 
     Args:
         output: Docker 进程捕获的完整标准输出。
 
     Returns:
-        合法最小 JSON 对象对应的判定；其他任意输出统一返回安全失败。
+        合法最小通过对象或真实候选失败对象对应的判定。
+
+    Raises:
+        SandboxInfrastructureError: 输出畸形，或 controller 报告自身故障时抛出。
     """
     if not isinstance(output, str):
-        return SandboxResult(False, "invalid_result")
+        raise SandboxInfrastructureError("invalid_result")
     try:
         if len(output.encode("utf-8")) > _MAX_RESULT_BYTES:
-            return SandboxResult(False, "invalid_result")
-    except UnicodeError:
-        return SandboxResult(False, "invalid_result")
+            raise SandboxInfrastructureError("invalid_result")
+    except UnicodeError as exc:
+        raise SandboxInfrastructureError("invalid_result") from exc
     try:
         payload = json.loads(output)
-    except (json.JSONDecodeError, UnicodeError):
-        return SandboxResult(False, "invalid_result")
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        raise SandboxInfrastructureError("invalid_result") from exc
     if not isinstance(payload, dict) or type(payload.get("passed")) is not bool:
-        return SandboxResult(False, "invalid_result")
+        raise SandboxInfrastructureError("invalid_result")
 
     # 通过对象只能有一个字段；失败对象只能携带白名单短原因，禁止任意诊断回流宿主。
     if payload["passed"] is True:
-        return SandboxResult(True) if set(payload) == {"passed"} else SandboxResult(
-            False, "invalid_result"
-        )
+        if set(payload) != {"passed"}:
+            raise SandboxInfrastructureError("invalid_result")
+        return SandboxResult(True)
     reason = payload.get("reason")
-    if (
-        set(payload) != {"passed", "reason"}
-        or not isinstance(reason, str)
-        or reason not in _VERIFIER_REASONS
-    ):
-        return SandboxResult(False, "invalid_result")
+    if set(payload) != {"passed", "reason"} or not isinstance(reason, str):
+        raise SandboxInfrastructureError("invalid_result")
+    if reason in _INFRASTRUCTURE_REASONS:
+        raise SandboxInfrastructureError(reason)
+    if reason not in _VERIFICATION_FAILURE_REASONS:
+        raise SandboxInfrastructureError("invalid_result")
     return SandboxResult(False, reason)
 
 
