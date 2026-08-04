@@ -9,6 +9,7 @@ from pathlib import Path
 from threading import Event
 
 from evalhub.benchmarks import ExecutorKind, aggregate_capability_profile, get_benchmark_spec
+from evalhub.benchmarks.harness import prepare_harness_benchmark
 from evalhub.datasets import prepare_dataset
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
@@ -46,6 +47,14 @@ def classify_runtime_error(exc: Exception) -> str:
         return "blocked"
     if isinstance(exc, TaskExecutionError):
         message = str(exc).lower()
+        blocked_markers = (
+            "tokenizer_not_configured",
+            "lm-eval 评测依赖尚未安装",
+            "docker 评测镜像尚未就绪",
+            "仅支持 ollama",
+        )
+        if any(marker in message for marker in blocked_markers):
+            return "blocked"
         transient_markers = (
             "timeout",
             "timed out",
@@ -72,11 +81,20 @@ class PersistentWorkflowExecutor:
         *,
         benchmark_executor: object | None = None,
         asset_preparer: Callable[[str], object] = prepare_dataset,
+        harness_asset_preparer: Callable[[str], object] = prepare_harness_benchmark,
     ) -> None:
-        """注入仓储、隔离 Benchmark 执行器和可测试的数据准备函数。"""
+        """注入仓储、隔离执行器以及原生与 Harness 数据准备函数。
+
+        Args:
+            repository: 持久化任务、节点、事件和样本检查点的 SQLite 仓储。
+            benchmark_executor: 可替换的子进程评测执行器。
+            asset_preparer: GSM8K/MMLU 原生资产准备函数。
+            harness_asset_preparer: lm-eval 与代码任务的官方资产准备函数。
+        """
         self._repository = repository
         self._benchmark_executor = benchmark_executor or SubprocessEvaluationExecutor()
         self._asset_preparer = asset_preparer
+        self._harness_asset_preparer = harness_asset_preparer
 
     def execute(
         self,
@@ -164,15 +182,11 @@ class PersistentWorkflowExecutor:
         assets: dict[str, object] = {}
         for benchmark_id in node.input.get("benchmark_ids", []):
             spec = get_benchmark_spec(str(benchmark_id))
-            if spec.executor != ExecutorKind.NATIVE:
-                assets[spec.id] = {
-                    "status": "unavailable",
-                    "error_type": "executor_not_ready",
-                    "message": f"本地尚未配置 {spec.executor.value} 执行器",
-                }
-                continue
             try:
-                path = self._asset_preparer(spec.id)
+                if spec.executor == ExecutorKind.NATIVE:
+                    path = self._asset_preparer(spec.id)
+                else:
+                    path = self._harness_asset_preparer(spec.id)
                 content_sha256 = _content_sha256(path)
                 assets[spec.id] = {
                     "status": "ready",
@@ -199,7 +213,7 @@ class PersistentWorkflowExecutor:
         on_resources: Callable[[ResourceUsage], None],
         cancel_event: Event,
     ) -> dict[str, object]:
-        """执行一个本地原生 Benchmark，并把每条样本即时写入 SQLite。"""
+        """执行 Registry Benchmark，并把每条 Harness 或原生样本写入 SQLite。"""
         benchmark_id = str(node.input["benchmark_id"])
         spec = get_benchmark_spec(benchmark_id)
         prepare_node = next(
@@ -208,7 +222,7 @@ class PersistentWorkflowExecutor:
             if item.kind == "prepare_assets"
         )
         asset = ((prepare_node.output or {}).get("assets") or {}).get(benchmark_id, {})
-        if spec.executor != ExecutorKind.NATIVE or asset.get("status") != "ready":
+        if asset.get("status") != "ready":
             raise RuntimeBlockedError(
                 str(asset.get("error_type", "executor_not_ready")),
                 str(asset.get("message", f"{spec.display_name} 当前不可运行")),
@@ -264,7 +278,7 @@ class PersistentWorkflowExecutor:
             )
             self._report_task_progress(node.task_id, on_progress)
 
-        self._benchmark_executor.execute(
+        execution_result = self._benchmark_executor.execute(
             node.task_id,
             benchmark_request,
             on_progress=report_progress,
@@ -280,6 +294,23 @@ class PersistentWorkflowExecutor:
             raise RuntimeBlockedError("dataset_revision_changed", message)
         samples = self._all_samples(node.id)
         scores = [float((sample.result or {}).get("score", 0.0)) for sample in samples]
+        if spec.executor != ExecutorKind.NATIVE:
+            # 官方 Harness 可能按子任务宏平均，不能用样本均值覆盖其公开聚合口径。
+            output = dict(execution_result)
+            output["dataset_revision"] = (
+                f"sha256:{execution_digest_after}"
+                if execution_digest_after
+                else asset.get("dataset_revision", spec.dataset_revision)
+            )
+            output["score_sum"] = round(sum(scores), 6)
+            output["total_samples"] = len(samples)
+            output["passed_samples"] = sum(score >= 1.0 for score in scores)
+            output["failed_sample_ids"] = [
+                sample.sample_key
+                for sample, score in zip(samples, scores, strict=True)
+                if score < 1.0
+            ]
+            return output
         metric = (
             str((samples[0].result or {}).get("metric", spec.metric)) if samples else spec.metric
         )

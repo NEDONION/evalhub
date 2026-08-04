@@ -8,14 +8,23 @@ import pytest
 
 from evalhub.tasks import ResourceUsage, SQLiteTaskRepository, TaskRequest
 from evalhub.tasks.executor import TaskExecutionError
-from evalhub.tasks.runtime import PersistentWorkflowExecutor, WorkflowIncompleteError
+from evalhub.tasks.runtime import (
+    PersistentWorkflowExecutor,
+    WorkflowIncompleteError,
+    classify_runtime_error,
+)
 from evalhub.tasks.workflow import build_workflow
 
 
-def request(*, suite_id: str | None = None, subject: str = "abstract_algebra") -> TaskRequest:
+def request(
+    *,
+    dataset: str = "gsm8k",
+    suite_id: str | None = None,
+    subject: str = "abstract_algebra",
+) -> TaskRequest:
     """构造单项或 Suite 的离线 Oracle 请求。"""
     return TaskRequest(
-        dataset="gsm8k",
+        dataset=dataset,
         adapter="oracle",
         model="oracle",
         base_url="http://127.0.0.1:11434",
@@ -24,6 +33,11 @@ def request(*, suite_id: str | None = None, subject: str = "abstract_algebra") -
         limit=None,
         suite_id=suite_id,
     )
+
+
+def missing_harness_asset(benchmark_id: str) -> object:
+    """稳定模拟未安装外部评测依赖，避免测试环境状态触发真实下载。"""
+    raise RuntimeError(f"missing harness for {benchmark_id}")
 
 
 class FakeBenchmarkExecutor:
@@ -100,6 +114,46 @@ class FakeBenchmarkExecutor:
             )
         # 摘要只服务运行时节点终态，本测试不需要模拟更多指标。
         return {"job_id": task_id, "total_samples": 1}
+
+
+class HarnessBenchmarkExecutor(FakeBenchmarkExecutor):
+    """模拟 Harness 样本与官方聚合分数不同的外部执行器。"""
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """发送一条零分和一条满分样本，并返回官方 0.8 聚合分。"""
+        callback = kwargs["on_sample_result"]
+        assert callable(callback)
+        for index, score in enumerate((0.0, 1.0), start=1):
+            callback(
+                {
+                    "sample_id": f"{task_request.dataset}:{index}",
+                    "input": {"prompt": str(index)},
+                    "prediction": "A",
+                    "reference": "A",
+                    "metric": "prompt_level_strict_acc",
+                    "score": score,
+                    "reason": None,
+                },
+                index,
+                2,
+            )
+        return {
+            "benchmark_id": task_request.dataset,
+            "benchmark": "IFEval",
+            "status": "success",
+            "model": task_request.model,
+            "metric": "prompt_level_strict_acc",
+            "dataset_source": "google/IFEval",
+            "dataset_revision": "resolved-at-runtime:sha256",
+            "raw_score": 0.8,
+            "score_sum": 1.0,
+            "total_samples": 2,
+            "passed_samples": 1,
+            "failed_sample_ids": ["ifeval:1"],
+            "protocol_scope": "lm_eval_0.4.12",
+        }
 
 
 class CheckpointThenRetryExecutor(FakeBenchmarkExecutor):
@@ -285,6 +339,40 @@ def test_runtime_persists_samples_and_completes_single_benchmark(tmp_path: Path)
     assert result["average_score"] == 1.0
 
 
+def test_runtime_prepares_and_persists_external_benchmark_result(tmp_path: Path) -> None:
+    """外部任务应使用 Harness 资产入口，并保留官方聚合分和样本审计。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="ifeval")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    marker = tmp_path / "ifeval.json"
+    marker.write_text('{"task_name":"ifeval"}', encoding="utf-8")
+    prepared: list[str] = []
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=HarnessBenchmarkExecutor(),
+        asset_preparer=lambda benchmark_id: (_ for _ in ()).throw(AssertionError()),
+        harness_asset_preparer=lambda benchmark_id: prepared.append(benchmark_id) or marker,
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    benchmark = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "benchmark"
+    )
+
+    assert prepared == ["ifeval"]
+    assert benchmark.status == "success"
+    assert benchmark.output["raw_score"] == 0.8
+    assert benchmark.output["protocol_scope"] == "lm_eval_0.4.12"
+    assert repository.completed_sample_keys(benchmark.id) == {"ifeval:1", "ifeval:2"}
+    assert result["total_samples"] == 2
+
+
 def test_runtime_retries_transient_benchmark_error_three_times(tmp_path: Path) -> None:
     """瞬时连接错误应回到 pending，并在第三次尝试成功。"""
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
@@ -312,6 +400,13 @@ def test_runtime_retries_transient_benchmark_error_three_times(tmp_path: Path) -
     assert [event.event_type for event in repository.list_node_events(benchmark.id)].count(
         "node_retry_scheduled"
     ) == 2
+
+
+def test_runtime_classifies_missing_tokenizer_as_blocked() -> None:
+    """确定性模型映射缺失应等待配置修复，不能伪装为模型评分失败。"""
+    error = TaskExecutionError("tokenizer_not_configured: private-model")
+
+    assert classify_runtime_error(error) == "blocked"
 
 
 def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: Path) -> None:
@@ -470,6 +565,7 @@ def test_core_suite_blocks_unavailable_executors_but_builds_partial_profile(
         repository,
         benchmark_executor=FakeBenchmarkExecutor(),
         asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+        harness_asset_preparer=missing_harness_asset,
     )
 
     with pytest.raises(WorkflowIncompleteError, match="部分 Benchmark 未完成"):
