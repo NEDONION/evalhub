@@ -6,8 +6,9 @@ import fcntl
 from collections.abc import Callable
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
-from typing import BinaryIO, Protocol
+from typing import BinaryIO, Protocol, cast
 
+from evalhub.agent import AgentTraceEvent, TraceCallback
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
     TaskExecutionCanceled,
@@ -23,7 +24,7 @@ from evalhub.tasks.models import (
 from evalhub.tasks.performance import ModelPerformanceReport, build_model_performance
 from evalhub.tasks.repository import SQLiteTaskRepository, TaskNotFoundError, TaskStateError
 from evalhub.tasks.runtime import PersistentWorkflowExecutor
-from evalhub.tasks.workflow import build_workflow
+from evalhub.tasks.workflow import build_agent_workflow, build_workflow
 
 
 class TaskExecutor(Protocol):
@@ -41,6 +42,22 @@ class TaskExecutor(Protocol):
         """执行一个任务并通过回调报告进度和资源，最终返回评测结果。"""
 
 
+class AgentTaskExecutor(Protocol):
+    """描述会额外上报标准化执行过程事件的 Agent 执行边界。"""
+
+    def execute(
+        self,
+        task_id: str,
+        request: TaskRequest,
+        *,
+        on_progress: Callable[[int, int], None],
+        on_resources: Callable[[ResourceUsage], None],
+        cancel_event: Event,
+        on_trace: TraceCallback | None = None,
+    ) -> dict[str, object]:
+        """执行 Agent Benchmark，并通过回调上报进度、资源与白名单 Trace。"""
+
+
 class TaskConflictError(RuntimeError):
     """表示调用方试图取消已经进入终态的任务。"""
 
@@ -53,11 +70,17 @@ class EvaluationTaskService:
         repository: SQLiteTaskRepository,
         *,
         executor: TaskExecutor | None = None,
+        agent_executor: AgentTaskExecutor | None = None,
     ) -> None:
-        """注入任务仓储与可替换执行器，但不在构造阶段启动线程。"""
+        """注入仓储及模型、Agent 执行器，但不在构造阶段启动线程。"""
         self._repository = repository
         self._executor = executor or PersistentWorkflowExecutor(repository)
-        self._agent_executor = executor or SubprocessEvaluationExecutor()
+        # 旧调用方只注入一个执行器时仍沿用它；新调用方可单独替换 Agent 边界。
+        self._agent_executor = agent_executor or (
+            cast(AgentTaskExecutor, executor)
+            if executor is not None
+            else SubprocessEvaluationExecutor()
+        )
         self._queue: Queue[str | None] = Queue()
         self._stop_event = Event()
         self._worker: Thread | None = None
@@ -155,7 +178,7 @@ class EvaluationTaskService:
         # 创建与入队作为同一临界区，使数据库 rowid 顺序和 Worker 消费顺序一致。
         with self._submission_lock:
             if request.evaluation_type == "agent":
-                task = self._repository.create(request)
+                task = self._repository.create_with_nodes(request, build_agent_workflow(request))
             else:
                 task = self._repository.create_with_nodes(request, build_workflow(request))
             self._queue.put(task.id)
@@ -275,44 +298,97 @@ class EvaluationTaskService:
             self._active_task_id = task_id
             self._active_cancel_event = cancel_event
 
+        # 新 Agent 任务始终只有一个节点；无节点的旧数据继续走兼容执行路径。
+        agent_node: EvaluationNode | None = None
+
         def persist_progress(completed: int, total: int) -> None:
             """在任务仍活动时把执行器进度事件写入 SQLite。"""
             if not cancel_event.is_set():
                 self._repository.update_progress(task_id, completed=completed, total=total)
+                if agent_node is not None:
+                    self._repository.update_node_progress(
+                        agent_node.id,
+                        completed=completed,
+                        total=total,
+                    )
 
         def persist_resources(usage: ResourceUsage) -> None:
             """在任务仍活动时把资源快照和峰值写入 SQLite。"""
             if not cancel_event.is_set():
                 self._repository.update_resources(task_id, usage)
 
+        def persist_trace(event: AgentTraceEvent) -> None:
+            """把执行器白名单 Trace 追加到当前 Agent 节点审计日志。"""
+            if cancel_event.is_set() or agent_node is None:
+                return
+            self._repository.append_node_event(
+                agent_node.id,
+                event_type=event["event_type"],
+                actor=event["actor"],
+                message=event["message"],
+                payload=event["payload"],
+            )
+
         try:
-            executor = (
-                self._agent_executor
-                if running_task.request.evaluation_type == "agent"
-                else self._executor
-            )
-            result = executor.execute(
-                task_id,
-                running_task.request,
-                on_progress=persist_progress,
-                on_resources=persist_resources,
-                cancel_event=cancel_event,
-            )
+            if running_task.request.evaluation_type == "agent":
+                nodes = self._repository.list_nodes(task_id)
+                if nodes:
+                    agent_node = self._repository.start_node(nodes[0].id)
+                result = self._agent_executor.execute(
+                    task_id,
+                    running_task.request,
+                    on_progress=persist_progress,
+                    on_resources=persist_resources,
+                    cancel_event=cancel_event,
+                    on_trace=persist_trace,
+                )
+            else:
+                result = self._executor.execute(
+                    task_id,
+                    running_task.request,
+                    on_progress=persist_progress,
+                    on_resources=persist_resources,
+                    cancel_event=cancel_event,
+                )
             # 取消可能与最后结果同时到达；已取消终态优先，绝不能被成功覆盖。
             if not cancel_event.is_set():
+                if agent_node is not None:
+                    self._repository.complete_node(agent_node.id, result)
                 self._repository.mark_success(task_id, result)
             else:
                 self._persist_interruption(task_id, cancel_event)
         except TaskExecutionCanceled:
+            self._fail_interrupted_agent_node(agent_node)
             self._persist_interruption(task_id, cancel_event)
         except Exception as exc:
             # 只把仍处于运行态的异常任务标失败，保留并发取消已经写入的终态。
+            self._fail_running_agent_node(agent_node, exc)
             if self._repository.get(task_id).status == "running":
                 self._repository.mark_failed(task_id, str(exc))
         finally:
             with self._active_lock:
                 self._active_task_id = None
                 self._active_cancel_event = None
+
+    def _fail_running_agent_node(
+        self,
+        node: EvaluationNode | None,
+        exc: Exception,
+    ) -> None:
+        """把仍在运行的 Agent 节点转换为带异常分类的失败终态。"""
+        if node is None:
+            return
+        current = self._repository.get_node(node.id)
+        if current.status == "running":
+            self._repository.fail_node(node.id, type(exc).__name__, str(exc))
+
+    def _fail_interrupted_agent_node(self, node: EvaluationNode | None) -> None:
+        """服务关闭时标记 Agent 节点失败，并保留用户取消已经写入的终态。"""
+        if node is None or not self._stop_event.is_set():
+            return
+        current = self._repository.get_node(node.id)
+        if current.status == "running":
+            self._repository.fail_node(node.id, "service_stopped", "服务停止导致评测中断")
 
     def _persist_interruption(self, task_id: str, cancel_event: Event) -> None:
         """按中断来源保存失败状态，并让公开取消操作独占用户取消终态。

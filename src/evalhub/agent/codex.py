@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from time import monotonic
-from typing import Protocol
+from typing import IO, Protocol, TypedDict
 
 
 class CodexAgentError(RuntimeError):
@@ -24,6 +27,19 @@ class CodexRunResult:
     return_code: int
     wall_time_seconds: float
     cli_version: str
+    tool_call_count: int = 0
+
+
+class AgentTraceEvent(TypedDict):
+    """描述可跨进程持久化的单条 Codex 外部可观察事件。"""
+
+    event_type: str
+    actor: str
+    message: str | None
+    payload: dict[str, object]
+
+
+TraceCallback = Callable[[AgentTraceEvent], None]
 
 
 class CommandRunner(Protocol):
@@ -33,12 +49,52 @@ class CommandRunner(Protocol):
         """执行命令并返回已完成进程；关键字参数遵循 ``subprocess.run``。"""
 
 
+class StreamingProcess(Protocol):
+    """描述流式 Codex 子进程需要暴露的最小生命周期接口。"""
+
+    stdout: IO[str] | None
+    stderr: IO[str] | None
+    returncode: int | None
+
+    def poll(self) -> int | None:
+        """返回当前退出码；进程仍运行时返回空值。"""
+
+    def wait(self, timeout: float | None = None) -> int:
+        """等待进程结束并返回退出码。"""
+
+    def terminate(self) -> None:
+        """请求进程优雅终止。"""
+
+    def kill(self) -> None:
+        """强制终止未响应的进程。"""
+
+
+class ProcessFactory(Protocol):
+    """描述可注入的 Codex 流式进程构造器。"""
+
+    def __call__(self, command: list[str], **kwargs: object) -> StreamingProcess:
+        """启动命令并返回可读取 stdout/stderr 的进程。"""
+
+
 class CodexAgentRunner:
     """通过受约束的 Codex CLI 命令运行本地 Ollama 模型。"""
 
-    def __init__(self, *, run_command: CommandRunner = subprocess.run) -> None:
-        """注入命令执行器；生产环境默认调用 ``subprocess.run``。"""
+    def __init__(
+        self,
+        *,
+        run_command: CommandRunner = subprocess.run,
+        process_factory: ProcessFactory | None = None,
+    ) -> None:
+        """注入版本探测和流式进程边界。
+
+        参数：
+            run_command: 用于轻量 CLI 版本探测的同步执行器。
+            process_factory: 用于真实 Agent 运行的流式进程构造器；生产默认 ``Popen``。
+        """
         self._run_command = run_command
+        self._process_factory = process_factory or subprocess.Popen
+        # 兼容既有只注入 run_command 的调用方；生产默认路径始终使用流式 Popen。
+        self._legacy_run_command = process_factory is None and run_command is not subprocess.run
         self._cli_version: str | None = None
 
     def version(self) -> str:
@@ -79,6 +135,7 @@ class CodexAgentRunner:
         base_url: str,
         workspace: Path,
         timeout_seconds: float,
+        on_event: TraceCallback | None = None,
     ) -> CodexRunResult:
         """在指定工作区运行固定 Codex Agent 壳。
 
@@ -88,6 +145,7 @@ class CodexAgentRunner:
             base_url: Ollama 服务地址，会写入子进程 ``OLLAMA_HOST``。
             workspace: Agent 唯一可写的样本工作区。
             timeout_seconds: 本次样本允许的最长执行秒数。
+            on_event: 每产生一条白名单外部事件时立即调用的可选回调。
 
         返回：
             包含最终消息、事件数量、耗时和 CLI 版本的执行结果。
@@ -118,17 +176,15 @@ class CodexAgentRunner:
         environment["OLLAMA_HOST"] = base_url.rstrip("/")
         environment["CODEX_HOME"] = str(codex_home)
 
-        # 子进程超时被转换为稳定领域错误，任务中心可以统一标记失败原因。
+        # 生产路径逐行读取 JSONL；旧测试注入方式仍可同步执行并复用同一标准化逻辑。
         started_at = monotonic()
         try:
-            completed = self._run_command(
-                command,
-                cwd=workspace,
-                env=environment,
-                capture_output=True,
-                text=True,
-                timeout=timeout_seconds,
-                check=False,
+            return_code, stdout, stderr = self._execute_command(
+                command=command,
+                workspace=workspace,
+                environment=environment,
+                timeout_seconds=timeout_seconds,
+                on_event=on_event,
             )
         except FileNotFoundError as exc:
             raise CodexAgentError("codex CLI is not installed or not available on PATH") from exc
@@ -138,21 +194,67 @@ class CodexAgentRunner:
         elapsed_seconds = monotonic() - started_at
 
         # 只有退出成功且落盘了最终消息才算一次可审计的 Agent 执行。
-        if completed.returncode != 0:
-            detail = _error_detail(completed.stderr)
-            raise CodexAgentError(f"codex exited with code {completed.returncode}: {detail}")
+        if return_code != 0:
+            detail = _error_detail(stderr)
+            raise CodexAgentError(f"codex exited with code {return_code}: {detail}")
         if not output_path.is_file():
             raise CodexAgentError("codex produced no final message")
         final_message = output_path.read_text(encoding="utf-8").strip()
         if not final_message:
             raise CodexAgentError("codex produced no final message")
 
+        # 流式路径已经实时发送事件；这里仅从完整 stdout 重新计算可审计计数。
+        event_count, tool_call_count = _emit_stdout_events(stdout, None)
+
         return CodexRunResult(
             final_message=final_message,
-            event_count=_count_json_events(completed.stdout),
-            return_code=completed.returncode,
+            event_count=event_count,
+            return_code=return_code,
             wall_time_seconds=elapsed_seconds,
             cli_version=cli_version,
+            tool_call_count=tool_call_count,
+        )
+
+    def _execute_command(
+        self,
+        *,
+        command: list[str],
+        workspace: Path,
+        environment: dict[str, str],
+        timeout_seconds: float,
+        on_event: TraceCallback | None,
+    ) -> tuple[int, str, str]:
+        """执行 Codex 并返回退出码及完整的安全边界输出。
+
+        生产环境从 Popen 流式读取 stdout；兼容路径只服务于既有同步执行器注入。
+        """
+        if self._legacy_run_command:
+            completed = self._run_command(
+                command,
+                cwd=workspace,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+            _emit_stdout_events(completed.stdout, on_event)
+            return completed.returncode, completed.stdout, completed.stderr
+
+        # stdout 和 stderr 均使用管道，后台读取线程防止任一管道填满后阻塞 Agent。
+        process = self._process_factory(
+            command,
+            cwd=workspace,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        return _consume_process(
+            process,
+            timeout_seconds=timeout_seconds,
+            on_event=on_event,
         )
 
 
@@ -203,17 +305,204 @@ def _build_command(
     ]
 
 
-def _count_json_events(stdout: str) -> int:
-    """统计 JSONL 中可解析为对象的事件行，忽略诊断性非 JSON 输出。"""
-    event_count = 0
-    for line in stdout.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+def _consume_process(
+    process: StreamingProcess,
+    *,
+    timeout_seconds: float,
+    on_event: TraceCallback | None,
+) -> tuple[int, str, str]:
+    """并发读取子进程输出，在截止时间内实时发送 stdout 白名单事件。
+
+    参数：
+        process: 已启动且 stdout/stderr 配置为文本管道的 Codex 进程。
+        timeout_seconds: 整个 Agent 运行允许的最长秒数。
+        on_event: 接收标准化事件的可选回调。
+
+    返回：
+        进程退出码、完整 stdout 和 stderr。
+
+    异常：
+        subprocess.TimeoutExpired: 截止时间到达时终止进程后抛出。
+    """
+    line_queue: Queue[tuple[str, str | None]] = Queue()
+    completed_streams: set[str] = set()
+
+    # 两个读取线程只负责把文本行搬进内存队列，事件解析和回调仍在调用线程串行完成。
+    for source, stream in (("stdout", process.stdout), ("stderr", process.stderr)):
+        if stream is None:
+            completed_streams.add(source)
             continue
-        if isinstance(event, dict):
-            event_count += 1
-    return event_count
+        Thread(
+            target=_read_stream,
+            args=(source, stream, line_queue),
+            name=f"codex-{source}-reader",
+            daemon=True,
+        ).start()
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    deadline = monotonic() + timeout_seconds
+    try:
+        # 流结束和进程退出必须同时满足，避免丢失退出前已经写入管道的最后事件。
+        while len(completed_streams) < 2 or process.poll() is None:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                _stop_process(process)
+                raise subprocess.TimeoutExpired("codex exec", timeout_seconds)
+            try:
+                source, line = line_queue.get(timeout=min(0.1, remaining))
+            except Empty:
+                continue
+            if line is None:
+                completed_streams.add(source)
+                continue
+            if source == "stdout":
+                stdout_lines.append(line)
+                _emit_stdout_events(line, on_event)
+            else:
+                stderr_lines.append(line)
+
+        return_code = process.wait(timeout=max(0.0, deadline - monotonic()))
+    except BaseException:
+        # 回调或读取异常也必须回收 Codex，避免评测 Worker 退出后残留模型客户端。
+        if process.poll() is None:
+            _stop_process(process)
+        raise
+    return return_code, "".join(stdout_lines), "".join(stderr_lines)
+
+
+def _read_stream(
+    source: str,
+    stream: IO[str],
+    line_queue: Queue[tuple[str, str | None]],
+) -> None:
+    """逐行读取一个进程管道，并用空行哨兵报告该流已经结束。"""
+    try:
+        for line in stream:
+            line_queue.put((source, line))
+    finally:
+        line_queue.put((source, None))
+
+
+def _stop_process(process: StreamingProcess) -> None:
+    """先请求优雅终止，再强制回收超过两秒仍未退出的 Codex 进程。"""
+    process.terminate()
+    try:
+        process.wait(timeout=2.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2.0)
+
+
+def _emit_stdout_events(
+    stdout: str,
+    on_event: TraceCallback | None,
+) -> tuple[int, int]:
+    """解析一段 JSONL，发送白名单事件并返回对象事件数与工具调用数。"""
+    event_count = 0
+    tool_call_count = 0
+    for line in stdout.splitlines():
+        event = _json_object(line)
+        if event is None:
+            continue
+        event_count += 1
+        normalized = _normalize_codex_event(event)
+        if normalized is None:
+            continue
+        if normalized["event_type"] == "tool_started":
+            tool_call_count += 1
+        if on_event is not None:
+            on_event(normalized)
+    return event_count, tool_call_count
+
+
+def _json_object(line: str) -> dict[str, object] | None:
+    """把单行 JSON 收窄为对象，非法文本和数组等其他 JSON 值返回空。"""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def _normalize_codex_event(event: dict[str, object]) -> AgentTraceEvent | None:
+    """把 Codex 版本相关 JSON 对象转换为稳定且最小的外部动作事件。"""
+    source_type = str(event.get("type", ""))
+    if source_type == "thread.started":
+        payload: dict[str, object] = {"source_type": source_type}
+        thread_id = event.get("thread_id")
+        if isinstance(thread_id, str):
+            payload["thread_id"] = thread_id
+        return {
+            "event_type": "agent_session_started",
+            "actor": "codex",
+            "message": "Codex 会话已启动",
+            "payload": payload,
+        }
+    if source_type == "turn.started":
+        return {
+            "event_type": "agent_turn_started",
+            "actor": "codex",
+            "message": "Codex 开始处理任务",
+            "payload": {"source_type": source_type},
+        }
+
+    # item 事件必须同时包含对象载荷和受支持类型，未知未来字段不会泄漏进审计日志。
+    item = event.get("item")
+    if source_type not in {"item.started", "item.completed"} or not isinstance(item, dict):
+        return None
+    item_type = str(item.get("type", ""))
+    if source_type == "item.completed" and item_type == "agent_message":
+        text = _truncated_text(item.get("text"), 1_000)
+        return {
+            "event_type": "agent_message",
+            "actor": "codex",
+            "message": text,
+            "payload": {"text": text},
+        }
+
+    if item_type not in {"command_execution", "mcp_tool_call", "file_change"}:
+        return None
+    tool_name = _tool_name(item_type, item)
+    command = _truncated_text(item.get("command"), 1_000)
+    payload = {"tool_name": tool_name, "command": command}
+    if source_type == "item.started":
+        return {
+            "event_type": "tool_started",
+            "actor": "codex",
+            "message": command or tool_name,
+            "payload": payload,
+        }
+
+    # 完成事件只加入退出码和安全截断输出，不复制 MCP 参数或其他未知动态字段。
+    exit_code = item.get("exit_code")
+    if isinstance(exit_code, int):
+        payload["exit_code"] = exit_code
+    output = _truncated_text(item.get("aggregated_output", item.get("output")), 2_000)
+    payload["output"] = output
+    return {
+        "event_type": "tool_finished",
+        "actor": "codex",
+        "message": command or tool_name,
+        "payload": payload,
+    }
+
+
+def _tool_name(item_type: str, item: dict[str, object]) -> str:
+    """为命令、MCP 和文件动作生成不包含动态参数的稳定工具名称。"""
+    if item_type == "command_execution":
+        return "command"
+    if item_type == "file_change":
+        return "file_change"
+    candidate = item.get("tool") or item.get("name")
+    return str(candidate) if isinstance(candidate, str) else "mcp_tool"
+
+
+def _truncated_text(value: object, limit: int) -> str:
+    """把受支持的文本值截断到持久化上限，其他动态结构返回空字符串。"""
+    if not isinstance(value, str):
+        return ""
+    return value if len(value) <= limit else value[:limit]
 
 
 def _error_detail(stderr: str, *, limit: int = 2_000) -> str:

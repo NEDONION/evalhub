@@ -325,6 +325,67 @@ class SQLiteTaskRepository:
             )
         return self.get_node(node_id)
 
+    def append_node_event(
+        self,
+        node_id: str,
+        *,
+        event_type: str,
+        actor: str,
+        message: str | None,
+        payload: dict[str, object] | None,
+    ) -> EvaluationNodeEvent:
+        """向运行节点追加一条白名单执行事件并返回持久化快照。
+
+        Args:
+            node_id: 接收事件的运行节点标识。
+            event_type: 上游已经筛选后的稳定事件类型。
+            actor: 产生事件的组件，例如 benchmark 或 codex。
+            message: 面向人的简短事件摘要，可为空。
+            payload: 可审计的结构化白名单字段，可为空。
+
+        Returns:
+            带数据库自增标识和创建时间的不可变节点事件。
+
+        Raises:
+            ValueError: 事件类型或事件来源为空白字符串。
+            TaskStateError: 节点不是运行态，不能继续写入过程事件。
+        """
+        if not event_type.strip():
+            raise ValueError("event_type must not be blank")
+        if not actor.strip():
+            raise ValueError("actor must not be blank")
+
+        # 过程事件不改变节点状态，仅记录其发生时所处的尝试次数。
+        now = utc_now().isoformat()
+        with self._connection() as connection:
+            node = self._require_node_status(connection, node_id, {"running"}, "append event")
+            event_id = self._insert_node_event(
+                connection,
+                task_id=str(node["task_id"]),
+                node_id=node_id,
+                event_type=event_type.strip(),
+                from_status=None,
+                to_status=None,
+                attempt=int(node["attempt_count"]),
+                actor=actor.strip(),
+                message=message,
+                payload=payload,
+                created_at=now,
+            )
+            # 在同一事务中回读，确保调用方拿到的就是本次追加事件而非竞态结果。
+            row = connection.execute(
+                """
+                SELECT id, task_id, node_id, event_type, from_status, to_status,
+                       attempt, actor, message, payload_json, created_at
+                FROM evaluation_node_events
+                WHERE id = ?
+                """,
+                (event_id,),
+            ).fetchone()
+        if row is None:
+            raise RuntimeError(f"appended node event disappeared: {event_id}")
+        return self._row_to_node_event(row)
+
     def update_node_progress(
         self,
         node_id: str,
@@ -1311,9 +1372,9 @@ class SQLiteTaskRepository:
         message: str | None,
         payload: dict[str, object] | None,
         created_at: str,
-    ) -> None:
-        """使用调用方事务追加一条节点审计事件。"""
-        connection.execute(
+    ) -> int:
+        """使用调用方事务追加一条节点审计事件并返回数据库标识。"""
+        cursor = connection.execute(
             """
             INSERT INTO evaluation_node_events (
                 task_id, node_id, event_type, from_status, to_status,
@@ -1333,6 +1394,7 @@ class SQLiteTaskRepository:
                 created_at,
             ),
         )
+        return int(cursor.lastrowid)
 
     def _get_sample(self, node_id: str, sample_key: str) -> EvaluationSampleCheckpoint:
         """读取指定节点和样本键的最新检查点。"""

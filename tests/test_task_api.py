@@ -286,7 +286,8 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
             "adapter": "ollama",
             "model": "qwen2.5-coder:7b",
             "base_url": "http://127.0.0.1:11434",
-            "sample_mode": "quick",
+            "sample_mode": "all",
+            "agent_difficulty": "hard",
         },
     )
 
@@ -296,6 +297,8 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
     assert service.submitted_request is not None
     assert service.submitted_request.evaluation_type == "agent"
     assert service.submitted_request.agent_framework == "codex"
+    assert service.submitted_request.agent_difficulty == "hard"
+    assert service.submitted_request.sample_mode == "all"
     assert service.submitted_request.dataset == "coding_mini"
 
 
@@ -307,12 +310,24 @@ def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
         "dataset": "coding_mini",
         "adapter": "ollama",
         "model": "local-test",
-        "sample_mode": "quick",
+        "sample_mode": "all",
     }
     invalid_cases = [
         ({**base_payload, "agent_framework": "unknown"}, "agent_framework must be codex"),
         ({**base_payload, "dataset": "gsm8k"}, "agent dataset must be coding_mini"),
         ({**base_payload, "adapter": "oracle"}, "agent adapter must be ollama"),
+        (
+            {**base_payload, "agent_difficulty": "expert"},
+            "agent_difficulty must be one of: all, easy, medium, hard",
+        ),
+        (
+            {**base_payload, "agent_difficulty": ""},
+            "agent_difficulty must be one of: all, easy, medium, hard",
+        ),
+        (
+            {**base_payload, "agent_difficulty": None},
+            "agent_difficulty must be one of: all, easy, medium, hard",
+        ),
     ]
 
     # 每个非法组合都必须在写入 SQLite 前被拒绝，并返回可直接修正的字段错误。
@@ -325,6 +340,28 @@ def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
         )
         assert status == 400
         assert response == {"ok": False, "error": expected_error}
+
+
+def test_create_model_evaluation_rejects_agent_difficulty() -> None:
+    """模型评测携带 Agent 专属难度时应返回明确客户端错误。"""
+    status, response = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=FakeTaskService(task_fixture()),
+        payload={
+            "dataset": "gsm8k",
+            "adapter": "oracle",
+            "model": "local-test",
+            "sample_mode": "all",
+            "agent_difficulty": "easy",
+        },
+    )
+
+    assert status == 400
+    assert response == {
+        "ok": False,
+        "error": "agent_difficulty is only valid for agent evaluations",
+    }
 
 
 def test_list_evaluations_excludes_full_result() -> None:

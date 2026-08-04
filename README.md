@@ -17,6 +17,7 @@ EvalHub 是一个面向企业大模型研发流程的统一评测基础设施。
 - 数据集资产：已缓存 Benchmark 可从页面强制更新，下载完成后反馈实际样本数。
 - 持久化任务 DAG：模型评测按资产准备、Benchmark 执行、能力聚合和结果收口四类节点运行，SQLite 记录节点状态、耗时、重试次数、审计事件和样本检查点。
 - 模型能力画像：固定展示知识、指令遵循、数学、综合推理、代码、安全可信六维六边形；单项 Benchmark 只点亮已评测维度，未评测维度不按 0 分计算。
+- Agent 过程审计：Codex 外部消息、工具调用、文件变化、隐藏校验和结果分类实时写入 SQLite，任务完成后仍可回放。
 
 ## 30 秒理解 EvalHub
 
@@ -343,10 +344,21 @@ flowchart LR
     class S3,S4 planned;
 ```
 
-在 Web 控制台切换到“Agent 评测”，选择本地已安装的 Ollama 模型即可发起任务。页面会展示
-排队/运行进度、隐藏校验结果和规划、代码理解、实现、工具使用、验证、稳健性六维能力图。
-详细边界、流程图和验收标准见
+在 Web 控制台切换到“Agent 评测”，选择本地已安装的 Ollama 模型即可发起任务。页面会实时展示
+Agent 收到的任务、对外消息、工具调用和截断输出、受控文件变化、隐藏校验及最终分类；完成后再展示
+规划、代码理解、实现、工具使用、验证、稳健性六维能力图。分数只取最终工作区的隐藏校验，不采信
+Agent 自述。详细边界、流程图和验收标准见
 [Codex 固定 Agent 壳基模评测工程设计](docs/superpowers/specs/20260804_Codex固定Agent壳基模评测工程设计.md)。
+
+```mermaid
+flowchart LR
+    Codex["Codex JSONL"] --> Normalize["白名单事件"]
+    Normalize --> Queue["跨进程队列"]
+    Queue --> SQLite["节点审计事件"]
+    SQLite --> UI["Agent 实时过程"]
+    Workspace["最终 Git 工作区"] --> Verify["隐藏 Verifier"]
+    Verify --> SQLite
+```
 
 ## 下一步建议
 

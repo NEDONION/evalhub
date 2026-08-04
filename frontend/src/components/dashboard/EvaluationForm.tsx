@@ -5,6 +5,7 @@ import { formatBytes } from "../../lib/assets";
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type {
   AdapterType,
+  AgentDifficulty,
   BenchmarkDefinition,
   BenchmarkSuite,
   Dataset,
@@ -43,6 +44,13 @@ const sampleModes: Array<{ value: SampleMode; label: string; meta: string }> = [
   { value: "custom", label: "自定义", meta: "指定数量" },
 ];
 
+const agentDifficulties: Array<{ value: AgentDifficulty; label: string; meta: string }> = [
+  { value: "all", label: "全部难度", meta: "6 个任务" },
+  { value: "easy", label: "简单", meta: "2 个任务" },
+  { value: "medium", label: "中等", meta: "2 个任务" },
+  { value: "hard", label: "困难", meta: "2 个任务" },
+];
+
 /**
  * 渲染模型与 Agent 两类评测配置，并在提交前校验样本数量和 Ollama 模型可用性。
  *
@@ -71,6 +79,7 @@ export function EvaluationForm({
   const [subject, setSubject] = useState("abstract_algebra");
   const [adapter, setAdapter] = useState<AdapterType>("ollama");
   const [sampleMode, setSampleMode] = useState<SampleMode>("all");
+  const [agentDifficulty, setAgentDifficulty] = useState<AgentDifficulty>("all");
   const [limit, setLimit] = useState("20");
   const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -130,6 +139,7 @@ export function EvaluationForm({
     model,
     baseUrl: baseUrlDraft,
     sampleMode,
+    agentDifficulty,
     limit,
     suiteId: targetMode === "suite" ? selectedSuite?.id || null : null,
   };
@@ -150,7 +160,7 @@ export function EvaluationForm({
   }
 
   /**
-   * 切换评测对象，并把 Agent 模式收敛到当前后端真实支持的 quick + Ollama 组合。
+   * 切换评测对象，并把 Agent 模式收敛到当前后端真实支持的全量筛选与 Ollama 组合。
    *
    * @param event 评测类型 radio 的变更事件。
    */
@@ -160,7 +170,7 @@ export function EvaluationForm({
     setErrors({});
     if (nextType === "agent") {
       setAdapter("ollama");
-      setSampleMode("quick");
+      setSampleMode("all");
     }
   }
 
@@ -311,7 +321,7 @@ export function EvaluationForm({
                   Benchmark
                 </span>
                 <strong className="mt-1 block text-sm text-blue-950">EvalHub Coding Mini</strong>
-                <span className="mt-1 block text-xs leading-5 text-blue-700">3 个隐藏校验编码任务</span>
+                <span className="mt-1 block text-xs leading-5 text-blue-700">6 个三级难度隐藏校验任务</span>
               </div>
               <div className="rounded-md border border-blue-100 bg-blue-50/55 p-4">
                 <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
@@ -416,20 +426,46 @@ export function EvaluationForm({
               ) : null}
             </>
           ) : (
-            <div>
-              <p className="text-xs font-medium text-muted">本次 Agent 评测流程</p>
-              <ol className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
-                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">1. 创建独立 Git 样本工作区</li>
-                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Codex 使用所选基模完成任务</li>
-                <li className="rounded-md border border-border bg-slate-50 px-3 py-2">3. 隐藏 Verifier 评分并聚合六维能力</li>
-              </ol>
+            <div className="space-y-5">
+              <fieldset>
+                <legend className="mb-3 text-xs font-medium text-muted">任务难度</legend>
+                <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
+                  {agentDifficulties.map((option) => (
+                    <label key={option.value} className="relative cursor-pointer">
+                      <input
+                        type="radio"
+                        name="agent-difficulty"
+                        value={option.value}
+                        aria-label={option.label}
+                        checked={agentDifficulty === option.value}
+                        onChange={() => setAgentDifficulty(option.value)}
+                        className="peer sr-only"
+                      />
+                      <span className="flex min-h-16 flex-col justify-center rounded-md border border-border bg-white px-3 transition-colors peer-checked:border-blue-300 peer-checked:bg-blue-50">
+                        <strong className="text-xs font-semibold text-ink peer-checked:text-primary">
+                          {option.label}
+                        </strong>
+                        <span className="mt-1 text-[11px] text-slate-400">{option.meta}</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              <div>
+                <p className="text-xs font-medium text-muted">本次 Agent 评测流程</p>
+                <ol className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">1. 创建独立 Git 样本工作区</li>
+                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Codex 使用所选基模完成任务</li>
+                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">3. 隐藏 Verifier 评分并聚合六维能力</li>
+                </ol>
+              </div>
             </div>
           )}
 
           <div className="mt-auto pt-7">
             <div className="mb-4 rounded-md border border-blue-100 bg-blue-50/65 p-3 text-xs leading-5 text-blue-800">
               {evaluationType === "agent"
-                ? "固定运行 3 个 Coding Mini 任务；最终消息不会直接参与得分。"
+                ? "按所选难度运行 Coding Mini；最终消息不会直接参与得分。"
                 : sampleMode === "all"
                 ? "将运行完整数据集，耗时取决于模型和本地设备。"
                 : sampleMode === "quick"

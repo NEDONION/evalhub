@@ -93,6 +93,35 @@ def test_start_transition_and_event_are_committed_together(
     )
 
 
+def test_append_node_event_persists_live_agent_payload_in_order(
+    repository: SQLiteTaskRepository,
+) -> None:
+    """运行节点应按追加顺序持久化 Agent 白名单事件及其样本载荷。"""
+    task = repository.create_with_nodes(task_request(), workflow_specs())
+    node = repository.start_node(repository.list_nodes(task.id)[1].id)
+
+    repository.append_node_event(
+        node.id,
+        event_type="sample_started",
+        actor="benchmark",
+        message="Fix pricing.total_with_tax",
+        payload={"sample_id": "pricing_total"},
+    )
+    appended = repository.append_node_event(
+        node.id,
+        event_type="agent_message",
+        actor="codex",
+        message="检查文件",
+        payload={"sample_id": "pricing_total", "text": "检查文件"},
+    )
+
+    events = repository.list_node_events(node.id)
+    assert [event.event_type for event in events][-2:] == ["sample_started", "agent_message"]
+    assert appended.id == events[-1].id
+    assert appended.payload == {"sample_id": "pricing_total", "text": "检查文件"}
+    assert appended.actor == "codex"
+
+
 def test_complete_node_persists_output_duration_and_success_event(
     repository: SQLiteTaskRepository,
 ) -> None:

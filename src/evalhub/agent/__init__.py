@@ -1,5 +1,17 @@
 """Agent 评测运行边界。"""
 
-from evalhub.agent.codex import CodexAgentError, CodexAgentRunner, CodexRunResult
+from evalhub.agent.codex import (
+    AgentTraceEvent,
+    CodexAgentError,
+    CodexAgentRunner,
+    CodexRunResult,
+    TraceCallback,
+)
 
-__all__ = ["CodexAgentError", "CodexAgentRunner", "CodexRunResult"]
+__all__ = [
+    "AgentTraceEvent",
+    "CodexAgentError",
+    "CodexAgentRunner",
+    "CodexRunResult",
+    "TraceCallback",
+]

@@ -10,11 +10,14 @@ from threading import Event
 from time import monotonic
 from typing import Protocol
 
+from evalhub.agent.codex import AgentTraceEvent, TraceCallback
 from evalhub.benchmarks.coding_mini import run_codex_agent_benchmark
 from evalhub.cli import run_real_benchmark
 from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks.models import ResourceUsage, TaskRequest
 from evalhub.tasks.resources import ProcessResourceSampler
+
+_PROCESS_EXIT_DRAIN_SECONDS = 0.1
 
 
 class TaskExecutionCanceled(RuntimeError):
@@ -75,25 +78,29 @@ def _evaluation_process(
             }
         )
 
-    try:
-        # 两类评测的 quick 规模不同；显式分派避免把 Agent 语义塞进模型 Runner。
-        if request.sample_mode == "all":
-            limit = None
-        elif request.sample_mode == "quick":
-            limit = 3 if request.evaluation_type == "agent" else 5
-        else:
-            limit = request.limit
+    def report_trace(event: AgentTraceEvent) -> None:
+        """把标准化 Agent 外部动作转换为跨进程 Trace 事件。"""
+        event_queue.put({"type": "trace_event", "event": event})
 
-        # Agent MVP 固定 Coding Mini 与 Codex 壳；普通评测完整保留原有恢复回调。
+    try:
+        # Agent 样本由难度目录筛选；不再复用模型评测的条数限制语义。
         if request.evaluation_type == "agent":
             result = run_codex_agent_benchmark(
                 job_id=task_id,
                 model=request.model,
                 base_url=request.base_url,
-                limit=limit,
+                difficulty=request.agent_difficulty or "all",
                 on_progress=report_progress,
+                on_trace=report_trace,
             )
         else:
+            # 模型评测继续沿用已有 all、quick 与自定义条数规则。
+            if request.sample_mode == "all":
+                limit = None
+            elif request.sample_mode == "quick":
+                limit = 5
+            else:
+                limit = request.limit
             result = run_real_benchmark(
                 dataset=request.dataset,
                 adapter_type=request.adapter,
@@ -141,8 +148,22 @@ class SubprocessEvaluationExecutor:
         cancel_event: Event,
         skip_sample_ids: set[str] | frozenset[str] = frozenset(),
         on_sample_result: Callable[[dict[str, object], int, int], None] | None = None,
+        on_trace: TraceCallback | None = None,
     ) -> dict[str, object]:
         """运行一个评测子进程直到成功、失败或收到取消信号。
+
+        Args:
+            task_id: 当前评测任务标识。
+            request: 已校验的评测请求。
+            on_progress: 持久化样本进度的回调。
+            on_resources: 持久化资源快照的回调。
+            cancel_event: 调度层发送取消信号的线程事件。
+            skip_sample_ids: 恢复执行时无需重复计算的样本标识。
+            on_sample_result: 可选的单样本结果回调。
+            on_trace: 可选的 Agent 白名单过程事件回调。
+
+        Returns:
+            子进程生成的最终评测结果字典。
 
         Raises:
             TaskExecutionCanceled: 调度层请求取消任务。
@@ -162,6 +183,7 @@ class SubprocessEvaluationExecutor:
         next_sample_at = monotonic()
         result: dict[str, object] | None = None
         error_message: str | None = None
+        process_exited_at: float | None = None
 
         try:
             while True:
@@ -175,12 +197,17 @@ class SubprocessEvaluationExecutor:
                     error_message=error_message,
                     on_progress=on_progress,
                     on_sample_result=on_sample_result,
+                    on_trace=on_trace,
                 )
                 if error_message is not None or result is not None:
                     break
-                # 已退出进程在一次队列等待后仍没有终态消息，必须转入明确失败而非空转。
+                # multiprocessing.Queue 的 feeder 可能晚于进程退出状态暴露最后几条消息。
                 if not process.is_alive():
-                    break
+                    if process_exited_at is None:
+                        process_exited_at = monotonic()
+                    elif monotonic() - process_exited_at >= _PROCESS_EXIT_DRAIN_SECONDS:
+                        break
+                    continue
 
                 now = monotonic()
                 if now >= next_sample_at and process.pid is not None:
@@ -210,6 +237,7 @@ class SubprocessEvaluationExecutor:
         error_message: str | None,
         on_progress: Callable[[int, int], None],
         on_sample_result: Callable[[dict[str, object], int, int], None] | None,
+        on_trace: TraceCallback | None,
     ) -> tuple[dict[str, object] | None, str | None]:
         """读取一个子进程事件并更新进度或终态暂存值。"""
         try:
@@ -225,6 +253,8 @@ class SubprocessEvaluationExecutor:
                 int(message["completed"]),
                 int(message["total"]),
             )
+        elif event_type == "trace_event" and on_trace is not None:
+            on_trace(dict(message["event"]))
         elif event_type == "result":
             result = message["result"]
         elif event_type == "error":

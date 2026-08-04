@@ -28,6 +28,7 @@ class TaskRequest:
     evaluation_type: EvaluationType = "model"
     agent_framework: str | None = None
     suite_id: str | None = None
+    agent_difficulty: str | None = None
 
 
 @dataclass(frozen=True)

@@ -1,7 +1,7 @@
 """验证隔离评测执行器的子进程消息与异常退出处理。"""
 
 from dataclasses import asdict, replace
-from queue import Empty
+from queue import Empty, Queue
 from threading import Event, Thread
 from typing import cast
 
@@ -69,33 +69,80 @@ def test_evaluation_process_reports_progress_and_result(monkeypatch: pytest.Monk
 
 
 def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Codex Agent 请求应进入 Coding Mini，并把 quick 映射为三条编码样本。"""
+    """Codex Agent 请求应把难度原样交给 Coding Mini，且不再传旧 limit。"""
     request = replace(
         request_fixture(),
         evaluation_type="agent",
         agent_framework="codex",
         dataset="coding_mini",
         adapter="ollama",
+        sample_mode="all",
+        agent_difficulty="hard",
     )
     event_queue = RecordingQueue()
     observed: dict[str, object] = {}
 
     def fake_agent_benchmark(**kwargs: object) -> dict[str, object]:
-        """记录 Agent benchmark 参数并返回最小公共结果。"""
+        """记录 Agent 参数，通过公开回调发送事件并返回最小公共结果。"""
         observed.update(kwargs)
+        on_trace = kwargs["on_trace"]
+        on_trace(
+            {
+                "event_type": "sample_started",
+                "actor": "benchmark",
+                "message": "Fix pricing.total_with_tax",
+                "payload": {"sample_id": "pricing_total"},
+            }
+        )
         return {
             "job_id": kwargs["job_id"],
             "evaluation_type": "agent",
-            "total_samples": 3,
+            "total_samples": 2,
         }
 
     monkeypatch.setattr(executor_module, "run_codex_agent_benchmark", fake_agent_benchmark)
     _evaluation_process("job_agent", asdict(request), event_queue)
 
     assert observed["job_id"] == "job_agent"
-    assert observed["limit"] == 3
+    assert observed["difficulty"] == "hard"
+    assert "limit" not in observed
     assert observed["model"] == "local-test"
+    assert event_queue.events[-2] == {
+        "type": "trace_event",
+        "event": {
+            "event_type": "sample_started",
+            "actor": "benchmark",
+            "message": "Fix pricing.total_with_tax",
+            "payload": {"sample_id": "pricing_total"},
+        },
+    }
     assert event_queue.events[-1]["result"]["evaluation_type"] == "agent"
+
+
+def test_executor_forwards_trace_event_to_parent_callback() -> None:
+    """父进程读取 trace_event 时应把完整白名单事件交给任务服务。"""
+    event_queue: Queue[dict[str, object]] = Queue()
+    event = {
+        "event_type": "workspace_changed",
+        "actor": "benchmark",
+        "message": "无受控文件变化",
+        "payload": {"sample_id": "pricing_total", "changed_files": []},
+    }
+    event_queue.put({"type": "trace_event", "event": event})
+    observed: list[dict[str, object]] = []
+
+    result, error = SubprocessEvaluationExecutor._read_event(
+        event_queue,
+        result=None,
+        error_message=None,
+        on_progress=lambda completed, total: None,
+        on_sample_result=None,
+        on_trace=observed.append,
+    )
+
+    assert result is None
+    assert error is None
+    assert observed == [event]
 
 
 def test_evaluation_process_serializes_sample_result_events(
@@ -190,6 +237,46 @@ class ExitedProcessContext:
         return ExitedProcess()
 
 
+class LaggingResultQueue:
+    """模拟进程退出后一拍才可见最终结果的跨进程队列。"""
+
+    def __init__(self) -> None:
+        """记录读取次数，使第一次读取稳定复现 feeder 延迟。"""
+        self.read_count = 0
+
+    def get(self, *, timeout: float) -> dict[str, object]:
+        """第一次报告空队列，后续返回已由子进程写入的最终结果。"""
+        self.read_count += 1
+        if self.read_count == 1:
+            raise Empty
+        return {"type": "result", "result": {"job_id": "job_lagging_result"}}
+
+    def close(self) -> None:
+        """提供执行器 finally 路径需要的无副作用关闭接口。"""
+
+
+class SuccessfulExitedProcess(ExitedProcess):
+    """模拟已经正常退出、但队列 feeder 尚未暴露结果的子进程。"""
+
+    exitcode = 0
+
+
+class LaggingResultProcessContext:
+    """向执行器提供延迟可见结果和已正常退出的进程。"""
+
+    def __init__(self) -> None:
+        """创建本次执行唯一的延迟队列，便于断言读取行为。"""
+        self.queue = LaggingResultQueue()
+
+    def Queue(self) -> LaggingResultQueue:
+        """返回首次读取为空、随后提供结果的队列。"""
+        return self.queue
+
+    def Process(self, **kwargs: object) -> SuccessfulExitedProcess:
+        """忽略构造参数并返回已经正常退出的固定进程。"""
+        return SuccessfulExitedProcess()
+
+
 class ZeroResourceSampler:
     """为执行器异常退出测试提供无外部依赖的零资源读数。"""
 
@@ -231,3 +318,21 @@ def test_executor_stops_when_process_exits_without_result() -> None:
     assert isinstance(errors[0], TaskExecutionError)
     assert not isinstance(errors[0], TaskExecutionCanceled)
     assert "exit code 7" in str(errors[0])
+
+
+def test_executor_drains_lagging_result_after_process_exits() -> None:
+    """正常退出后的队列短暂为空时，执行器仍应读取随后可见的最终结果。"""
+    executor = SubprocessEvaluationExecutor(resource_sampler=ZeroResourceSampler())
+    context = LaggingResultProcessContext()
+    executor._context = cast(object, context)
+
+    result = executor.execute(
+        "job_lagging_result",
+        request_fixture(),
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert result == {"job_id": "job_lagging_result"}
+    assert context.queue.read_count == 2

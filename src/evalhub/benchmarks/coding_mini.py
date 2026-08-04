@@ -9,9 +9,15 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
-from evalhub.agent.codex import CodexAgentError, CodexAgentRunner, CodexRunResult
+from evalhub.agent.codex import (
+    AgentTraceEvent,
+    CodexAgentError,
+    CodexAgentRunner,
+    CodexRunResult,
+    TraceCallback,
+)
 
 CAPABILITY_DIMENSIONS: tuple[tuple[str, str], ...] = (
     ("planning", "规划"),
@@ -30,6 +36,8 @@ class CodingAgentSample:
     """描述一个包含初始仓库、任务说明、隐藏校验和能力权重的编码样本。"""
 
     id: str
+    difficulty: Literal["easy", "medium", "hard"]
+    difficulty_reason: str
     instruction: str
     files: Mapping[str, str]
     verifier_code: str
@@ -50,6 +58,7 @@ class AgentRunner(Protocol):
         base_url: str,
         workspace: Path,
         timeout_seconds: float,
+        on_event: TraceCallback | None = None,
     ) -> CodexRunResult:
         """在隔离工作区执行一个编码样本并返回运行元数据。"""
 
@@ -57,12 +66,15 @@ class AgentRunner(Protocol):
 def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
     """返回内置 Coding Mini 样本。
 
-    三条 quick 样本共同覆盖六项能力。任务与初始文件可以交给 Agent，隐藏校验代码
+    六条三级难度样本共同覆盖六项能力。任务与初始文件可以交给 Agent，隐藏校验代码
     只在 Agent 退出后由 EvalHub 执行，不写入样本仓库。
     """
     return (
+        # 简单题只要求修复单文件纯函数，保留原有定价样本作为最低难度基线。
         CodingAgentSample(
             id="pricing_total",
+            difficulty="easy",
+            difficulty_reason="单文件纯函数，缺陷定位直接",
             instruction=(
                 "Fix pricing.total_with_tax so every supplied price participates in the "
                 "subtotal. Preserve the public function signature, handle an empty list, "
@@ -87,8 +99,34 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
                 "implementation": 0.2,
             },
         ),
+        # 第二道简单题补足工具、验证和稳健性维度，仍保持局部聚合缺陷。
+        CodingAgentSample(
+            id="cart_quantity",
+            difficulty="easy",
+            difficulty_reason="单文件纯函数，只有局部聚合语义",
+            instruction=(
+                "Fix cart.total_quantity so it sums the integer quantity from every supplied "
+                "line item. Preserve the public function signature, handle an empty cart, and "
+                "verify the change."
+            ),
+            files={"cart.py": "def total_quantity(lines):\n    return len(lines)\n"},
+            verifier_code=(
+                "from cart import total_quantity\n"
+                "assert total_quantity([{'quantity': 2}, {'quantity': 3}]) == 5\n"
+                "assert total_quantity([{'quantity': 0}]) == 0\n"
+                "assert total_quantity([]) == 0\n"
+            ),
+            capability_weights={
+                "tool_use": 0.3,
+                "verification": 0.4,
+                "robustness": 0.3,
+            },
+        ),
+        # 中等题要求同时处理多个字符串边界，难点来自规范化契约而非文件数量。
         CodingAgentSample(
             id="slug_normalization",
+            difficulty="medium",
+            difficulty_reason="单函数但包含多个输入边界",
             instruction=(
                 "Improve normalize_slug in slug.py. The result must be lowercase ASCII words "
                 "joined by one hyphen; whitespace and punctuation are separators and empty "
@@ -113,8 +151,11 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
                 "verification": 0.3,
             },
         ),
+        # 库存题包含可变状态，失败路径必须维持调用前不变量。
         CodingAgentSample(
             id="inventory_reservation",
+            difficulty="medium",
+            difficulty_reason="涉及可变状态与失败不变量",
             instruction=(
                 "Repair inventory.reserve without changing its signature. A reservation "
                 "succeeds only for a positive quantity with enough stock; every rejected "
@@ -137,10 +178,105 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
                 "assert reserve(stock, 'pen', 0) is False and stock == {'pen': 1}\n"
             ),
             capability_weights={
+                "planning": 0.1,
                 "code_understanding": 0.2,
                 "tool_use": 0.1,
                 "verification": 0.3,
-                "robustness": 0.4,
+                "robustness": 0.3,
+            },
+        ),
+        # 困难题需要先理解 inventory 模块，再保证批量操作具备全有或全无语义。
+        CodingAgentSample(
+            id="batch_reservation_atomicity",
+            difficulty="hard",
+            difficulty_reason="需要理解两文件调用关系和原子性",
+            instruction=(
+                "Repair batch.reserve_batch without changing its signature. Requests are "
+                "(item, quantity) pairs and duplicate items are cumulative. Apply every "
+                "reservation only when all quantities are positive and sufficient; otherwise "
+                "leave the original stock unchanged. Verify success and rollback paths."
+            ),
+            files={
+                "inventory.py": (
+                    "def reserve(stock, item, quantity):\n"
+                    "    if quantity <= 0 or stock.get(item, 0) < quantity:\n"
+                    "        return False\n"
+                    "    stock[item] -= quantity\n"
+                    "    return True\n"
+                ),
+                "batch.py": (
+                    "from inventory import reserve\n\n"
+                    "def reserve_batch(stock, requests):\n"
+                    "    return all(\n"
+                    "        reserve(stock, item, quantity) for item, quantity in requests\n"
+                    "    )\n"
+                ),
+            },
+            verifier_code=(
+                "from batch import reserve_batch\n"
+                "stock = {'pen': 4, 'book': 2}\n"
+                "assert reserve_batch(stock, [('pen', 2), ('pen', 1), ('book', 2)]) is True\n"
+                "assert stock == {'pen': 1, 'book': 0}\n"
+                "stock = {'pen': 4, 'book': 2}\n"
+                "assert reserve_batch(stock, [('pen', 2), ('book', 3)]) is False\n"
+                "assert stock == {'pen': 4, 'book': 2}\n"
+                "assert reserve_batch(stock, [('missing', 1)]) is False\n"
+                "assert 'missing' not in stock and stock == {'pen': 4, 'book': 2}\n"
+                "assert reserve_batch(stock, [('pen', 0)]) is False\n"
+                "assert stock == {'pen': 4, 'book': 2}\n"
+            ),
+            capability_weights={
+                "planning": 0.2,
+                "code_understanding": 0.2,
+                "implementation": 0.2,
+                "tool_use": 0.1,
+                "verification": 0.1,
+                "robustness": 0.2,
+            },
+        ),
+        # 状态机题通过独立状态常量制造真实跨文件阅读要求，并验证终态不可回退。
+        CodingAgentSample(
+            id="retry_state_machine",
+            difficulty="hard",
+            difficulty_reason="多文件状态定义和多步状态不变量",
+            instruction=(
+                "Repair retry.record_failure without changing its signature. Running or retrying "
+                "jobs increment attempts and store the error. Return True and set retrying below "
+                "max_attempts; return False and set failed at the limit. Succeeded and failed jobs "
+                "are terminal and must remain unchanged. Verify the state transitions."
+            ),
+            files={
+                "states.py": "TERMINAL_STATUSES = {'succeeded', 'failed'}\n",
+                "retry.py": (
+                    "from states import TERMINAL_STATUSES\n\n"
+                    "def record_failure(job, max_attempts, error):\n"
+                    "    job['attempts'] += 1\n"
+                    "    job['last_error'] = error\n"
+                    "    job['status'] = 'retrying'\n"
+                    "    return True\n"
+                ),
+            },
+            verifier_code=(
+                "from retry import record_failure\n"
+                "job = {'status': 'running', 'attempts': 0, 'last_error': None}\n"
+                "assert record_failure(job, 2, 'timeout') is True\n"
+                "assert job == {'status': 'retrying', 'attempts': 1, 'last_error': 'timeout'}\n"
+                "assert record_failure(job, 2, 'again') is False\n"
+                "assert job == {'status': 'failed', 'attempts': 2, 'last_error': 'again'}\n"
+                "terminal = {'status': 'succeeded', 'attempts': 1, 'last_error': None}\n"
+                "assert record_failure(terminal, 3, 'ignored') is False\n"
+                "assert terminal == {'status': 'succeeded', 'attempts': 1, 'last_error': None}\n"
+                "failed = {'status': 'failed', 'attempts': 3, 'last_error': 'original'}\n"
+                "assert record_failure(failed, 3, 'ignored') is False\n"
+                "assert failed == {'status': 'failed', 'attempts': 3, 'last_error': 'original'}\n"
+            ),
+            capability_weights={
+                "planning": 0.15,
+                "code_understanding": 0.2,
+                "implementation": 0.2,
+                "tool_use": 0.1,
+                "verification": 0.15,
+                "robustness": 0.2,
             },
         ),
     )
@@ -151,10 +287,11 @@ def run_codex_agent_benchmark(
     job_id: str,
     model: str,
     base_url: str,
-    limit: int | None,
+    difficulty: str,
     on_progress: ProgressCallback | None = None,
     runner: AgentRunner | None = None,
     runtime_root: Path = Path(".runtime/agent-runs"),
+    on_trace: TraceCallback | None = None,
 ) -> dict[str, object]:
     """运行 Coding Mini 并聚合六维 Agent 能力报告。
 
@@ -162,20 +299,21 @@ def run_codex_agent_benchmark(
         job_id: 任务中心生成的唯一标识，用作运行目录名。
         model: Codex 本地 Ollama Provider 使用的基模。
         base_url: Ollama 服务根地址。
-        limit: 最多运行的内置样本数；为空时运行全部样本。
+        difficulty: 运行全部样本或指定简单、中等、困难单档。
         on_progress: 接收已完成样本数和总数的可选回调。
         runner: 可替换的 Agent 壳；默认创建真实 ``CodexAgentRunner``。
         runtime_root: 所有 Agent 样本工作区的父目录。
+        on_trace: 接收样本阶段和 Codex 外部动作的可选实时回调。
 
     返回：
         与普通评测公共字段兼容，并包含 Agent 元数据、样本结果和六维报告的字典。
 
     异常：
-        ValueError: 任务标识或样本上限无效。
+        ValueError: 任务标识或难度无效。
         RuntimeError: 无法创建 Git 工作区或执行隐藏 Verifier。
         CodexAgentError: 无法探测 Codex CLI 版本。
     """
-    selected_samples = _select_samples(limit)
+    selected_samples = _select_samples(difficulty)
     job_root = _job_root(runtime_root, job_id)
     active_runner = runner or CodexAgentRunner()
     cli_version = active_runner.version()
@@ -196,6 +334,7 @@ def run_codex_agent_benchmark(
                 model=model,
                 base_url=base_url,
                 runner=active_runner,
+                on_trace=on_trace,
             )
         )
         if on_progress is not None:
@@ -219,6 +358,8 @@ def run_codex_agent_benchmark(
         "evaluation_type": "agent",
         "dataset": "coding_mini",
         "benchmark": "EvalHub Coding Mini",
+        "benchmark_version": "coding-mini-v2",
+        "requested_difficulty": difficulty,
         "model": model,
         "adapter": "ollama",
         "metric": "hidden_verifier_pass_rate",
@@ -227,6 +368,7 @@ def run_codex_agent_benchmark(
         "average_score": round(passed_samples / total_samples, 4),
         "failed_sample_ids": failed_ids,
         "failed_examples": _failed_examples(sample_results),
+        "difficulty_report": _aggregate_difficulty(selected_samples, sample_results),
         "agent": {
             "framework": "codex",
             "cli_version": cli_version,
@@ -240,14 +382,23 @@ def run_codex_agent_benchmark(
     }
 
 
-def _select_samples(limit: int | None) -> tuple[CodingAgentSample, ...]:
-    """按请求上限选择稳定前缀，并拒绝无法产生报告的非正上限。"""
-    samples = coding_mini_samples()
-    if limit is None:
-        return samples
-    if limit <= 0:
-        raise ValueError("limit must be greater than zero")
-    return samples[:limit]
+def _select_samples(difficulty: str) -> tuple[CodingAgentSample, ...]:
+    """按难度返回稳定样本组，并拒绝未知选择。
+
+    Args:
+        difficulty: 全部或单个难度标识。
+
+    Returns:
+        按内置固定顺序选择的非空样本元组。
+
+    Raises:
+        ValueError: 难度不在 all、easy、medium、hard 中。
+    """
+    if difficulty == "all":
+        return coding_mini_samples()
+    if difficulty not in {"easy", "medium", "hard"}:
+        raise ValueError("difficulty must be one of: all, easy, medium, hard")
+    return tuple(sample for sample in coding_mini_samples() if sample.difficulty == difficulty)
 
 
 def _job_root(runtime_root: Path, job_id: str) -> Path:
@@ -318,8 +469,34 @@ def _run_sample(
     model: str,
     base_url: str,
     runner: AgentRunner,
+    on_trace: TraceCallback | None,
 ) -> dict[str, object]:
-    """运行单条 Agent 样本，再以隐藏 Verifier 判定唯一分数。"""
+    """运行单条 Agent 样本并生成文件证据、隐藏校验和可解释分类。"""
+    difficulty_label = {"easy": "简单", "medium": "中等", "hard": "困难"}[sample.difficulty]
+    _emit_trace(
+        on_trace,
+        event_type="sample_started",
+        actor="benchmark",
+        message=f"[{difficulty_label}] {sample.instruction}",
+        payload={
+            "sample_id": sample.id,
+            "instruction": sample.instruction,
+            "difficulty": sample.difficulty,
+            "difficulty_reason": sample.difficulty_reason,
+        },
+    )
+
+    def relay_codex_event(event: AgentTraceEvent) -> None:
+        """为 Codex 原始外部事件补充稳定样本标识后向上游转发。"""
+        payload = {**event["payload"], "sample_id": sample.id}
+        _emit_trace(
+            on_trace,
+            event_type=event["event_type"],
+            actor=event["actor"],
+            message=event["message"],
+            payload=payload,
+        )
+
     try:
         run_result = runner.run(
             instruction=sample.instruction,
@@ -327,29 +504,232 @@ def _run_sample(
             base_url=base_url,
             workspace=workspace,
             timeout_seconds=180,
+            on_event=relay_codex_event,
         )
     except CodexAgentError as exc:
-        # CLI 层错误只降低当前样本分数，使其余样本仍能提供能力诊断。
+        # Runner 错误独立于解题正确性，仍检查文件证据并继续后续样本。
+        changed_files = _changed_files(workspace)
+        diagnostics = _diagnostics(
+            outcome="runtime_error",
+            tool_call_count=0,
+            changed_files=changed_files,
+            final_message_present=False,
+            verifier_passed=False,
+        )
+        _emit_runner_error(on_trace, sample.id, exc)
+        _emit_workspace_changed(on_trace, sample.id, changed_files)
+        _emit_sample_finished(on_trace, sample.id, diagnostics, score=0.0)
         return {
             "sample_id": sample.id,
+            "difficulty": sample.difficulty,
+            "difficulty_reason": sample.difficulty_reason,
             "status": "failed",
             "score": 0.0,
             "final_message": "",
             "event_count": 0,
             "wall_time_seconds": 0.0,
             "verifier_message": str(exc),
+            "diagnostics": diagnostics,
         }
 
+    # Git 变化回答 Agent 是否真正采取动作，隐藏校验只回答最终实现是否正确。
+    changed_files = _changed_files(workspace)
+    _emit_workspace_changed(on_trace, sample.id, changed_files)
     verifier_passed, verifier_message = _verify_workspace(sample, workspace)
+    _emit_verifier_finished(
+        on_trace,
+        sample_id=sample.id,
+        verifier_passed=verifier_passed,
+        verifier_message=verifier_message,
+    )
+    outcome = "passed" if verifier_passed else "wrong_solution" if changed_files else "no_action"
+    diagnostics = _diagnostics(
+        outcome=outcome,
+        tool_call_count=run_result.tool_call_count,
+        changed_files=changed_files,
+        final_message_present=bool(run_result.final_message),
+        verifier_passed=verifier_passed,
+    )
+    score = 1.0 if verifier_passed else 0.0
+    _emit_sample_finished(on_trace, sample.id, diagnostics, score=score)
     return {
         "sample_id": sample.id,
+        "difficulty": sample.difficulty,
+        "difficulty_reason": sample.difficulty_reason,
         "status": "success" if verifier_passed else "failed",
-        "score": 1.0 if verifier_passed else 0.0,
+        "score": score,
         "final_message": run_result.final_message[:1000],
         "event_count": run_result.event_count,
         "wall_time_seconds": round(run_result.wall_time_seconds, 3),
         "verifier_message": verifier_message,
+        "diagnostics": diagnostics,
     }
+
+
+def _changed_files(workspace: Path) -> list[str]:
+    """返回相对初始提交发生变化的受控文件路径。
+
+    已跟踪修改和新增文件分别由 Git 查询，诊断目录与 Python 字节码不会冒充 Agent 行为。
+    """
+    tracked = _run_git_names(["git", "diff", "--name-only", "-z", "HEAD"], workspace)
+    untracked = _run_git_names(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        workspace,
+    )
+    candidates = {*tracked, *untracked}
+    return sorted(path for path in candidates if path and _is_controlled_change(path))
+
+
+def _run_git_names(command: list[str], workspace: Path) -> list[str]:
+    """执行只读 Git 文件名查询并返回 NUL 分隔的相对路径。
+
+    异常：
+        RuntimeError: Git 无法启动、超时或返回非零退出码时抛出。
+    """
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"failed to inspect benchmark workspace: {exc}") from exc
+
+    # 文件证据不可用时必须让平台显式失败，不能把未知状态误报为 no_action。
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "unknown git error"
+        raise RuntimeError(f"failed to inspect benchmark workspace: {detail[-1000:]}")
+    return [item for item in completed.stdout.split("\0") if item]
+
+
+def _is_controlled_change(relative_name: str) -> bool:
+    """判断相对路径是否属于可用于证明 Agent 行为的受控文件。"""
+    parts = Path(relative_name).parts
+    if ".evalhub" in parts or "__pycache__" in parts:
+        return False
+    return Path(relative_name).suffix != ".pyc"
+
+
+def _diagnostics(
+    *,
+    outcome: str,
+    tool_call_count: int,
+    changed_files: list[str],
+    final_message_present: bool,
+    verifier_passed: bool,
+) -> dict[str, object]:
+    """构造最终结果和实时事件共同使用的样本诊断事实。"""
+    return {
+        "outcome": outcome,
+        "tool_call_count": tool_call_count,
+        "changed_files": changed_files,
+        "final_message_present": final_message_present,
+        "verifier_passed": verifier_passed,
+    }
+
+
+def _emit_trace(
+    callback: TraceCallback | None,
+    *,
+    event_type: str,
+    actor: str,
+    message: str | None,
+    payload: dict[str, object],
+) -> None:
+    """向可选上游发送一条 JSON 兼容且不包含隐藏断言的审计事件。"""
+    if callback is None:
+        return
+    event: AgentTraceEvent = {
+        "event_type": event_type,
+        "actor": actor,
+        "message": message,
+        "payload": payload,
+    }
+    callback(event)
+
+
+def _emit_runner_error(
+    callback: TraceCallback | None,
+    sample_id: str,
+    error: CodexAgentError,
+) -> None:
+    """发送明确归属于运行边界的失败事件。"""
+    _emit_trace(
+        callback,
+        event_type="runner_error",
+        actor="benchmark",
+        message=str(error),
+        payload={
+            "sample_id": sample_id,
+            "error_type": "codex_agent_error",
+            "message": str(error),
+        },
+    )
+
+
+def _emit_workspace_changed(
+    callback: TraceCallback | None,
+    sample_id: str,
+    changed_files: list[str],
+) -> None:
+    """发送 Codex 退出后由 Git 独立观察到的受控文件变化。"""
+    message = f"修改 {len(changed_files)} 个受控文件" if changed_files else "无受控文件变化"
+    _emit_trace(
+        callback,
+        event_type="workspace_changed",
+        actor="benchmark",
+        message=message,
+        payload={"sample_id": sample_id, "changed_files": changed_files},
+    )
+
+
+def _emit_verifier_finished(
+    callback: TraceCallback | None,
+    *,
+    sample_id: str,
+    verifier_passed: bool,
+    verifier_message: str,
+) -> None:
+    """在 Agent 已退出后发送隐藏校验结论和安全失败摘要。"""
+    message = "隐藏校验通过" if verifier_passed else "隐藏校验失败"
+    _emit_trace(
+        callback,
+        event_type="verifier_finished",
+        actor="benchmark",
+        message=message,
+        payload={
+            "sample_id": sample_id,
+            "passed": verifier_passed,
+            "message": verifier_message,
+        },
+    )
+
+
+def _emit_sample_finished(
+    callback: TraceCallback | None,
+    sample_id: str,
+    diagnostics: dict[str, object],
+    *,
+    score: float,
+) -> None:
+    """发送单条样本的最终可解释分类。"""
+    outcome_labels = {
+        "runtime_error": "Agent 运行失败",
+        "no_action": "未产生代码修改",
+        "wrong_solution": "修改未通过隐藏校验",
+        "passed": "样本通过",
+    }
+    outcome = str(diagnostics["outcome"])
+    _emit_trace(
+        callback,
+        event_type="sample_finished",
+        actor="benchmark",
+        message=outcome_labels[outcome],
+        payload={"sample_id": sample_id, "score": score, **diagnostics},
+    )
 
 
 def _verify_workspace(sample: CodingAgentSample, workspace: Path) -> tuple[bool, str]:
@@ -395,6 +775,43 @@ def _aggregate_dimensions(
     return dimensions
 
 
+def _aggregate_difficulty(
+    samples: tuple[CodingAgentSample, ...],
+    sample_results: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """按实际选择的难度顺序汇总隐藏校验通过率。
+
+    Args:
+        samples: 本次运行的稳定样本集合。
+        sample_results: 与样本对应的隐藏校验结果。
+
+    Returns:
+        仅包含已运行难度的通过数、总数和通过率列表。
+    """
+    passed_ids = {
+        str(result["sample_id"])
+        for result in sample_results
+        if result["status"] == "success"
+    }
+    report: list[dict[str, object]] = []
+
+    # 固定顺序让不同运行的 JSON 和前端展示无需额外排序即可直接比较。
+    for difficulty in ("easy", "medium", "hard"):
+        tier = [sample for sample in samples if sample.difficulty == difficulty]
+        if not tier:
+            continue
+        passed = sum(sample.id in passed_ids for sample in tier)
+        report.append(
+            {
+                "difficulty": difficulty,
+                "total": len(tier),
+                "passed": passed,
+                "pass_rate": round(passed / len(tier), 4),
+            }
+        )
+    return report
+
+
 def _failed_examples(sample_results: list[dict[str, object]]) -> list[dict[str, object]]:
     """提取通用结果详情可直接展示的失败样例。
 
@@ -404,6 +821,8 @@ def _failed_examples(sample_results: list[dict[str, object]]) -> list[dict[str, 
     return [
         {
             "sample_id": result["sample_id"],
+            "difficulty": result["difficulty"],
+            "difficulty_reason": result["difficulty_reason"],
             "input": str(result["sample_id"]),
             "prediction": str(result["final_message"]),
             "reference": "hidden verifier passed",
@@ -420,6 +839,8 @@ def _scaffold_hash(samples: tuple[CodingAgentSample, ...]) -> str:
     payload = [
         {
             "id": sample.id,
+            "difficulty": sample.difficulty,
+            "difficulty_reason": sample.difficulty_reason,
             "instruction": sample.instruction,
             "files": dict(sample.files),
             "verifier_code": sample.verifier_code,

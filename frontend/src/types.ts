@@ -3,6 +3,7 @@ export type AdapterType = "ollama" | "oracle";
 export type SampleMode = "all" | "quick" | "custom";
 export type EvaluationType = "model" | "agent";
 export type AgentFramework = "codex";
+export type AgentDifficulty = "all" | "easy" | "medium" | "hard";
 
 export interface Dataset {
   name: DatasetName;
@@ -59,6 +60,7 @@ export interface OllamaStatus {
 export interface EvaluationRequest {
   evaluation_type?: EvaluationType;
   agent_framework?: AgentFramework;
+  agent_difficulty?: AgentDifficulty;
   dataset: DatasetName;
   adapter: AdapterType;
   model: string;
@@ -97,6 +99,8 @@ export interface BenchmarkSuite {
 
 export interface FailedExample {
   sample_id: string;
+  difficulty?: Exclude<AgentDifficulty, "all">;
+  difficulty_reason?: string;
   score: number;
   input: string;
   prediction: string;
@@ -123,12 +127,21 @@ export interface AgentRunMetadata {
 
 export interface AgentSampleResult {
   sample_id: string;
+  difficulty: Exclude<AgentDifficulty, "all">;
+  difficulty_reason: string;
   status: "success" | "failed";
   score: number;
   final_message: string;
   event_count: number;
   wall_time_seconds: number;
   verifier_message: string;
+}
+
+export interface AgentDifficultyResult {
+  difficulty: Exclude<AgentDifficulty, "all">;
+  total: number;
+  passed: number;
+  pass_rate: number;
 }
 
 export interface EvaluationResult {
@@ -145,6 +158,9 @@ export interface EvaluationResult {
   average_score: number;
   failed_sample_ids: string[];
   failed_examples: FailedExample[];
+  benchmark_version?: string;
+  requested_difficulty?: AgentDifficulty;
+  difficulty_report?: AgentDifficultyResult[];
   agent?: AgentRunMetadata;
   capability_report?: AgentCapabilityReport;
   capability_profile?: ModelCapabilityProfile;

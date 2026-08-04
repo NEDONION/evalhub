@@ -13,6 +13,7 @@ import type { JSX } from "react";
 import { getEvaluationNode, getEvaluationNodeSamples } from "../../lib/api";
 import type {
   EvaluationNodeDetail,
+  EvaluationNodeEvent,
   EvaluationNodeStatus,
   EvaluationNodeSummary,
   EvaluationSampleCheckpoint,
@@ -41,6 +42,7 @@ const statusCopy: Record<EvaluationNodeStatus, { label: string; tone: BadgeProps
 const kindLabels: Record<string, string> = {
   prepare_assets: "准备运行资产",
   benchmark: "执行 Benchmark",
+  agent_benchmark: "执行 Agent Benchmark",
   capability_aggregate: "聚合能力画像",
   workflow_finalize: "生成最终报告",
 };
@@ -223,6 +225,12 @@ interface NodeDetailProps {
   onLoadMore: () => void;
 }
 
+/**
+ * 展示单个节点的运行快照，并为 Agent 节点切换到可读的实时过程时间线。
+ *
+ * @param props 节点详情、失败样本、重试和分页操作。
+ * @returns 包含诊断、原始检查点、事件与失败样本的节点详情区域。
+ */
 function NodeDetail({
   detail,
   samples,
@@ -272,23 +280,7 @@ function NodeDetail({
         </pre>
       </details>
 
-      <div className="border-t border-border">
-        <div className="flex items-center justify-between gap-3 px-5 py-3 sm:px-6">
-          <h4 className="text-xs font-semibold text-ink">审计事件</h4>
-          <span className="font-mono text-[10px] text-slate-400">{detail.events.length} EVENTS</span>
-        </div>
-        <div className="max-h-64 divide-y divide-border overflow-auto border-t border-border">
-          {detail.events.map((event) => (
-            <div key={event.id} className="grid gap-1 px-5 py-3 text-xs sm:grid-cols-[150px_100px_minmax(0,1fr)] sm:px-6">
-              <time className="font-mono text-[10px] text-slate-400">{formatTimestamp(event.created_at)}</time>
-              <strong className="font-mono text-[10px] text-ink">{event.event_type}</strong>
-              <span className="min-w-0 truncate text-muted">
-                {event.message || `${event.from_status || "—"} → ${event.to_status || "—"}`} · {event.actor}
-              </span>
-            </div>
-          ))}
-        </div>
-      </div>
+      <NodeEventTimeline detail={detail} />
 
       {samples.length > 0 ? (
         <div className="border-t border-border">
@@ -322,14 +314,136 @@ function NodeDetail({
   );
 }
 
+interface NodeEventTimelineProps {
+  detail: EvaluationNodeDetail;
+}
+
+const agentEventLabels: Record<string, string> = {
+  node_created: "节点已创建",
+  node_started: "节点已启动",
+  agent_session_started: "Agent 会话已建立",
+  agent_turn_started: "Agent 开始处理",
+  sample_started: "开始样本",
+  tool_started: "调用工具",
+  tool_finished: "工具完成",
+  agent_message: "Agent 消息",
+  workspace_changed: "工作区变化",
+  verifier_finished: "隐藏校验",
+  sample_finished: "样本完成",
+  runner_error: "运行异常",
+  node_succeeded: "节点成功",
+  node_failed: "节点失败",
+  node_canceled: "节点取消",
+};
+
+/**
+ * 将节点事件展示为可追踪时间线；Agent 节点会展开命令输出等白名单证据。
+ *
+ * @param props 当前节点详情，其中事件已由后端按创建顺序返回。
+ * @returns 通用审计列表或 Agent 实时过程日志；运行态通过 aria-live 通知增量变化。
+ */
+function NodeEventTimeline({ detail }: NodeEventTimelineProps): JSX.Element {
+  const isAgent = detail.kind === "agent_benchmark";
+  return (
+    <div className="border-t border-border">
+      <div className="flex items-center justify-between gap-3 px-5 py-3 sm:px-6">
+        <h4 className="text-xs font-semibold text-ink">
+          {isAgent ? "Agent 实时过程" : "审计事件"}
+        </h4>
+        <span className="font-mono text-[10px] text-slate-400">
+          {detail.events.length} EVENTS
+        </span>
+      </div>
+      <div
+        role={isAgent ? "log" : undefined}
+        aria-live={isAgent && detail.status === "running" ? "polite" : undefined}
+        className="max-h-80 divide-y divide-border overflow-auto border-t border-border"
+      >
+        {detail.events.length === 0 ? (
+          <p className="px-5 py-4 text-xs text-muted sm:px-6">
+            {isAgent ? "等待 Agent 产生可观察事件" : "暂无审计事件"}
+          </p>
+        ) : (
+          detail.events.map((event) => {
+            const evidence = isAgent ? agentEventEvidence(event) : null;
+            return (
+              <div
+                key={event.id}
+                className="grid gap-2 px-5 py-3 text-xs sm:grid-cols-[100px_minmax(0,1fr)] sm:px-6"
+              >
+                <div>
+                  <time className="block font-mono text-[10px] text-slate-400">
+                    {formatTimestamp(event.created_at)}
+                  </time>
+                  <span className="mt-1 block font-mono text-[10px] text-slate-400">
+                    {event.actor}
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <strong className="font-mono text-[10px] text-ink">
+                    {isAgent ? agentEventLabels[event.event_type] || event.event_type : event.event_type}
+                  </strong>
+                  <p className="mt-1 whitespace-pre-wrap text-muted">
+                    {event.message || `${event.from_status || "—"} → ${event.to_status || "—"}`}
+                  </p>
+                  {evidence ? (
+                    <pre className="mt-2 max-h-32 overflow-auto rounded bg-slate-950 px-3 py-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-slate-200">
+                      {evidence}
+                    </pre>
+                  ) : null}
+                </div>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 从后端白名单载荷提取最有诊断价值的证据，避免把完整任意 JSON 倾倒到界面。
+ *
+ * @param event 单条已持久化节点事件。
+ * @returns 工具输出、修改文件或校验摘要；没有额外证据时返回空值。
+ */
+function agentEventEvidence(event: EvaluationNodeEvent): string | null {
+  const output = event.payload?.output;
+  if (typeof output === "string" && output) return output;
+  const changedFiles = event.payload?.changed_files;
+  if (Array.isArray(changedFiles)) {
+    const files = changedFiles.filter((item): item is string => typeof item === "string");
+    return files.length > 0 ? files.join("\n") : null;
+  }
+  const verifierMessage =
+    event.event_type === "verifier_finished" ? event.payload?.message : null;
+  if (typeof verifierMessage === "string" && verifierMessage) return verifierMessage;
+  return null;
+}
+
+/**
+ * 生成节点摘要变化指纹；运行耗时每秒变化时也会触发详情重新读取，从而刷新 Trace。
+ *
+ * @param nodes 选中任务最新的节点摘要列表。
+ * @returns 用于 Effect 依赖比较的稳定字符串。
+ */
 function nodeRevision(nodes: EvaluationNodeSummary[]): string {
   return nodes
-    .map((node) => `${node.id}:${node.status}:${node.attempt.count}:${node.progress.completed_samples}`)
+    .map(
+      (node) =>
+        `${node.id}:${node.status}:${node.attempt.count}:${node.progress.completed_samples}:${node.timing.elapsed_ms}`,
+    )
     .join("|");
 }
 
+/**
+ * 把节点类型和稳定键转换为面向用户的短标签。
+ *
+ * @param node 一个工作流节点摘要。
+ * @returns Benchmark 标识、Agent Benchmark 名称或已知节点种类文案。
+ */
 function nodeLabel(node: EvaluationNodeSummary): string {
-  if (node.kind === "benchmark") {
+  if (node.kind === "benchmark" || node.kind === "agent_benchmark") {
     return String(node.node_key.split(":").slice(1).join(":")) || "Benchmark";
   }
   return kindLabels[node.kind] || node.kind;

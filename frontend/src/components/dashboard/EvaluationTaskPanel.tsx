@@ -380,7 +380,7 @@ function TaskDetail({
         </div>
       ) : null}
 
-      {task.request.evaluation_type !== "agent" && task.nodes && task.nodes.length > 0 ? (
+      {task.nodes && task.nodes.length > 0 ? (
         <EvaluationNodeInspector
           taskId={task.id}
           taskStatus={task.status}
