@@ -231,7 +231,7 @@ class DockerHumanEvalSandbox:
             except (OSError, subprocess.SubprocessError, UnicodeError):
                 continue
 
-        # daemon 必须在短超时内响应，否则 inspect 非零不能证明是“容器不存在”。
+        # daemon 必须在短超时内响应，避免把后续 CLI 故障误判为“容器不存在”。
         try:
             daemon = self._command_runner(
                 ["docker", "version", "--format", "{{.Server.Version}}"],
@@ -245,16 +245,17 @@ class DockerHumanEvalSandbox:
         if daemon.returncode != 0:
             raise SandboxInfrastructureError("cleanup_failed")
 
-        # daemon 已确认可达；此时 inspect 非零表示固定合法名字没有对应容器。
+        # 名字过滤会覆盖运行中和已退出容器；只有查询成功且完全空输出才是不存在的正证据。
         try:
             remaining = self._command_runner(
                 [
                     "docker",
                     "container",
-                    "inspect",
-                    "--format",
-                    "{{.Id}}",
-                    container_name,
+                    "ls",
+                    "--all",
+                    "--quiet",
+                    "--filter",
+                    f"name={container_name}",
                 ],
                 capture_output=True,
                 text=True,
@@ -263,7 +264,7 @@ class DockerHumanEvalSandbox:
             )
         except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
             raise SandboxInfrastructureError("cleanup_failed") from exc
-        if remaining.returncode == 0:
+        if remaining.returncode != 0 or remaining.stdout != "":
             raise SandboxInfrastructureError("cleanup_failed")
 
 

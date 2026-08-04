@@ -175,3 +175,66 @@ def test_candidate_cannot_fork_and_create_an_escaping_session() -> None:
 
     assert result.passed is True
     assert result.reason is None
+
+
+def test_candidate_cannot_signal_controller_through_async_io_ownership() -> None:
+    """候选不得用 socket/pipe 的异步 I/O 所有者通知向 controller 发送 SIGIO。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_async_io_signal_humaneval",
+        source_key="HumanEval/integration-async-io-signal",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import fcntl, os, signal, socket\n"
+        "    blocked = 0\n"
+        "    try:\n"
+        "        reader, writer = socket.socketpair()\n"
+        "        fcntl.fcntl(reader, fcntl.F_SETOWN, os.getppid())\n"
+        "        fcntl.fcntl(reader, fcntl.F_SETSIG, signal.SIGIO)\n"
+        "        flags = fcntl.fcntl(reader, fcntl.F_GETFL)\n"
+        "        fcntl.fcntl(reader, fcntl.F_SETFL, flags | os.O_ASYNC)\n"
+        "        writer.send(b'x')\n"
+        "    except PermissionError:\n"
+        "        blocked += 1\n"
+        "    read_fd, write_fd = os.pipe()\n"
+        "    try:\n"
+        "        fcntl.fcntl(read_fd, fcntl.F_SETOWN, os.getppid())\n"
+        "    except PermissionError:\n"
+        "        blocked += 1\n"
+        "    return a + b if blocked == 2 else -1\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is True
+    assert result.reason is None
+
+
+def test_candidate_cannot_lower_controller_hard_limits_with_prlimit() -> None:
+    """候选用 prlimit64 指向父 controller 时必须得到 EPERM，隐藏检查仍可完成。"""
+    problem = HumanEvalProblem(
+        sample_id="integration_parent_prlimit_humaneval",
+        source_key="HumanEval/integration-parent-prlimit",
+        prompt="def add(a, b):\n",
+        canonical_solution="    return a + b\n",
+        test="def check(candidate):\n    assert candidate(2, 3) == 5\n",
+        entry_point="add",
+        input_zh="实现两个数字相加。",
+    )
+    completion = (
+        "    import os, resource\n"
+        "    try:\n"
+        "        resource.prlimit(os.getppid(), resource.RLIMIT_NOFILE, (0, 0))\n"
+        "    except PermissionError:\n"
+        "        return a + b\n"
+        "    return -1\n"
+    )
+
+    result = DockerHumanEvalSandbox().run(problem, completion)
+
+    assert result.passed is True
+    assert result.reason is None

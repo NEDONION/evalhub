@@ -36,36 +36,90 @@ _SECCOMP_POLICIES: dict[str, tuple[int, dict[str, int]]] = {
     "x86_64": (
         0xC000003E,
         {
+            # 直接信号编号来自 Linux 官方 x86_64 syscall_64.tbl。
             "kill": 62,
             "tkill": 200,
             "tgkill": 234,
             "rt_sigqueueinfo": 129,
             "rt_tgsigqueueinfo": 297,
+            # pidfd 信号与进程、会话创建接口必须和直接信号一起拒绝。
             "pidfd_send_signal": 424,
             "fork": 57,
             "vfork": 58,
             "clone": 56,
             "clone3": 435,
+            # 候选不能脱离 controller 所管理的进程组和会话。
             "setsid": 112,
             "setpgid": 109,
+            # 异步 I/O 所有者通知可间接发信号，socket 创建入口也一并关闭。
+            "fcntl": 72,
+            "ioctl": 16,
+            "socket": 41,
+            "socketpair": 53,
+            # 同 UID 调度接口可降低 controller 的 CPU 与 I/O 可用性。
+            "setpriority": 141,
+            "sched_setparam": 142,
+            "sched_setscheduler": 144,
+            "sched_setaffinity": 203,
+            "sched_setattr": 314,
+            # I/O 优先级、NUMA 内存放置和硬限制都不得指向父 controller。
+            "ioprio_set": 251,
+            "migrate_pages": 256,
+            "move_pages": 279,
+            "prlimit64": 302,
+            # 跨进程内存读写与 pidfd 创建也属于同一直接能力集合。
+            "process_vm_readv": 310,
+            "process_vm_writev": 311,
+            "pidfd_open": 434,
+            # pidfd 获取与 process_* 资源接口属于同一窄幅跨进程能力集合。
+            "pidfd_getfd": 438,
+            "process_madvise": 440,
+            "process_mrelease": 448,
         },
     ),
     "aarch64": (
         0xC00000B7,
         {
+            # 编号来自 Linux 官方 asm-generic/unistd.h，aarch64 使用该通用表。
             "kill": 129,
             "tkill": 130,
             "tgkill": 131,
             "rt_sigqueueinfo": 138,
             "rt_tgsigqueueinfo": 240,
+            # pidfd 信号与进程、会话创建接口必须和直接信号一起拒绝。
             "pidfd_send_signal": 424,
             # aarch64 的 libc fork/vfork 都落到通用 clone，三项必须共享同一拒绝规则。
             "fork": 220,
             "vfork": 220,
             "clone": 220,
             "clone3": 435,
+            # 候选不能脱离 controller 所管理的进程组和会话。
             "setsid": 157,
             "setpgid": 154,
+            # 异步 I/O 所有者通知可间接发信号，socket 创建入口也一并关闭。
+            "fcntl": 25,
+            "ioctl": 29,
+            "socket": 198,
+            "socketpair": 199,
+            # 同 UID 调度接口可降低 controller 的 CPU 与 I/O 可用性。
+            "setpriority": 140,
+            "sched_setparam": 118,
+            "sched_setscheduler": 119,
+            "sched_setaffinity": 122,
+            "sched_setattr": 274,
+            # I/O 优先级、NUMA 内存放置和硬限制都不得指向父 controller。
+            "ioprio_set": 30,
+            "migrate_pages": 238,
+            "move_pages": 239,
+            "prlimit64": 261,
+            # 跨进程内存读写与 pidfd 创建也属于同一直接能力集合。
+            "process_vm_readv": 270,
+            "process_vm_writev": 271,
+            "pidfd_open": 434,
+            # pidfd 获取与 process_* 资源接口属于同一窄幅跨进程能力集合。
+            "pidfd_getfd": 438,
+            "process_madvise": 440,
+            "process_mrelease": 448,
         },
     ),
 }
@@ -92,7 +146,7 @@ class _SockFprog(ctypes.Structure):
 
 
 def _seccomp_policy(machine: str) -> tuple[int, dict[str, int]]:
-    """返回受支持架构的 audit arch 和进程/信号逃逸 syscall 映射。
+    """返回受支持架构的 audit arch 和跨进程能力拒绝 syscall 映射。
 
     Args:
         machine: ``platform.machine()`` 返回的 Linux 架构名称或常见等价名称。
@@ -112,7 +166,7 @@ def _seccomp_policy(machine: str) -> tuple[int, dict[str, int]]:
 
 
 def _seccomp_instructions(machine: str) -> tuple[Instruction, ...]:
-    """构造先校验架构、再对逃逸 syscall 返回 EPERM 的经典 BPF 指令。
+    """构造先校验架构、再对逃逸及跨进程 syscall 返回 EPERM 的经典 BPF 指令。
 
     Args:
         machine: 固定镜像当前 Linux 架构名称。

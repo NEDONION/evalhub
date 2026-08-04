@@ -31,6 +31,15 @@ from evalhub.datasets.hexagon_manifest import HexagonSampleSpec
 _IMAGE_ID = f"sha256:{'a' * 64}"
 _CONTAINER_TOKEN = "b" * 32
 _CONTAINER_NAME = f"evalhub-humaneval-{_CONTAINER_TOKEN}"
+_CLEANUP_QUERY = [
+    "docker",
+    "container",
+    "ls",
+    "--all",
+    "--quiet",
+    "--filter",
+    f"name={_CONTAINER_NAME}",
+]
 _IMAGE_INSPECT_OUTPUT = (
     f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]\n'
 )
@@ -40,20 +49,25 @@ def _confirmed_cleanup_result(command: list[str]) -> subprocess.CompletedProcess
     """模拟 kill/rm 已让命名容器消失，且 Docker daemon 仍可可靠查询。
 
     Args:
-        command: 宿主清理阶段的 kill、rm、daemon version 或 container inspect argv。
+        command: 宿主清理阶段的 kill、rm、daemon version 或 container ls argv。
 
     Returns:
-        kill/rm 可竞态失败，daemon 探测成功，最终容器检查以非零表示确实不存在。
+        kill/rm 可竞态失败，daemon 探测与最终空名字查询都以零状态成功。
 
     Raises:
         AssertionError: 调用方传入了清理确认协议之外的命令。
     """
+    # kill/rm 的竞态返回码不承担不存在证明，必须继续走独立查询。
     if command[1] in {"kill", "rm"}:
         return subprocess.CompletedProcess(command, 1, "", "")
+    # daemon 可达性与最终容器列表查询都必须由 CLI 成功返回。
     if command[1] == "version":
         return subprocess.CompletedProcess(command, 0, "26.1", "")
-    if command[1:3] == ["container", "inspect"]:
-        return subprocess.CompletedProcess(command, 1, "", "")
+    if command[1:3] == ["container", "ls"]:
+        assert command[3:6] == ["--all", "--quiet", "--filter"]
+        assert command[6].startswith("name=evalhub-humaneval-")
+        return subprocess.CompletedProcess(command, 0, "", "")
+    # 未知命令说明生产清理协议发生了未经测试覆盖的改变。
     raise AssertionError(f"unexpected cleanup command: {command}")
 
 
@@ -411,6 +425,98 @@ def test_worker_seccomp_filter_blocks_signal_process_and_session_syscalls(
     assert instructions[-1] == (0x06, 0, 0, 0x7FFF0000)
 
 
+@pytest.mark.parametrize(
+    ("machine", "expected_syscalls"),
+    [
+        (
+            "x86_64",
+            {
+                # 异步 I/O 所有者与 socket 建立路径。
+                "ioctl": 16,
+                "socket": 41,
+                "socketpair": 53,
+                "fcntl": 72,
+                # 同 UID 调度和优先级修改路径。
+                "setpriority": 141,
+                "sched_setparam": 142,
+                "sched_setscheduler": 144,
+                "sched_setaffinity": 203,
+                "ioprio_set": 251,
+                # NUMA 内存放置与父进程硬限制修改路径。
+                "migrate_pages": 256,
+                "move_pages": 279,
+                "prlimit64": 302,
+                # 跨进程内存与新式调度接口。
+                "process_vm_readv": 310,
+                "process_vm_writev": 311,
+                "sched_setattr": 314,
+                "pidfd_open": 434,
+                # pidfd 和 process_* 的其余跨进程资源能力。
+                "pidfd_getfd": 438,
+                "process_madvise": 440,
+                "process_mrelease": 448,
+            },
+        ),
+        (
+            "aarch64",
+            {
+                # 异步 I/O 与 I/O 优先级修改路径。
+                "fcntl": 25,
+                "ioctl": 29,
+                "ioprio_set": 30,
+                # 同 UID 调度与普通优先级修改路径。
+                "sched_setparam": 118,
+                "sched_setscheduler": 119,
+                "sched_setaffinity": 122,
+                "setpriority": 140,
+                # socket 建立和父进程硬限制修改路径。
+                "socket": 198,
+                "socketpair": 199,
+                # NUMA 内存放置与父进程硬限制修改路径。
+                "migrate_pages": 238,
+                "move_pages": 239,
+                "prlimit64": 261,
+                # 跨进程内存与新式调度接口。
+                "process_vm_readv": 270,
+                "process_vm_writev": 271,
+                "sched_setattr": 274,
+                "pidfd_open": 434,
+                # pidfd 和 process_* 的其余跨进程资源能力。
+                "pidfd_getfd": 438,
+                "process_madvise": 440,
+                "process_mrelease": 448,
+            },
+        ),
+    ],
+)
+def test_worker_seccomp_filter_blocks_indirect_signal_and_resource_mutation_syscalls(
+    machine: str, expected_syscalls: dict[str, int]
+) -> None:
+    """候选不得借异步 I/O 或同 UID 跨进程接口影响可信 controller。
+
+    Args:
+        machine: 固定镜像允许运行的 Linux 机器架构名称。
+        expected_syscalls: 按 Linux 官方 syscall 表手工核对的拒绝项与编号。
+    """
+    worker = _load_verifier_worker()
+    _, syscalls = worker._seccomp_policy(machine)
+    instructions = worker._seccomp_instructions(machine)
+
+    # 名称和编号必须同时匹配，避免存在拒绝项但落到错误架构编号而形成假保护。
+    for name, syscall_number in expected_syscalls.items():
+        assert syscalls[name] == syscall_number
+        index = instructions.index((0x15, 0, 1, syscall_number))
+        assert instructions[index + 1] == (0x06, 0, 0, 0x00050000 | errno.EPERM)
+
+    # 新增拒绝项不能移除既有 x32 整段保护或把默认尾部改成隐式成功。
+    if machine == "x86_64":
+        assert instructions[4:6] == (
+            (0x35, 0, 1, 0x40000000),
+            (0x06, 0, 0, 0x00050000 | errno.EPERM),
+        )
+    assert instructions[-1] == (0x06, 0, 0, 0x7FFF0000)
+
+
 def test_worker_seccomp_policy_fails_closed_on_unsupported_architecture() -> None:
     """未知 Linux 架构不得退化为无过滤候选执行。"""
     worker = _load_verifier_worker()
@@ -584,7 +690,7 @@ def test_sandbox_failures_are_closed_and_do_not_echo_process_output(
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         if isinstance(outcome, BaseException):
@@ -625,7 +731,7 @@ def test_sandbox_timeout_kills_removes_and_confirms_named_container_absent() -> 
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         raise subprocess.TimeoutExpired(command, 10, output="SECRET_HIDDEN_TEST")
@@ -640,14 +746,7 @@ def test_sandbox_timeout_kills_removes_and_confirms_named_container_absent() -> 
         ["docker", "kill", _CONTAINER_NAME],
         ["docker", "rm", "-f", _CONTAINER_NAME],
         ["docker", "version", "--format", "{{.Server.Version}}"],
-        [
-            "docker",
-            "container",
-            "inspect",
-            "--format",
-            "{{.Id}}",
-            _CONTAINER_NAME,
-        ],
+        _CLEANUP_QUERY,
     ]
 
 
@@ -683,14 +782,7 @@ def test_sandbox_nonzero_exit_cleans_and_confirms_named_container_absent() -> No
         ["docker", "kill", _CONTAINER_NAME],
         ["docker", "rm", "-f", _CONTAINER_NAME],
         ["docker", "version", "--format", "{{.Server.Version}}"],
-        [
-            "docker",
-            "container",
-            "inspect",
-            "--format",
-            "{{.Id}}",
-            _CONTAINER_NAME,
-        ],
+        _CLEANUP_QUERY,
     ]
 
 
@@ -719,6 +811,60 @@ def test_sandbox_escalates_when_abnormal_cleanup_cannot_be_confirmed() -> None:
         sandbox.run(_problem(), "    return 1\n")
 
     assert "SECRET_DAEMON_DETAIL" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("query_returncode", "query_stdout", "query_stderr"),
+    [(1, "", "SECRET_QUERY_DETAIL"), (0, f"{_IMAGE_ID}\n", ""), (0, "\n", "")],
+)
+def test_sandbox_cleanup_requires_successful_empty_exact_name_query(
+    query_returncode: int, query_stdout: str, query_stderr: str
+) -> None:
+    """最终名字查询非零或返回残留 ID 时都必须升级为 cleanup_failed。
+
+    Args:
+        query_returncode: 模拟查询授权或瞬态错误的非零状态，或成功查询的零状态。
+        query_stdout: 模拟仍存在容器的 ID、异常空白或严格空输出。
+        query_stderr: 模拟不得解析或泄漏的 Docker CLI 动态错误详情。
+    """
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """模拟异常运行后 daemon 可达，但最终容器查询不能证明为空。
+
+        Args:
+            command: 镜像检查、容器执行、清理或名字查询命令。
+            **kwargs: 命令边界接收但本测试无需检查的参数。
+
+        Returns:
+            当前阶段的固定结果；只有名字查询使用参数化结果。
+
+        Raises:
+            AssertionError: 实现仍使用不能区分 not-found 与查询错误的旧命令。
+        """
+        del kwargs
+        if command[1:3] == ["image", "inspect"]:
+            return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
+        if command[1] == "run":
+            return subprocess.CompletedProcess(command, 1, "", "")
+        # kill/rm 结果不能代替最终查询，因此允许二者竞态失败。
+        if command[1] in {"kill", "rm"}:
+            return subprocess.CompletedProcess(command, 1, "", "")
+        if command[1] == "version":
+            return subprocess.CompletedProcess(command, 0, "26.1", "")
+        # 只有新的固定名字列表查询可以返回参数化的边界结果。
+        if command == _CLEANUP_QUERY:
+            return subprocess.CompletedProcess(
+                command, query_returncode, query_stdout, query_stderr
+            )
+        raise AssertionError(f"unexpected cleanup command: {command}")
+
+    sandbox = DockerHumanEvalSandbox(
+        command_runner=runner, token_factory=lambda: _CONTAINER_TOKEN
+    )
+    with pytest.raises(SandboxInfrastructureError, match="^cleanup_failed$") as raised:
+        sandbox.run(_problem(), "    return 1\n")
+
+    assert "SECRET_QUERY_DETAIL" not in str(raised.value)
 
 
 def test_sandbox_cleanup_still_removes_after_kill_subprocess_exception() -> None:
@@ -815,7 +961,7 @@ def test_sandbox_rejects_unexpected_verifier_fields() -> None:
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         return subprocess.CompletedProcess(
@@ -848,7 +994,7 @@ def test_sandbox_rejects_non_string_failure_reason_as_infrastructure_error() -> 
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         return subprocess.CompletedProcess(command, 0, '{"passed":false,"reason":[]}', "")
@@ -881,7 +1027,7 @@ def test_sandbox_scores_only_genuine_verifier_failures_as_zero(reason: str) -> N
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         output = json.dumps({"passed": False, "reason": reason})
@@ -915,7 +1061,7 @@ def test_sandbox_treats_verifier_infrastructure_reasons_as_exceptions(reason: st
             return subprocess.CompletedProcess(command, 0, _IMAGE_INSPECT_OUTPUT, "")
         if command[1] in {"kill", "rm", "version"} or command[1:3] == [
             "container",
-            "inspect",
+            "ls",
         ]:
             return _confirmed_cleanup_result(command)
         output = json.dumps({"passed": False, "reason": reason})
