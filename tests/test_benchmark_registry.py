@@ -4,6 +4,7 @@ import pytest
 
 from evalhub.benchmarks import (
     Capability,
+    NormalizationKind,
     benchmark_registry,
     get_benchmark_spec,
     get_suite_spec,
@@ -32,6 +33,17 @@ def test_core_suite_registers_all_thirteen_official_tasks() -> None:
     assert get_benchmark_spec("musr").task_name == "leaderboard_musr"
     assert get_benchmark_spec("musr").metric == "acc_norm"
     assert get_benchmark_spec("hellaswag").metric == "acc_norm"
+
+
+def test_hexagon_suite_has_fixed_source_counts_and_six_dimensions() -> None:
+    """Hexagon 套件必须固定七个来源切片，并完整覆盖六维能力。"""
+    suite = get_suite_spec("evalhub-hexagon-v1")
+    specs = [get_benchmark_spec(item) for item in suite.benchmark_ids]
+
+    assert [item.expected_sample_count for item in specs] == [10, 10, 10, 10, 10, 5, 5]
+    assert {item.capability for item in specs} == set(Capability)
+    assert all(item.normalization == NormalizationKind.SCALE_100 for item in specs)
+    assert sum(item.weight for item in specs if item.capability == Capability.SAFETY_TRUST) == 1
 
 
 def test_registry_returns_new_mappings_with_stable_members() -> None:

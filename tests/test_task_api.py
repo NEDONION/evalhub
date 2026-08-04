@@ -8,6 +8,7 @@ from types import MethodType
 from typing import cast
 from unittest.mock import patch
 
+from evalhub.benchmarks import Capability, ExecutorReadiness
 from evalhub.server import EvalHubRequestHandler
 from evalhub.tasks import (
     EvaluationNode,
@@ -20,7 +21,7 @@ from evalhub.tasks import (
     TaskRequest,
 )
 from evalhub.tasks.performance import ModelPerformanceReport, build_model_performance
-from evalhub.tasks.presentation import task_detail
+from evalhub.tasks.presentation import sample_checkpoint, task_detail
 
 
 def request_fixture() -> TaskRequest:
@@ -518,7 +519,7 @@ def test_list_node_samples_preserves_cursor_and_failure_filter() -> None:
 
     assert status == 200
     assert response["samples"][0]["sample_key"] == "sample_5"
-    assert response["samples"][0]["last_error"] == {"message": "timeout"}
+    assert response["samples"][0]["last_error"] is None
     assert response["next_cursor"] == "4:sample_5"
 
 
@@ -540,7 +541,8 @@ def test_registry_endpoints_expose_real_readiness_without_false_availability() -
     """全部依赖就绪时 Registry 与 Suite 应共同报告 13 项本地可运行。"""
     service = FakeTaskService(task_fixture())
     with patch(
-        "evalhub.server.benchmark_readiness", return_value=(True, None), create=True
+        "evalhub.server.benchmark_readiness",
+        return_value=ExecutorReadiness(True, "ready", "fixture ready"),
     ):
         benchmark_status, benchmark_response = call_handler(
             method="GET",
@@ -555,7 +557,7 @@ def test_registry_endpoints_expose_real_readiness_without_false_availability() -
 
     benchmarks = {item["id"]: item for item in benchmark_response["benchmarks"]}
     assert benchmark_status == suite_status == 200
-    assert len(benchmarks) == 13
+    assert len(benchmarks) == 20
     assert benchmarks["gsm8k"]["locally_runnable"] is True
     assert benchmarks["mmlu-pro"]["locally_runnable"] is True
     assert benchmarks["humaneval"]["locally_runnable"] is True
@@ -563,11 +565,38 @@ def test_registry_endpoints_expose_real_readiness_without_false_availability() -
     assert suite_response["suites"][0]["locally_runnable_count"] == 13
 
 
-def test_dataset_endpoint_lists_all_thirteen_registry_assets() -> None:
-    """资产页数据源必须与行业套件一致，不能继续只返回原生两项。"""
+def test_registry_endpoints_preserve_mixed_executor_readiness(monkeypatch) -> None:
+    """Registry 应按共享检查结果区分当前已接通与待配置执行器。"""
+    monkeypatch.setattr(
+        "evalhub.server.benchmark_readiness",
+        lambda spec: ExecutorReadiness(
+            ready=spec.executor.value == "native",
+            code="ready" if spec.executor.value == "native" else "executor_not_ready",
+            message=(
+                "lm_eval 执行器尚未配置"
+                if spec.executor.value == "lm_eval"
+                else "fixture readiness"
+            ),
+        ),
+    )
+
+    status, response = call_handler(
+        method="GET", path="/api/benchmarks", service=FakeTaskService(task_fixture())
+    )
+    benchmarks = {item["id"]: item for item in response["benchmarks"]}
+
+    assert status == 200
+    assert benchmarks["gsm8k"]["locally_runnable"] is True
+    assert benchmarks["mmlu-pro"]["locally_runnable"] is False
+    assert benchmarks["mmlu-pro"]["readiness_reason"] == "lm_eval 执行器尚未配置"
+
+
+def test_dataset_endpoint_lists_all_registry_assets() -> None:
+    """资产页数据源必须同时包含行业套件与专业 Hexagon 的注册项。"""
     service = FakeTaskService(task_fixture())
     with patch(
-        "evalhub.server.benchmark_readiness", return_value=(True, None), create=True
+        "evalhub.server.benchmark_readiness",
+        return_value=ExecutorReadiness(True, "ready", "fixture ready"),
     ):
         status, response = call_handler(
             method="GET",
@@ -577,11 +606,88 @@ def test_dataset_endpoint_lists_all_thirteen_registry_assets() -> None:
 
     datasets = {item["name"]: item for item in response["datasets"]}
     assert status == 200
-    assert len(datasets) == 13
+    assert len(datasets) == 20
     assert datasets["gsm8k"]["executor"] == "native"
     assert datasets["mmlu-pro"]["executor"] == "lm_eval"
     assert datasets["humaneval"]["executor"] == "sandboxed_code"
     assert datasets["bbq"]["capability_label"] == "安全可信"
+
+
+def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness(monkeypatch) -> None:
+    """Hexagon 套件应公开固定样本数、六维能力和每个成员的真实就绪状态。"""
+    monkeypatch.setattr(
+        "evalhub.server.benchmark_readiness",
+        lambda spec: ExecutorReadiness(
+            ready=spec.id != "hexagon-humaneval" and spec.executor.value == "native",
+            code=(
+                "ready"
+                if spec.id != "hexagon-humaneval" and spec.executor.value == "native"
+                else "executor_not_ready"
+            ),
+            message="fixture readiness",
+        ),
+    )
+    status, response = call_handler(
+        method="GET", path="/api/suites", service=FakeTaskService(task_fixture())
+    )
+
+    suite = next(item for item in response["suites"] if item["id"] == "evalhub-hexagon-v1")
+    humaneval = next(item for item in suite["members"] if item["id"] == "hexagon-humaneval")
+
+    assert status == 200
+    assert suite["expected_sample_count"] == 60
+    assert suite["benchmark_count"] == 7
+    assert suite["capabilities"] == [item.value for item in Capability]
+    assert suite["ready_count"] == sum(item["readiness"]["ready"] for item in suite["members"])
+    assert humaneval["readiness"]["code"] == "executor_not_ready"
+    assert humaneval["readiness"]["build_command"] == "./scripts/build_humaneval_image.sh"
+
+
+def test_sample_checkpoint_exposes_only_safe_translation_and_source_metadata() -> None:
+    """样本检查点只应保留展示所需的双语来源字段，不能泄漏隐藏判题材料。"""
+    sample = EvaluationSampleCheckpoint(
+        node_id="node_api",
+        task_id="job_api",
+        sample_key="HumanEval/7",
+        sample_index=6,
+        status="failed",
+        attempt_count=1,
+        input={
+            "input": "English prompt",
+            "reference": "hidden canonical solution",
+            "test": "hidden test",
+            "env": "SECRET_ENV",
+        },
+        result={
+            "score": 0.0,
+            "prediction": "Model completion",
+            "metadata": {
+                "input_zh": "中文题目",
+                "reference_zh": None,
+                "source": "HumanEval",
+                "source_key": "HumanEval/7",
+                "canonical_solution": "hidden canonical solution",
+                "test": "hidden test",
+            },
+            "raw_secret_result": "never expose",
+        },
+        last_error={"message": "traceback SECRET_TRACE", "test": "hidden test"},
+    )
+
+    response = sample_checkpoint(sample)
+
+    assert response["result"] == {
+        "score": 0.0,
+        "prediction": "Model completion",
+        "metadata": {
+            "input_zh": "中文题目",
+            "reference_zh": None,
+            "source": "HumanEval",
+            "source_key": "HumanEval/7",
+        },
+    }
+    assert response["input"] == {"input": "English prompt"}
+    assert response["last_error"] is None
 
 
 def test_create_suite_evaluation_persists_suite_id() -> None:

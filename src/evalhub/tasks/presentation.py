@@ -18,6 +18,8 @@ from evalhub.tasks.performance import (
     PerformanceScope,
 )
 
+_MAX_PUBLIC_PREDICTION_LENGTH = 4096
+
 
 def model_performance_report(report: ModelPerformanceReport) -> dict[str, object]:
     """把模型成绩聚合报告转换为前端可直接消费的 JSON 结构。
@@ -281,7 +283,14 @@ def node_event(event: EvaluationNodeEvent) -> dict[str, object]:
 
 
 def sample_checkpoint(sample: EvaluationSampleCheckpoint) -> dict[str, object]:
-    """把一个样本最新检查点转换为可调试但不加工内容的响应。"""
+    """把样本检查点转换为可审计且不泄露判题材料的响应。
+
+    Args:
+        sample: 仓储恢复的单条样本执行快照，可能包含执行器私有字段。
+
+    Returns:
+        保留分页、状态和安全分数元数据的 API 字典，不返回隐藏测试或原始结果正文。
+    """
     return {
         "task_id": sample.task_id,
         "node_id": sample.node_id,
@@ -289,13 +298,87 @@ def sample_checkpoint(sample: EvaluationSampleCheckpoint) -> dict[str, object]:
         "sample_index": sample.sample_index,
         "status": sample.status,
         "attempt_count": sample.attempt_count,
-        "input": sample.input,
-        "result": sample.result,
-        "last_error": sample.last_error,
+        "input": _safe_sample_input(sample.input),
+        "result": _safe_sample_result(sample.result),
+        "last_error": None,
         "created_at": sample.created_at.isoformat() if sample.created_at else None,
         "updated_at": sample.updated_at.isoformat() if sample.updated_at else None,
         "finished_at": sample.finished_at.isoformat() if sample.finished_at else None,
     }
+
+
+def _safe_sample_input(input_payload: dict[str, object]) -> dict[str, object]:
+    """白名单化样本输入，只保留可展示的英文题面和来源翻译元数据。
+
+    Args:
+        input_payload: 仓储保存的完整执行输入，可能包含参考答案或隐藏判题材料。
+
+    Returns:
+        仅包含 ``input`` 和安全 metadata 的公开输入字典，不透传 reference、环境或测试字段。
+    """
+    safe: dict[str, object] = {}
+    # 历史执行器有的使用 prompt 命名；统一到 input 让旧客户端继续读取同一字段。
+    value = input_payload.get("input", input_payload.get("prompt"))
+    if isinstance(value, str):
+        safe["input"] = value
+    metadata = _safe_sample_metadata(input_payload.get("metadata"))
+    if metadata:
+        safe["metadata"] = metadata
+    return safe
+
+
+def _safe_sample_result(result: dict[str, object] | None) -> dict[str, object] | None:
+    """从评分结果提取展示需要的分数、原因和受限来源元数据。
+
+    Args:
+        result: 执行器或评分器写入的原始结果，可能携带隐藏测试和参考实现。
+
+    Returns:
+        没有结果时返回 ``None``；否则返回不含生成正文和任意私有字段的安全结果。
+    """
+    if result is None:
+        return None
+    safe: dict[str, object] = {}
+    # 仅保留界面需要的标量，避免把模型原始输出或 HumanEval 判题载荷送到浏览器。
+    for key in ("score", "metric", "reason"):
+        value = result.get(key)
+        if isinstance(value, (str, int, float)) or value is None and key in result:
+            safe[key] = value
+    prediction = result.get("prediction")
+    if isinstance(prediction, str):
+        # 回答本身是审计证据，但上限避免意外把超大模型输出嵌入一个样本页面。
+        safe["prediction"] = prediction[:_MAX_PUBLIC_PREDICTION_LENGTH]
+    metadata = _safe_sample_metadata(result.get("metadata"))
+    if metadata:
+        safe["metadata"] = metadata
+    return safe
+
+
+def _safe_sample_metadata(metadata: object) -> dict[str, str | None]:
+    """白名单化样本展示元数据，防止隐藏测试和参考答案经 JSON 列泄漏。
+
+    Args:
+        metadata: 运行时保存的来源、翻译及可能的私有评分上下文。
+
+    Returns:
+        只包含字符串或 ``None`` 的双语来源字段，非法类型和未知字段一律丢弃。
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    safe: dict[str, str | None] = {}
+    # 前端只消费这六个展示字段；未知键即使来自可信运行时也不属于 HTTP 契约。
+    for key in (
+        "input_zh",
+        "reference_zh",
+        "source",
+        "source_key",
+        "source_revision",
+        "translation_version",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, str) or value is None and key in metadata:
+            safe[key] = value
+    return safe
 
 
 def sample_page(page: EvaluationSamplePage) -> dict[str, object]:

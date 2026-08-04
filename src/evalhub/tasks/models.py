@@ -29,6 +29,8 @@ class TaskRequest:
     agent_framework: str | None = None
     suite_id: str | None = None
     agent_difficulty: str | None = None
+    generation_config: dict[str, object] | None = None
+    evaluator_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class EvaluationTask:
     benchmark: str | None = None
     passed_samples: int | None = None
     average_score: float | None = None
+    comparison_fingerprint: str | None = None
     result: dict[str, object] | None = None
 
 

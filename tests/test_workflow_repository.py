@@ -155,9 +155,12 @@ def test_record_sample_and_checkpoint_are_atomic(
         result={"prediction": "2", "reference": "2", "score": 1.0},
     )
 
-    repository.record_sample(node.id, sample, completed=1, total=2)
+    restored = repository.record_sample(node.id, sample, completed=1, total=2)
 
     assert repository.successful_sample_keys(node.id) == {"sample-1"}
+    assert restored.input["metadata"] == {}
+    assert restored.result is not None
+    assert restored.result["metadata"] == {}
     persisted = repository.get_node(node.id)
     assert (persisted.completed_samples, persisted.total_samples) == (1, 2)
     assert persisted.checkpoint == {"completed_samples": 1, "total_samples": 2}

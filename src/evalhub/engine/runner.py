@@ -15,6 +15,7 @@ from evalhub.evaluators.base import Evaluator
 
 ProgressCallback = Callable[[int, int], None]
 SampleResultCallback = Callable[[EvaluationSampleResult, int, int], None]
+_DISPLAY_METADATA_KEYS = frozenset({"input_zh", "reference_zh"})
 
 
 class EvaluationRunner:
@@ -70,11 +71,16 @@ class EvaluationRunner:
                     continue
                 # 每条样本先调用模型，再把预测、参考答案和上下文交给统一评测器。
                 prediction = self.model_adapter.generate(sample.input, **runtime_config)
+                evaluator_metadata = {
+                    key: value
+                    for key, value in sample.metadata.items()
+                    if key not in _DISPLAY_METADATA_KEYS
+                }
                 metric = self.evaluator.evaluate(
                     prediction,
                     sample.reference,
                     input_text=sample.input,
-                    metadata=sample.metadata,
+                    metadata=evaluator_metadata,
                 )
                 # 固化推理与评分快照，使后续报告不需要再次调用外部模型服务。
                 results.append(
@@ -87,6 +93,7 @@ class EvaluationRunner:
                         metric=metric.metric,
                         score=metric.score,
                         reason=metric.reason,
+                        metadata=sample.metadata,
                     )
                 )
                 completed += 1

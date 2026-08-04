@@ -39,9 +39,13 @@ evalhub = "evalhub.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"evalhub.datasets" = ["manifests/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = ["integration: explicit external integration checks"]
 
 [tool.ruff]
 line-length = 100

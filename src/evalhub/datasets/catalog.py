@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from evalhub.datasets.hexagon_sources import hexagon_source_specs
+
 
 @dataclass(frozen=True)
 class DatasetSpec:
@@ -25,7 +27,7 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
         以稳定数据集名称为键的新映射，调用方可安全扩展而不污染全局状态。
     """
     # 每次返回新字典和不可变规格，避免调用方修改影响其他请求或测试。
-    return {
+    catalog = {
         "gsm8k": DatasetSpec(
             name="gsm8k",
             display_name="GSM8K 测试集",
@@ -50,6 +52,34 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
             description="Massive Multitask Language Understanding 官方多学科测试集。",
         ),
     }
+    # Hexagon 原始资产由固定来源目录统一定义，目录条目只补充加载和展示所需的信息。
+    attributes = {
+        "hexagon-mmlu": ("multiple_choice", "acc", "https://github.com/hendrycks/test"),
+        "hexagon-ifeval": (
+            "instruction_following",
+            "ifeval_strict",
+            "https://github.com/google-research/google-research/tree/master/instruction_following_eval",
+        ),
+        "hexagon-gsm8k": ("math_reasoning", "exact_match", "https://github.com/openai/grade-school-math"),
+        "hexagon-bbh": ("reasoning", "exact_match", "https://github.com/suzgunmirac/BIG-Bench-Hard"),
+        "hexagon-humaneval": ("code_generation", "pass@1", "https://github.com/openai/human-eval"),
+        "hexagon-truthfulqa": ("multiple_choice", "acc", "https://github.com/sylinrl/TruthfulQA"),
+        "hexagon-bbq": ("multiple_choice", "acc", "https://github.com/nyu-mll/BBQ"),
+    }
+    # 每个固定来源都生成对应入口，缓存位置和下载 URL 不在目录中重复维护。
+    for benchmark_id, source in hexagon_source_specs().items():
+        task_type, evaluator_type, homepage = attributes[benchmark_id]
+        catalog[benchmark_id] = DatasetSpec(
+            name=benchmark_id,
+            display_name=source.source_name,
+            task_type=task_type,
+            evaluator_type=evaluator_type,
+            homepage=homepage,
+            source_url=source.url,
+            local_path=source.cache_path,
+            description=f"{source.source_name} 官方固定版本 Hexagon Benchmark 原始资产。",
+        )
+    return catalog
 
 
 def get_dataset_spec(name: str) -> DatasetSpec:

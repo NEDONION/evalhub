@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 import evalhub.tasks.executor as executor_module
+from evalhub.benchmarks import HumanEvalProblem, SandboxInfrastructureError
 from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks import ResourceUsage, TaskRequest
 from evalhub.tasks.executor import (
@@ -206,6 +207,7 @@ def test_evaluation_process_serializes_sample_result_events(
                 reference="2",
                 metric="exact_match",
                 score=1.0,
+                metadata={"input_zh": "一道题", "source_key": "fixture:1"},
             ),
             1,
             1,
@@ -232,9 +234,121 @@ def test_evaluation_process_serializes_sample_result_events(
             "metric": "exact_match",
             "score": 1.0,
             "reason": None,
+            "metadata": {"input_zh": "一道题", "source_key": "fixture:1"},
         },
     }
     assert event_queue.events[-1]["type"] == "result"
+
+
+def test_evaluation_process_dispatches_only_hexagon_humaneval_to_specialized_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hexagon HumanEval 应复用模型边界并把脱敏字典事件交给现有持久化通道。"""
+    request = replace(
+        request_fixture(),
+        dataset="hexagon-humaneval",
+        adapter="oracle",
+        sample_mode="all",
+    )
+    problem = HumanEvalProblem(
+        sample_id="hexagon_humaneval_01",
+        prompt="def one():\n",
+        canonical_solution="    return 1\n",
+        test="def check(candidate):\n    assert candidate() == 1\n",
+        entry_point="one",
+        metadata={
+            "dataset": "hexagon-humaneval",
+            "source_key": "HumanEval/1",
+            "selection_stratum": "HumanEval/1",
+            "evaluator_type": "pass@1",
+            "input_zh": "实现 one",
+            "reference_zh": None,
+            "translation_version": "evalhub-zh-v1",
+        },
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_humaneval(**kwargs: object) -> dict[str, object]:
+        """记录专用调用参数并发出一条包含展示元数据的脱敏结果。"""
+        observed.update(kwargs)
+        adapter = kwargs["adapter"]
+        observed["oracle_prediction"] = adapter.generate(problem.prompt)
+        callback = kwargs["on_sample_result"]
+        callback(
+            {
+                "sample_id": problem.sample_id,
+                "input": problem.prompt,
+                "prediction": problem.canonical_solution,
+                "reference": "hidden tests passed",
+                "metric": "pass@1",
+                "score": 1.0,
+                "reason": None,
+                "metadata": problem.metadata,
+            },
+            1,
+            1,
+        )
+        return {"job_id": kwargs["job_id"], "total_samples": 1}
+
+    monkeypatch.setattr(
+        executor_module,
+        "run_real_benchmark",
+        lambda **kwargs: pytest.fail("HumanEval must not use the text runner"),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "prepare_dataset",
+        lambda dataset: "fixture.gz",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "load_humaneval_problems",
+        lambda path: [problem],
+        raising=False,
+    )
+    monkeypatch.setattr(executor_module, "run_humaneval_benchmark", fake_humaneval, raising=False)
+
+    _evaluation_process("job_humaneval", asdict(request), event_queue)
+
+    assert observed["job_id"] == "job_humaneval"
+    assert observed["oracle_prediction"] == problem.canonical_solution
+    assert observed["problems"] == [problem]
+    assert event_queue.events[0]["sample"]["metadata"] == problem.metadata
+    assert event_queue.events[-1]["type"] == "result"
+
+
+def test_humaneval_infrastructure_error_keeps_stable_type_across_process_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HumanEval 沙箱基础设施错误跨进程后仍应保留可阻塞的稳定分类。"""
+    request = replace(request_fixture(), dataset="hexagon-humaneval", sample_mode="all")
+    child_queue = RecordingQueue()
+    monkeypatch.setattr(executor_module, "prepare_dataset", lambda dataset: "fixture.gz")
+    monkeypatch.setattr(executor_module, "load_humaneval_problems", lambda path: [])
+
+    def fail_sandbox(**kwargs: object) -> dict[str, object]:
+        """模拟镜像校验在任何候选评分前失败。"""
+        raise SandboxInfrastructureError("image_untrusted")
+
+    monkeypatch.setattr(executor_module, "run_humaneval_benchmark", fail_sandbox)
+
+    _evaluation_process("job_humaneval", asdict(request), child_queue)
+    parent_queue: Queue[dict[str, object]] = Queue()
+    parent_queue.put(child_queue.events[-1])
+    result, error = SubprocessEvaluationExecutor._read_event(
+        parent_queue,
+        result=None,
+        error_message=None,
+        on_progress=lambda completed, total: None,
+        on_sample_result=None,
+        on_trace=None,
+    )
+
+    assert result is None
+    assert isinstance(error, TaskExecutionError)
+    assert error.error_type == "image_untrusted"
 
 
 class EmptyParentQueue:

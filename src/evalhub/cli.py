@@ -3,7 +3,7 @@
 import argparse
 import json
 
-from evalhub.adapters import OllamaAdapter, StaticMappingAdapter
+from evalhub.adapters import ModelAdapter, OllamaAdapter, StaticMappingAdapter
 from evalhub.datasets import dataset_catalog, get_dataset_spec, load_samples, prepare_dataset
 from evalhub.domain import (
     BenchmarkRecord,
@@ -17,6 +17,34 @@ from evalhub.engine import EvaluationRunner, ProgressCallback, SampleResultCallb
 from evalhub.evaluators import default_evaluator_registry
 from evalhub.ollama import DEFAULT_OLLAMA_MODEL
 from evalhub.registry import InMemoryRegistry
+
+
+def build_model_adapter(
+    adapter_type: str,
+    *,
+    model: str,
+    base_url: str,
+    oracle_responses: dict[str, str],
+) -> ModelAdapter:
+    """为文本与 HumanEval 执行路径构造同一模型调用边界。
+
+    Args:
+        adapter_type: ``ollama`` 或仅供管线验证的 ``oracle``。
+        model: Ollama 使用的固定模型标签。
+        base_url: Ollama 本地服务根地址。
+        oracle_responses: Oracle 模式按官方英文提示回放的确定性响应。
+
+    Returns:
+        可供 Runner 调用的统一模型适配器。
+
+    Raises:
+        ValueError: 适配器类型不受支持时抛出，禁止静默回退为 Oracle。
+    """
+    if adapter_type == "ollama":
+        return OllamaAdapter(model=model, base_url=base_url)
+    if adapter_type == "oracle":
+        return StaticMappingAdapter(oracle_responses)
+    raise ValueError("adapter must be one of: ollama, oracle")
 
 
 def run_example() -> int:
@@ -140,6 +168,8 @@ def run_real_benchmark(
     on_progress: ProgressCallback | None = None,
     skip_sample_ids: set[str] | frozenset[str] = frozenset(),
     on_sample_result: SampleResultCallback | None = None,
+    generation_config: dict[str, object] | None = None,
+    evaluator_type: str | None = None,
 ) -> dict[str, object]:
     """准备真实数据集并使用指定模型适配器执行同步评测。
 
@@ -154,6 +184,8 @@ def run_real_benchmark(
         on_progress: 接收已完成样本数与总样本数的可选进度回调。
         skip_sample_ids: 恢复执行时已经完成推理和评分的样本标识。
         on_sample_result: 新样本完成评分后接收完整结果的可选回调。
+        generation_config: 工作流创建时冻结的模型生成参数；缺省保持历史确定性配置。
+        evaluator_type: 工作流创建时冻结的评分器类型；缺省使用当前数据集目录值。
 
     Returns:
         包含任务状态、汇总指标和最多五条失败示例的 JSON 兼容字典。
@@ -198,7 +230,11 @@ def run_real_benchmark(
             name=spec.display_name,
             dataset_id=dataset_record.id,
             evaluator_type=spec.evaluator_type,
-            config={"temperature": 0, "num_predict": 256},
+            config=(
+                dict(generation_config)
+                if generation_config is not None
+                else {"temperature": 0, "num_predict": 256}
+            ),
         )
     )
     # 调度层提供任务标识时沿用同一 ID，CLI 直接运行则继续使用领域默认值。
@@ -212,17 +248,16 @@ def run_real_benchmark(
         )
     job = registry.jobs.add(evaluation_job)
 
-    # Ollama 执行真实推理，oracle 直接回放参考答案，只用于验证 EvalHub 自身管线。
-    if adapter_type == "ollama":
-        adapter = OllamaAdapter(model=model, base_url=base_url)
-    elif adapter_type == "oracle":
-        adapter = StaticMappingAdapter({sample.input: sample.reference for sample in samples})
-    # 未知类型不能静默回退，否则用户可能把管线自测结果误认为真实模型评测。
-    else:
-        raise ValueError("adapter must be one of: ollama, oracle")
+    # 两条模型执行路径共享同一构造边界，Oracle 只回放官方英文输入对应的参考答案。
+    adapter = build_model_adapter(
+        adapter_type,
+        model=model,
+        base_url=base_url,
+        oracle_responses={sample.input: sample.reference for sample in samples},
+    )
 
     # 评测器由 Benchmark 类型动态创建，Runner 只负责统一编排与状态转换。
-    evaluator = default_evaluator_registry().create(benchmark.evaluator_type)
+    evaluator = default_evaluator_registry().create(evaluator_type or benchmark.evaluator_type)
     runner = EvaluationRunner(adapter, evaluator)
     results, report = runner.run(
         job=job,
@@ -242,6 +277,7 @@ def run_real_benchmark(
             "prediction": result.prediction[:800],
             "reference": result.reference,
             "reason": result.reason,
+            "metadata": result.metadata,
         }
         for result in results
         if result.score < 1.0

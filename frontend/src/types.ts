@@ -77,6 +77,13 @@ export interface EvaluationRequest {
   suite_id?: string;
 }
 
+export interface BenchmarkReadiness {
+  ready: boolean;
+  code: string;
+  message: string;
+  build_command?: string;
+}
+
 export interface BenchmarkDefinition {
   id: string;
   version: string;
@@ -88,8 +95,18 @@ export interface BenchmarkDefinition {
   homepage: string;
   executor: BenchmarkExecutor;
   metric: string;
+  expected_sample_count?: number | null;
   locally_runnable: boolean;
   readiness_reason: string | null;
+  readiness?: BenchmarkReadiness;
+}
+
+export interface BenchmarkSuiteMember {
+  id: string;
+  display_name: string;
+  capability: string;
+  expected_sample_count: number | null;
+  readiness: BenchmarkReadiness;
 }
 
 export interface BenchmarkSuite {
@@ -99,6 +116,10 @@ export interface BenchmarkSuite {
   benchmark_ids: string[];
   benchmark_count: number;
   locally_runnable_count: number;
+  expected_sample_count?: number;
+  capabilities?: string[];
+  ready_count?: number;
+  members?: BenchmarkSuiteMember[];
 }
 
 export interface FailedExample {
@@ -162,6 +183,7 @@ export interface EvaluationResult {
   average_score: number;
   failed_sample_ids: string[];
   failed_examples: FailedExample[];
+  suite_id?: string | null;
   benchmark_version?: string;
   requested_difficulty?: AgentDifficulty;
   difficulty_report?: AgentDifficultyResult[];
@@ -169,6 +191,15 @@ export interface EvaluationResult {
   capability_report?: AgentCapabilityReport;
   capability_profile?: ModelCapabilityProfile;
   sample_results?: AgentSampleResult[];
+  reproducibility?: EvaluationReproducibility;
+}
+
+export interface EvaluationReproducibility {
+  suite_version?: string;
+  manifest_sha256?: string;
+  source_revisions?: Record<string, string>;
+  prompt_template_versions?: Record<string, string>;
+  generation_config?: Record<string, string | number | boolean | null>;
 }
 
 export interface ModelCapabilityBenchmarkResult {
@@ -349,11 +380,20 @@ export interface EvaluationSampleCheckpoint {
   status: "success" | "failed";
   attempt_count: number;
   input: Record<string, unknown>;
-  result: Record<string, unknown> | null;
+  result: (Record<string, unknown> & { metadata?: EvaluationSampleMetadata }) | null;
   last_error: Record<string, unknown> | null;
   created_at: string | null;
   updated_at: string | null;
   finished_at: string | null;
+}
+
+export interface EvaluationSampleMetadata {
+  input_zh?: string;
+  reference_zh?: string | null;
+  source?: string;
+  source_key?: string;
+  source_revision?: string;
+  translation_version?: string;
 }
 
 export interface HealthResponse {

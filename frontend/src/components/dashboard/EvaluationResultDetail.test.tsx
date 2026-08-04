@@ -68,3 +68,58 @@ it("derives profile completeness from six assessed axes for legacy results", () 
   expect(screen.getByText("2 / 6 已评测")).toBeInTheDocument();
   expect(screen.queryByText("完整画像")).toBeNull();
 });
+
+it("shows frozen suite reproducibility as a compact disclosure", () => {
+  render(
+    <EvaluationResultDetail
+      result={{
+        ...result,
+        reproducibility: {
+          suite_version: "1.0.0",
+          manifest_sha256: "sha256:manifest",
+          source_revisions: { "hexagon-gsm8k": "revision-1" },
+          prompt_template_versions: { "hexagon-gsm8k": "evalhub-v1" },
+          generation_config: { temperature: 0, num_predict: 256 },
+        },
+      }}
+    />,
+  );
+
+  expect(screen.getByText("可复现性账本")).toBeInTheDocument();
+  expect(screen.getByText("sha256:manifest")).toBeInTheDocument();
+  expect(screen.getByText("hexagon-gsm8k: revision-1")).toBeInTheDocument();
+  expect(screen.getByText("hexagon-gsm8k: evalhub-v1")).toBeInTheDocument();
+});
+
+it("suppresses raw JSON for a Hexagon result without reproducibility", () => {
+  render(<EvaluationResultDetail result={{ ...result, dataset: "hexagon-gsm8k", reproducibility: undefined }} />);
+
+  expect(screen.queryByText("原始 JSON")).toBeNull();
+});
+
+it("keeps raw JSON for legacy non-Hexagon results", () => {
+  render(<EvaluationResultDetail result={result} />);
+
+  expect(screen.getByText("原始 JSON")).toBeInTheDocument();
+});
+
+it.each([undefined, null, 7, {}])("does not crash on malformed legacy Hexagon predicate fields: %p", (value) => {
+  render(
+    <EvaluationResultDetail
+      result={{ ...result, dataset: value, benchmark: value } as unknown as EvaluationResult}
+    />,
+  );
+
+  expect(screen.getByText("原始 JSON")).toBeInTheDocument();
+});
+
+it("suppresses raw JSON from a safe parent Hexagon signal despite malformed result fields", () => {
+  render(
+    <EvaluationResultDetail
+      result={{ ...result, dataset: null, benchmark: {} } as unknown as EvaluationResult}
+      isHexagon
+    />,
+  );
+
+  expect(screen.queryByText("原始 JSON")).toBeNull();
+});

@@ -148,6 +148,8 @@ class EvaluationSampleResult:
     # 结果使用独立标识和 UTC 创建时间，支持后续持久化与排序。
     id: str = field(default_factory=lambda: new_id("result"))
     created_at: datetime = field(default_factory=utc_now)
+    # 新字段必须位于旧可选字段之后，保持历史位置参数调用对 id 和 created_at 的绑定。
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

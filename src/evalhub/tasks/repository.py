@@ -137,10 +137,13 @@ _TASK_COLUMNS = """
 id, request_json, status, completed_samples, total_samples, created_at, updated_at,
 started_at, finished_at, error_message, cpu_percent, peak_cpu_percent, memory_bytes,
 peak_memory_bytes, gpu_supported, gpu_percent, peak_gpu_percent, gpu_memory_bytes,
-peak_gpu_memory_bytes, benchmark, passed_samples, average_score, result_json
+peak_gpu_memory_bytes, benchmark, passed_samples, average_score, result_json,
+json_extract(result_json, '$.comparison_fingerprint') AS comparison_fingerprint
 """
 
-_SUMMARY_COLUMNS = _TASK_COLUMNS.replace("result_json", "NULL AS result_json")
+_SUMMARY_COLUMNS = _TASK_COLUMNS.replace(
+    "average_score, result_json", "average_score, NULL AS result_json"
+)
 
 
 class SQLiteTaskRepository:
@@ -1488,7 +1491,22 @@ class SQLiteTaskRepository:
 
     @staticmethod
     def _row_to_sample(row: sqlite3.Row) -> EvaluationSampleCheckpoint:
-        """把 SQLite 行转换为样本检查点。"""
+        """把 SQLite 行转换为带兼容元数据默认值的样本检查点。
+
+        Args:
+            row: 从样本结果表读取的 SQLite 行。
+
+        Returns:
+            输入和结果均至少包含空 ``metadata`` 映射的不可变检查点。
+        """
+        input_payload = dict(json.loads(str(row["input_json"])))
+        result_payload = (
+            dict(json.loads(str(row["result_json"]))) if row["result_json"] else None
+        )
+        # 旧数据库行没有双语溯源字段；读取边界补空映射，避免 API 调用方反复判缺失键。
+        input_payload.setdefault("metadata", {})
+        if result_payload is not None:
+            result_payload.setdefault("metadata", {})
         return EvaluationSampleCheckpoint(
             task_id=str(row["task_id"]),
             node_id=str(row["node_id"]),
@@ -1496,8 +1514,8 @@ class SQLiteTaskRepository:
             sample_index=int(row["sample_index"]),
             status=row["status"],
             attempt_count=int(row["attempt_count"]),
-            input=json.loads(str(row["input_json"])),
-            result=json.loads(str(row["result_json"])) if row["result_json"] else None,
+            input=input_payload,
+            result=result_payload,
             last_error=(
                 json.loads(str(row["last_error_json"])) if row["last_error_json"] else None
             ),
@@ -1534,6 +1552,7 @@ class SQLiteTaskRepository:
             benchmark=row["benchmark"],
             passed_samples=self._optional_int(row["passed_samples"]),
             average_score=self._optional_float(row["average_score"]),
+            comparison_fingerprint=row["comparison_fingerprint"],
             result=result_payload,
         )
 

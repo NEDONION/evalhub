@@ -46,6 +46,16 @@ def test_non_force_prepare_keeps_existing_gsm8k_cache(tmp_path: Path) -> None:
     retrieve.assert_not_called()
 
 
+def test_prepare_dataset_routes_hexagon_gsm8k_to_checksum_validation(tmp_path: Path) -> None:
+    """Hexagon 别名必须优先走固定摘要校验，不能沿用旧 GSM8K 缓存语义。"""
+    target = tmp_path / "data/raw/gsm8k/test.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fixture")
+
+    with pytest.raises(ValueError, match="SHA-256 mismatch"):
+        prepare_dataset("hexagon-gsm8k", root=tmp_path)
+
+
 def test_force_refresh_replaces_gsm8k_only_after_validation(tmp_path: Path) -> None:
     """有效的新 GSM8K 文件必须原子替换已有缓存。"""
     target = tmp_path / "data/raw/gsm8k/test.jsonl"

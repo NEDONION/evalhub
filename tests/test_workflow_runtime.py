@@ -1,12 +1,23 @@
 """验证系统生成工作流、节点执行、自动重试和部分能力画像。"""
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 
 import pytest
 
-from evalhub.tasks import ResourceUsage, SQLiteTaskRepository, TaskRequest
+import evalhub.tasks.runtime as runtime_module
+import evalhub.tasks.workflow as workflow_module
+from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
+from evalhub.benchmarks.humaneval import humaneval_verifier_identity
+from evalhub.datasets import PinnedSource, hexagon_source_specs
+from evalhub.tasks import (
+    EvaluationSampleCheckpoint,
+    ResourceUsage,
+    SQLiteTaskRepository,
+    TaskRequest,
+)
 from evalhub.tasks.executor import TaskExecutionError
 from evalhub.tasks.runtime import (
     PersistentWorkflowExecutor,
@@ -22,7 +33,16 @@ def request(
     suite_id: str | None = None,
     subject: str = "abstract_algebra",
 ) -> TaskRequest:
-    """构造单项或 Suite 的离线 Oracle 请求。"""
+    """构造单项或 Suite 的离线 Oracle 请求。
+
+    Args:
+        dataset: 单项评测使用的稳定 Benchmark ID；Suite 请求仍保留兼容占位值。
+        suite_id: 可选版本化 Suite ID；为空时创建单 Benchmark 临时 Suite。
+        subject: MMLU 单项请求的可选学科。
+
+    Returns:
+        不访问网络且可由持久化工作流执行的 Oracle 任务请求。
+    """
     return TaskRequest(
         dataset=dataset,
         adapter="oracle",
@@ -108,6 +128,7 @@ class FakeBenchmarkExecutor:
                     "metric": "exact_match",
                     "score": self.score,
                     "reason": None if self.score >= 1.0 else "答案不匹配",
+                    "metadata": {"input_zh": "一加一", "source_key": "fixture:1"},
                 },
                 1,
                 1,
@@ -267,6 +288,70 @@ class MutatingDoubleRetryExecutor(MutatingRetryExecutor):
         return result
 
 
+class HexagonBenchmarkExecutor(FakeBenchmarkExecutor):
+    """按 Registry 固定题数发出七个来源的满分元数据结果。"""
+
+    def execute(
+        self, task_id: str, task_request: TaskRequest, **kwargs: object
+    ) -> dict[str, object]:
+        """为当前 Hexagon 节点发出其声明数量的确定性结果。
+
+        Args:
+            task_id: 当前持久化顶层任务标识。
+            task_request: 已替换为单个 Hexagon 来源的执行请求。
+            **kwargs: Runtime 提供的进度、资源、恢复和样本回调。
+
+        Returns:
+            仅供 Runtime 完成子进程调用的增量摘要。
+        """
+        spec = get_benchmark_spec(task_request.dataset)
+        total = int(spec.expected_sample_count or 0)
+        skipped = set(kwargs["skip_sample_ids"])
+        self.seen_skips.append(skipped)
+        progress = kwargs["on_progress"]
+        callback = kwargs["on_sample_result"]
+        assert callable(progress)
+        assert callable(callback)
+        progress(len(skipped), total)
+        # 每个来源使用独立样本键，确保 SQLite 主键与跨节点恢复都可验证。
+        for index in range(total):
+            sample_id = f"{task_request.dataset}-{index + 1}"
+            if sample_id in skipped:
+                continue
+            metadata: dict[str, object] = {
+                "input_zh": f"中文题目 {index + 1}",
+                "source_key": f"{task_request.dataset}:{index + 1}",
+            }
+            # HumanEval 假执行器镜像真实安全溯源形状，验证通用检查点不会截断可展示字段。
+            if task_request.dataset == "hexagon-humaneval":
+                metadata.update(
+                    {
+                        "dataset": "hexagon-humaneval",
+                        "selection_stratum": f"HumanEval/{index + 1}",
+                        "evaluator_type": "pass@1",
+                        "reference_zh": None,
+                        "translation_version": "evalhub-zh-v1",
+                        "input_sha256": "a" * 64,
+                        "reference_sha256": "b" * 64,
+                    }
+                )
+            callback(
+                {
+                    "sample_id": sample_id,
+                    "input": f"English prompt {index + 1}",
+                    "prediction": "A",
+                    "reference": "A",
+                    "metric": spec.metric,
+                    "score": 1.0,
+                    "reason": None,
+                    "metadata": metadata,
+                },
+                index + 1,
+                total,
+            )
+        return {"job_id": task_id, "total_samples": total, "incremental": bool(skipped)}
+
+
 def test_single_benchmark_builds_fixed_four_node_graph() -> None:
     """兼容请求应映射为准备、单项、聚合和终结四个节点。"""
     graph = build_workflow(request())
@@ -298,6 +383,858 @@ def test_suite_freezes_mmlu_to_all_subjects() -> None:
     mmlu = next(node for node in graph if node.node_key == "benchmark:mmlu")
 
     assert mmlu.input["subject"] == "all"
+
+
+def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_sixty_samples() -> None:
+    """Hexagon 工作流应冻结七个来源的题数、revision、提示版本和生成配置。"""
+    graph = build_workflow(request(suite_id="evalhub-hexagon-v1"))
+    benchmarks = [node for node in graph if node.kind == "benchmark"]
+
+    assert len(benchmarks) == 7
+    assert sum(int(node.input["expected_sample_count"]) for node in benchmarks) == 60
+    assert all(node.input["prompt_template_version"] == "evalhub-v1" for node in benchmarks)
+    assert all(
+        node.input["generation_config"] == {"temperature": 0, "num_predict": 256}
+        for node in benchmarks
+    )
+    ifeval = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-ifeval")
+    humaneval = next(
+        node for node in benchmarks if node.input["benchmark_id"] == "hexagon-humaneval"
+    )
+    finalizer = next(node for node in graph if node.kind == "workflow_finalize")
+    assert ifeval.input["dataset_revision"] == "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
+    assert humaneval.input["verifier_identity"] == humaneval_verifier_identity()
+    assert (
+        finalizer.input["reproducibility"]["humaneval_verifier_identity"]
+        == humaneval.input["verifier_identity"]
+    )
+
+
+def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清单、Suite、提示或生成配置变化都必须产生不同的完整协议指纹。"""
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    real_suite = workflow_module.get_suite_spec("evalhub-hexagon-v1")
+    real_get_benchmark = workflow_module.get_benchmark_spec
+
+    def fingerprint() -> str:
+        """读取新建工作流七个 Benchmark 共享的冻结协议指纹。"""
+        graph = workflow_module.build_workflow(task_request)
+        fingerprints = {
+            str(node.input.get("protocol_fingerprint"))
+            for node in graph
+            if node.kind == "benchmark"
+        }
+        assert len(fingerprints) == 1
+        return fingerprints.pop()
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_hexagon_manifest_sha256",
+        lambda: "a" * 64,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'a' * 64}",
+        raising=False,
+    )
+    baseline = fingerprint()
+    monkeypatch.setattr(workflow_module, "_hexagon_manifest_sha256", lambda: "b" * 64)
+    changed_manifest = fingerprint()
+    monkeypatch.setattr(workflow_module, "_hexagon_manifest_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(
+        workflow_module,
+        "get_suite_spec",
+        lambda suite_id: replace(real_suite, version="1.0.1"),
+    )
+    changed_suite = fingerprint()
+    monkeypatch.setattr(workflow_module, "get_suite_spec", lambda suite_id: real_suite)
+
+    def changed_prompt(benchmark_id: str):
+        """只改变 IFEval 提示模板，其他 Benchmark 保持真实冻结规格。"""
+        spec = real_get_benchmark(benchmark_id)
+        if benchmark_id == "hexagon-ifeval":
+            return replace(spec, prompt_template_version="evalhub-v2")
+        return spec
+
+    monkeypatch.setattr(workflow_module, "get_benchmark_spec", changed_prompt)
+    changed_prompt_fingerprint = fingerprint()
+
+    def changed_generation(benchmark_id: str):
+        """只改变 HumanEval 生成上限，验证不可变生成配置参与指纹。"""
+        spec = real_get_benchmark(benchmark_id)
+        if benchmark_id == "hexagon-humaneval":
+            return replace(spec, generation_config={"temperature": 0, "num_predict": 512})
+        return spec
+
+    monkeypatch.setattr(workflow_module, "get_benchmark_spec", changed_generation)
+    changed_generation_fingerprint = fingerprint()
+    # 固定来源下载合同也是协议本体；只改变 URL 必须使同字节清单获得不同指纹。
+    changed_sources = hexagon_source_specs()
+    current_gsm8k = changed_sources["hexagon-gsm8k"]
+    changed_sources["hexagon-gsm8k"] = replace(
+        current_gsm8k,
+        url=f"{current_gsm8k.url}?deployment=b",
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "hexagon_source_specs",
+        lambda: changed_sources,
+        raising=False,
+    )
+    changed_source_fingerprint = fingerprint()
+    monkeypatch.setattr(
+        workflow_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'b' * 64}",
+        raising=False,
+    )
+    changed_verifier_fingerprint = fingerprint()
+
+    assert len(
+        {
+            baseline,
+            changed_manifest,
+            changed_suite,
+            changed_prompt_fingerprint,
+            changed_generation_fingerprint,
+            changed_source_fingerprint,
+            changed_verifier_fingerprint,
+        }
+    ) == 7
+
+
+def test_hexagon_workflow_freezes_complete_pinned_source_contracts() -> None:
+    """Hexagon 创建结果必须冻结 Task 2 下载边界并用于最终复现。
+
+    Returns:
+        无；通过节点输入与终结复现字段断言来源 ID、URL、revision 和摘要均已冻结。
+    """
+    graph = build_workflow(request(suite_id="evalhub-hexagon-v1"))
+    benchmarks = [node for node in graph if node.kind == "benchmark"]
+    finalizer = next(node for node in graph if node.kind == "workflow_finalize")
+    # 使用手工核对的 GSM8K 固定值，避免测试与生产序列化辅助函数共享同一错误。
+    gsm8k = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-gsm8k")
+    expected = {
+        "source_id": "hexagon-gsm8k",
+        "url": (
+            "https://raw.githubusercontent.com/openai/grade-school-math/"
+            "3101c7d5072418e28b9008a6636bde82a006892c/"
+            "grade_school_math/data/test.jsonl"
+        ),
+        "revision": "3101c7d5072418e28b9008a6636bde82a006892c",
+        "sha256": "3730d312f6e3440559ace48831e51066acaca737f6eabec99bccb9e4b3c39d14",
+    }
+
+    assert gsm8k.input["source_contract"] == expected
+    assert finalizer.input["reproducibility"]["source_contracts"]["hexagon-gsm8k"] == expected
+
+
+def test_standalone_hexagon_text_prepares_and_executes_with_matching_contract(
+    tmp_path: Path,
+) -> None:
+    """单项文本 Hexagon 必须冻结匹配来源合同并完成准备与执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+
+    Returns:
+        无；断言可观察执行结果成功，且最终复现信息含单项固定来源合同。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-gsm8k")
+    graph = build_workflow(task_request)
+    benchmark = next(node for node in graph if node.kind == "benchmark")
+    frozen_manifest = str(benchmark.input["manifest_sha256"])
+    task = repository.create_with_nodes(task_request, graph)
+    asset = tmp_path / "hexagon-gsm8k.jsonl"
+    asset.write_text("fixed source", encoding="utf-8")
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert preparation_calls == ["hexagon-gsm8k"]
+    assert fake.attempts == {"hexagon-gsm8k": 1}
+    assert result["status"] == "success"
+    assert len(frozen_manifest) == 64
+    assert result["reproducibility"]["manifest_sha256"] == frozen_manifest
+    assert set(result["reproducibility"]["source_contracts"]) == {"hexagon-gsm8k"}
+
+
+def test_standalone_humaneval_reaches_readiness_after_source_preflight(
+    tmp_path: Path,
+) -> None:
+    """单项 HumanEval 合同匹配时应由 Docker readiness 决定阻塞原因。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节 HumanEval 伪资产目录。
+
+    Returns:
+        无；断言资产已准备、Benchmark 未执行，且节点报告执行器未就绪而非来源漂移。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-humaneval")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "HumanEval.jsonl.gz"
+    asset.write_bytes(b"fixed source")
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(
+            False,
+            "executor_not_ready",
+            "fixture Docker missing",
+        ),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmark = next(node for node in nodes if node.kind == "benchmark")
+
+    assert preparation_calls == ["hexagon-humaneval"]
+    assert prepare.status == "success"
+    assert benchmark.status == "blocked"
+    assert benchmark.error_type == "executor_not_ready"
+    assert fake.attempts == {}
+
+
+def test_standalone_hexagon_workflow_rejects_missing_pinned_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """创建单项 Hexagon 工作流时缺少 Task 2 固定来源必须立即拒绝。
+
+    Args:
+        monkeypatch: 删除创建部署中的目标固定来源记录。
+
+    Returns:
+        无；断言持久化任何节点前抛出带 Benchmark ID 的输入错误。
+    """
+    deployed_sources = hexagon_source_specs()
+    deployed_sources.pop("hexagon-gsm8k")
+    monkeypatch.setattr(workflow_module, "hexagon_source_specs", lambda: deployed_sources)
+
+    with pytest.raises(ValueError, match="missing pinned source contract: hexagon-gsm8k"):
+        build_workflow(request(dataset="hexagon-gsm8k"))
+
+
+def test_runtime_blocks_when_frozen_and_current_source_contracts_are_both_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """冻结和当前来源合同同时缺失时必须 fail-closed，不能因 ``None == None`` 放行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与不会被调用的伪资产目录。
+        monkeypatch: 从运行部署的 Task 2 来源目录删除同一 Benchmark。
+
+    Returns:
+        无；断言准备节点稳定阻塞，且资产准备和 Benchmark 执行均未发生。
+    """
+    task_request = request(dataset="hexagon-gsm8k")
+    graph = build_workflow(task_request)
+    # 模拟修复前持久化的旧单项节点，明确移除创建时来源合同。
+    legacy_graph = tuple(
+        replace(
+            node,
+            input={key: value for key, value in node.input.items() if key != "source_contract"},
+        )
+        if node.kind == "benchmark"
+        else node
+        for node in graph
+    )
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task = repository.create_with_nodes(task_request, legacy_graph)
+    deployed_sources = hexagon_source_specs()
+    deployed_sources.pop("hexagon-gsm8k")
+    monkeypatch.setattr(runtime_module, "hexagon_source_specs", lambda: deployed_sources)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id),
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    prepare = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "prepare_assets"
+    )
+
+    assert prepare.status == "blocked"
+    assert prepare.error_type == "source_contract_changed"
+    assert preparation_calls == []
+    assert fake.attempts == {}
+
+
+def test_runtime_blocks_hexagon_source_drift_before_any_preparation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """排队后固定来源漂移时必须先阻塞整个准备节点，不能下载或执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与伪资产目录。
+        monkeypatch: 模拟部署 B 的 Task 2 固定来源记录，同时保持包内清单字节不变。
+
+    Returns:
+        无；断言下载和 Benchmark 边界均未被调用，且最终只发布创建时冻结事实。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    created_nodes = repository.list_nodes(task.id)
+    finalizer = next(node for node in created_nodes if node.kind == "workflow_finalize")
+    frozen_reproducibility = finalizer.input["reproducibility"]
+    frozen_manifest = frozen_reproducibility["manifest_sha256"]
+    # 只改变第三个来源记录，证明运行时必须在任何下载前完成全套来源预检。
+    deployed_sources = hexagon_source_specs()
+    old_gsm8k = deployed_sources["hexagon-gsm8k"]
+    deployed_sources["hexagon-gsm8k"] = replace(
+        old_gsm8k,
+        revision="deployment-b",
+        url=f"{old_gsm8k.url}?deployment=b",
+        sha256="f" * 64,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "hexagon_source_specs",
+        lambda: deployed_sources,
+        raising=False,
+    )
+    monkeypatch.setattr(runtime_module, "_hexagon_manifest_sha256", lambda: frozen_manifest)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    asset = tmp_path / "must-not-be-prepared"
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmarks = [node for node in nodes if node.kind == "benchmark"]
+    completed_finalizer = next(node for node in nodes if node.kind == "workflow_finalize")
+
+    assert preparation_calls == []
+    assert fake.attempts == {}
+    assert prepare.status == "blocked"
+    assert prepare.error_type == "source_contract_changed"
+    assert all(node.status == "blocked" and node.output is None for node in benchmarks)
+    assert completed_finalizer.output["total_samples"] == 0
+    assert completed_finalizer.output["reproducibility"] == frozen_reproducibility
+
+
+def test_runtime_prepares_hexagon_when_frozen_source_contract_matches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """当前 Task 2 来源与冻结合同一致时应正常准备并执行七个 Benchmark。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+        monkeypatch: 记录运行时是否实际读取当前部署的来源合同。
+
+    Returns:
+        无；断言完整预检只读取一次目录，并允许全部七个准备与执行调用。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    current_sources = hexagon_source_specs()
+    source_catalog_reads = 0
+
+    def read_current_sources() -> dict[str, PinnedSource]:
+        """记录一次部署来源目录读取并返回与创建时一致的不可变记录。
+
+        Returns:
+            当前测试部署的七条 Task 2 固定来源记录副本。
+        """
+        nonlocal source_catalog_reads
+        source_catalog_reads += 1
+        return dict(current_sources)
+
+    monkeypatch.setattr(runtime_module, "hexagon_source_specs", read_current_sources, raising=False)
+    preparation_calls: list[str] = []
+    fake = FakeBenchmarkExecutor()
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("fixed source", encoding="utf-8")
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: preparation_calls.append(benchmark_id) or asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+
+    assert source_catalog_reads == 1
+    assert preparation_calls == list(current_sources)
+    assert set(fake.attempts) == set(current_sources)
+    assert result["status"] == "success"
+
+
+def test_runtime_reruns_same_bytes_checkpoint_when_protocol_fingerprint_changed(
+    tmp_path: Path,
+) -> None:
+    """来源字节未变但协议指纹不同时，旧样本不得进入跳过集合或最终聚合。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request()
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    prepare, benchmark = repository.list_nodes(task.id)[:2]
+    frozen_fingerprint = benchmark.input.get("protocol_fingerprint")
+    assert isinstance(frozen_fingerprint, str)
+    asset = tmp_path / "gsm8k.jsonl"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                "gsm8k": {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": f"sha256:{content_sha256}",
+                }
+            }
+        },
+    )
+    running = repository.start_node(benchmark.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="gsm8k-sample-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"input": "1 + 1", "protocol_fingerprint": "stale-protocol"},
+            result={
+                "sample_id": "gsm8k-sample-1",
+                "metric": "exact_match",
+                "score": 1.0,
+                "protocol_fingerprint": "stale-protocol",
+            },
+        ),
+        completed=1,
+        total=1,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    fake = FakeBenchmarkExecutor(score=0.0)
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    restored = repository.list_samples(running.id).items
+
+    assert fake.seen_skips == [set()]
+    assert result["average_score"] == 0.0
+    assert len(restored) == 1
+    assert restored[0].result["protocol_fingerprint"] == frozen_fingerprint
+
+
+def test_runtime_uses_creation_frozen_protocol_after_registry_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """任务创建后 Registry 变化时，执行产物和最终复现信息仍使用冻结事实。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    created_nodes = repository.list_nodes(task.id)
+    finalizer = next(node for node in created_nodes if node.kind == "workflow_finalize")
+    frozen_reproducibility = finalizer.input.get("reproducibility")
+    frozen_fingerprint = finalizer.input.get("protocol_fingerprint")
+    assert isinstance(frozen_reproducibility, dict)
+    assert isinstance(frozen_fingerprint, str)
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    real_runtime_get = get_benchmark_spec
+    current_suite = workflow_module.get_suite_spec("evalhub-hexagon-v1")
+
+    def changed_spec(benchmark_id: str):
+        """模拟部署升级后 Registry 中同 ID 的来源与提示协议发生变化。"""
+        spec = real_runtime_get(benchmark_id)
+        return replace(
+            spec,
+            version="9.9.9",
+            dataset_revision="future-source-revision",
+            prompt_template_version="future-prompt",
+            generation_config={"temperature": 0, "num_predict": 999},
+        )
+
+    monkeypatch.setattr(runtime_module, "get_benchmark_spec", changed_spec, raising=False)
+    monkeypatch.setattr(
+        runtime_module,
+        "workflow_suite",
+        lambda request: replace(current_suite, version="9.9.9", display_name="Future Suite"),
+        raising=False,
+    )
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=HexagonBenchmarkExecutor(),
+        asset_preparer=lambda benchmark_id: asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    benchmark_outputs = [
+        node.output
+        for node in repository.list_nodes(task.id)
+        if node.kind == "benchmark"
+    ]
+
+    assert result["reproducibility"] == frozen_reproducibility
+    assert result["comparison_fingerprint"] == frozen_fingerprint
+    assert result["benchmark"] == "EvalHub 专业六边形套件 v1"
+    assert result["capability_profile"]["suite_version"] == "1.0.0"
+    assert all(output["protocol_fingerprint"] == frozen_fingerprint for output in benchmark_outputs)
+    assert all(output["prompt_template_version"] == "evalhub-v1" for output in benchmark_outputs)
+
+
+@pytest.mark.parametrize(
+    "task_request",
+    [
+        pytest.param(request(suite_id="evalhub-hexagon-v1"), id="full-suite"),
+        pytest.param(request(dataset="hexagon-gsm8k"), id="standalone"),
+    ],
+)
+def test_runtime_blocks_same_bytes_resume_when_packaged_manifest_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task_request: TaskRequest,
+) -> None:
+    """完整或单项 Hexagon 清单漂移时，旧检查点都不得复用或发布。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+        monkeypatch: 把运行部署的包内清单摘要替换为另一组固定字节。
+        task_request: 参数化的完整 Suite 或单项 Hexagon 请求。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    nodes = repository.list_nodes(task.id)
+    prepare = next(node for node in nodes if node.kind == "prepare_assets")
+    benchmarks = [node for node in nodes if node.kind == "benchmark"]
+    first = benchmarks[0]
+    frozen_fingerprint = str(first.input["protocol_fingerprint"])
+    frozen_reproducibility = next(
+        node for node in nodes if node.kind == "workflow_finalize"
+    ).input["reproducibility"]
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("unchanged source bytes", encoding="utf-8")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                str(node.input["benchmark_id"]): {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": node.input["dataset_revision"],
+                }
+                for node in benchmarks
+            }
+        },
+    )
+    running = repository.start_node(first.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="hexagon-mmlu-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"protocol_fingerprint": frozen_fingerprint},
+            result={
+                "sample_id": "hexagon-mmlu-1",
+                "score": 1.0,
+                "protocol_fingerprint": frozen_fingerprint,
+            },
+        ),
+        completed=1,
+        total=10,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    fake = FakeBenchmarkExecutor()
+    monkeypatch.setattr(
+        runtime_module,
+        "_hexagon_manifest_sha256",
+        lambda: "f" * 64,
+        raising=False,
+    )
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    assert fake.seen_skips == []
+    assert repository.list_samples(first.id).items == ()
+    finalizer = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "workflow_finalize"
+    )
+    assert finalizer.output["reproducibility"] == frozen_reproducibility
+    assert finalizer.output["total_samples"] == 0
+
+
+def test_runtime_blocks_humaneval_resume_when_verifier_identity_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """部署更换 verifier 字节后必须清空 HumanEval 检查点并阻止继续执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与不变 HumanEval 伪资产目录。
+        monkeypatch: 把运行部署的 verifier 身份替换为另一个合法摘要。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-humaneval")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    prepare, benchmark = repository.list_nodes(task.id)[:2]
+    frozen_fingerprint = str(benchmark.input["protocol_fingerprint"])
+    frozen_reproducibility = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "workflow_finalize"
+    ).input["reproducibility"]
+    asset = tmp_path / "HumanEval.jsonl.gz"
+    asset.write_bytes(b"unchanged source bytes")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                "hexagon-humaneval": {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": benchmark.input["dataset_revision"],
+                }
+            }
+        },
+    )
+    running = repository.start_node(benchmark.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="hexagon-humaneval-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"protocol_fingerprint": frozen_fingerprint},
+            result={
+                "sample_id": "hexagon-humaneval-1",
+                "score": 1.0,
+                "protocol_fingerprint": frozen_fingerprint,
+            },
+        ),
+        completed=1,
+        total=10,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    monkeypatch.setattr(
+        runtime_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'f' * 64}",
+        raising=False,
+    )
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    completed = repository.list_nodes(task.id)
+    restored = next(node for node in completed if node.kind == "benchmark")
+    finalizer = next(node for node in completed if node.kind == "workflow_finalize")
+    assert restored.error_type == "verifier_identity_changed"
+    assert repository.list_samples(restored.id).items == ()
+    assert fake.seen_skips == []
+    assert finalizer.output["reproducibility"] == frozen_reproducibility
+    assert finalizer.output["total_samples"] == 0
+
+
+def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
+    tmp_path: Path,
+) -> None:
+    """七节点 Oracle 流程应持久化 60 条溯源结果并生成完整六维复现信息。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    asset = tmp_path / "hexagon-source"
+    asset.write_text("fixed source", encoding="utf-8")
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=HexagonBenchmarkExecutor(),
+        asset_preparer=lambda benchmark_id: asset,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
+    )
+
+    result = runtime.execute(
+        task.id,
+        task_request,
+        on_progress=lambda completed, total: None,
+        on_resources=lambda usage: None,
+        cancel_event=Event(),
+    )
+    benchmarks = [node for node in repository.list_nodes(task.id) if node.kind == "benchmark"]
+    samples = [
+        sample
+        for node in benchmarks
+        for sample in repository.list_samples(node.id, limit=200).items
+    ]
+
+    assert len(samples) == 60
+    assert all((sample.result or {})["metadata"]["input_zh"] for sample in samples)
+    assert all((sample.input or {})["metadata"]["source_key"] for sample in samples)
+    humaneval = next(
+        node for node in benchmarks if node.input["benchmark_id"] == "hexagon-humaneval"
+    )
+    humaneval_sample = repository.list_samples(humaneval.id).items[0]
+    humaneval_metadata = humaneval_sample.result["metadata"]
+    assert humaneval_metadata["dataset"] == "hexagon-humaneval"
+    assert humaneval_metadata["reference_zh"] is None
+    assert humaneval_metadata["translation_version"] == "evalhub-zh-v1"
+    assert "canonical_solution" not in humaneval_metadata
+    assert "test" not in humaneval_metadata
+    assert result["total_samples"] == 60
+    assert result["capability_profile"]["status"] == "complete"
+    assert {
+        capability["score"]
+        for capability in result["capability_profile"]["capabilities"].values()
+    } == {100.0}
+    reproducibility = result["reproducibility"]
+    assert len(result["comparison_fingerprint"]) == 64
+    assert reproducibility["suite_version"] == "1.0.0"
+    assert reproducibility["manifest_sha256"] == (
+        "9ff977a258c61dacb568d1fc5d30209fa340687ee2e1be8e7365f5a18df2b6f2"
+    )
+    assert reproducibility["source_revisions"]["hexagon-ifeval"] == (
+        "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
+    )
+    assert reproducibility["prompt_template_versions"] == {
+        node.input["benchmark_id"]: "evalhub-v1" for node in benchmarks
+    }
+    assert reproducibility["generation_config"] == {"temperature": 0, "num_predict": 256}
+
+
+def test_hexagon_runtime_blocks_unready_humaneval_without_executing_it(tmp_path: Path) -> None:
+    """Docker 未就绪时 HumanEval 节点必须阻塞，不能调用模型或产生零分样本。"""
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(suite_id="evalhub-hexagon-v1")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(
+        repository,
+        benchmark_executor=fake,
+        asset_preparer=lambda benchmark_id: f"/cache/{benchmark_id}",
+        readiness_checker=lambda spec: ExecutorReadiness(
+            spec.id != "hexagon-humaneval",
+            "ready" if spec.id != "hexagon-humaneval" else "executor_not_ready",
+            "fixture Docker missing",
+        ),
+    )
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    humaneval = next(
+        node
+        for node in repository.list_nodes(task.id)
+        if node.node_key == "benchmark:hexagon-humaneval"
+    )
+    assert humaneval.status == "blocked"
+    assert humaneval.error_type == "executor_not_ready"
+    assert "hexagon-humaneval" not in fake.attempts
+    assert repository.completed_sample_keys(humaneval.id) == set()
 
 
 def test_runtime_persists_samples_and_completes_single_benchmark(tmp_path: Path) -> None:
@@ -352,6 +1289,7 @@ def test_runtime_prepares_and_persists_external_benchmark_result(tmp_path: Path)
         benchmark_executor=HarnessBenchmarkExecutor(),
         asset_preparer=lambda benchmark_id: (_ for _ in ()).throw(AssertionError()),
         harness_asset_preparer=lambda benchmark_id: prepared.append(benchmark_id) or marker,
+        readiness_checker=lambda spec: ExecutorReadiness(True, "ready", "fixture ready"),
     )
 
     result = runtime.execute(
@@ -426,7 +1364,7 @@ def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: P
     )
 
     # 完整执行持久化工作流，确保样本状态经过真实运行时和仓储边界。
-    runtime.execute(
+    result = runtime.execute(
         task.id,
         task_request,
         on_progress=lambda completed, total: None,
@@ -441,6 +1379,10 @@ def test_runtime_marks_scored_failure_as_completed_debuggable_sample(tmp_path: P
     assert repository.completed_sample_keys(benchmark.id) == {"gsm8k-sample-1"}
     assert [sample.sample_key for sample in failed_page.items] == ["gsm8k-sample-1"]
     assert failed_page.items[0].result["reason"] == "答案不匹配"
+    assert result["failed_examples"][0]["metadata"] == {
+        "input_zh": "一加一",
+        "source_key": "fixture:1",
+    }
 
 
 def test_runtime_retry_reuses_completed_zero_score_checkpoint(tmp_path: Path) -> None:

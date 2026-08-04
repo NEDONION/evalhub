@@ -11,10 +11,18 @@ from time import monotonic
 from typing import Protocol
 
 from evalhub.agent.codex import AgentTraceEvent, TraceCallback
-from evalhub.benchmarks import ExecutorKind, get_benchmark_spec
+from evalhub.benchmarks import (
+    DockerHumanEvalSandbox,
+    ExecutorKind,
+    SandboxInfrastructureError,
+    get_benchmark_spec,
+    load_humaneval_problems,
+    run_humaneval_benchmark,
+)
 from evalhub.benchmarks.coding_mini import run_codex_agent_benchmark
 from evalhub.benchmarks.harness import run_harness_benchmark
-from evalhub.cli import run_real_benchmark
+from evalhub.cli import build_model_adapter, run_real_benchmark
+from evalhub.datasets import prepare_dataset
 from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks.models import ResourceUsage, TaskRequest
 from evalhub.tasks.resources import ProcessResourceSampler
@@ -28,6 +36,16 @@ class TaskExecutionCanceled(RuntimeError):
 
 class TaskExecutionError(RuntimeError):
     """表示评测子进程以异常或缺少结果的方式结束。"""
+
+    def __init__(self, message: str, *, error_type: str | None = None) -> None:
+        """保存安全错误消息及可选的稳定基础设施分类。
+
+        Args:
+            message: 可向任务节点展示的脱敏错误消息。
+            error_type: 仅由可信子进程边界写入的稳定错误代码。
+        """
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class MessageQueue(Protocol):
@@ -58,13 +76,19 @@ def _evaluation_process(
         event_queue.put({"type": "progress", "completed": completed, "total": total})
 
     def report_sample(
-        sample: EvaluationSampleResult,
+        sample: EvaluationSampleResult | dict[str, object],
         completed: int,
         total: int,
     ) -> None:
-        """把领域样本结果转换为可跨进程传输的纯字典事件。"""
-        report_harness_sample(
-            {
+        """把文本领域结果或 HumanEval 脱敏结果转换为统一跨进程事件。
+
+        Args:
+            sample: 文本 Runner 领域实体，或 HumanEval Runner 已脱敏的结果字典。
+            completed: 包含恢复检查点在内的当前完成数量。
+            total: 当前 Benchmark 固定样本总数。
+        """
+        if isinstance(sample, EvaluationSampleResult):
+            payload: dict[str, object] = {
                 "sample_id": sample.sample_id,
                 "input": sample.input,
                 "prediction": sample.prediction,
@@ -72,23 +96,18 @@ def _evaluation_process(
                 "metric": sample.metric,
                 "score": sample.score,
                 "reason": sample.reason,
-            },
-            completed,
-            total,
-        )
-
-    def report_harness_sample(
-        sample: dict[str, object],
-        completed: int,
-        total: int,
-    ) -> None:
-        """把已是 JSON 结构的 Harness 样本转成统一跨进程事件。"""
+                "metadata": sample.metadata,
+            }
+        else:
+            # HumanEval 已在专用 Runner 脱敏，父进程只需沿用同一结果字典协议。
+            payload = dict(sample)
+            payload.setdefault("metadata", {})
         event_queue.put(
             {
                 "type": "sample_result",
                 "completed": completed,
                 "total": total,
-                "sample": sample,
+                "sample": payload,
             }
         )
 
@@ -115,32 +134,62 @@ def _evaluation_process(
                 limit = 5
             else:
                 limit = request.limit
-            spec = get_benchmark_spec(request.dataset)
-            if spec.executor == ExecutorKind.NATIVE:
-                result = run_real_benchmark(
-                    dataset=request.dataset,
-                    adapter_type=request.adapter,
+            if request.dataset == "hexagon-humaneval":
+                path = prepare_dataset(request.dataset)
+                problems = load_humaneval_problems(path)
+                if limit is not None:
+                    problems = problems[:limit]
+                # Oracle 只回放官方实现；模型仍只看到公开英文 prompt，隐藏测试进入 Docker。
+                adapter = build_model_adapter(
+                    request.adapter,
                     model=request.model,
                     base_url=request.base_url,
-                    limit=limit,
-                    subject=request.subject,
+                    oracle_responses={
+                        problem.prompt: problem.canonical_solution for problem in problems
+                    },
+                )
+                result = run_humaneval_benchmark(
                     job_id=task_id,
-                    on_progress=report_progress,
+                    adapter=adapter,
+                    problems=problems,
+                    sandbox=DockerHumanEvalSandbox(),
                     skip_sample_ids=frozenset(skip_sample_ids),
+                    on_progress=report_progress,
                     on_sample_result=report_sample,
+                    generation_config=request.generation_config,
                 )
             else:
-                if request.adapter != "ollama":
-                    raise ValueError(f"{spec.display_name} 仅支持 Ollama 本地模型")
-                result = run_harness_benchmark(
-                    benchmark_id=spec.id,
-                    model=request.model,
-                    base_url=request.base_url,
-                    limit=limit,
-                    on_progress=report_progress,
-                    on_sample_result=report_harness_sample,
-                )
+                spec = get_benchmark_spec(request.dataset)
+                if spec.executor == ExecutorKind.NATIVE:
+                    result = run_real_benchmark(
+                        dataset=request.dataset,
+                        adapter_type=request.adapter,
+                        model=request.model,
+                        base_url=request.base_url,
+                        limit=limit,
+                        subject=request.subject,
+                        job_id=task_id,
+                        on_progress=report_progress,
+                        skip_sample_ids=frozenset(skip_sample_ids),
+                        on_sample_result=report_sample,
+                        generation_config=request.generation_config,
+                        evaluator_type=request.evaluator_type,
+                    )
+                else:
+                    if request.adapter != "ollama":
+                        raise ValueError(f"{spec.display_name} 仅支持 Ollama 本地模型")
+                    result = run_harness_benchmark(
+                        benchmark_id=spec.id,
+                        model=request.model,
+                        base_url=request.base_url,
+                        limit=limit,
+                        on_progress=report_progress,
+                        on_sample_result=report_sample,
+                    )
         event_queue.put({"type": "result", "result": result})
+    except SandboxInfrastructureError as exc:
+        # 沙箱基础设施错误必须跨进程保留分类，父流程据此阻塞而不是记录模型失败。
+        event_queue.put({"type": "error", "message": str(exc), "error_type": str(exc)})
     except Exception as exc:
         # 子进程边界只发送安全字符串，不尝试跨进程序列化任意异常对象和堆栈。
         event_queue.put({"type": "error", "message": str(exc)})
@@ -209,7 +258,7 @@ class SubprocessEvaluationExecutor:
         )
         next_sample_at = monotonic()
         result: dict[str, object] | None = None
-        error_message: str | None = None
+        error_message: TaskExecutionError | None = None
         process_exited_at: float | None = None
 
         try:
@@ -244,7 +293,7 @@ class SubprocessEvaluationExecutor:
 
             process.join(timeout=1.0)
             if error_message is not None:
-                raise TaskExecutionError(error_message)
+                raise error_message
             if result is None:
                 raise TaskExecutionError(
                     f"evaluation process exited without result (exit code {process.exitcode})"
@@ -261,11 +310,11 @@ class SubprocessEvaluationExecutor:
         event_queue: object,
         *,
         result: dict[str, object] | None,
-        error_message: str | None,
+        error_message: TaskExecutionError | None,
         on_progress: Callable[[int, int], None],
         on_sample_result: Callable[[dict[str, object], int, int], None] | None,
         on_trace: TraceCallback | None,
-    ) -> tuple[dict[str, object] | None, str | None]:
+    ) -> tuple[dict[str, object] | None, TaskExecutionError | None]:
         """读取一个子进程事件并更新进度或终态暂存值。"""
         try:
             message = event_queue.get(timeout=0.05)
@@ -285,7 +334,11 @@ class SubprocessEvaluationExecutor:
         elif event_type == "result":
             result = message["result"]
         elif event_type == "error":
-            error_message = str(message["message"])
+            error_type = message.get("error_type")
+            error_message = TaskExecutionError(
+                str(message["message"]),
+                error_type=str(error_type) if error_type is not None else None,
+            )
         return result, error_message
 
     @staticmethod

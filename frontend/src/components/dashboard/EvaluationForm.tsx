@@ -260,15 +260,17 @@ export function EvaluationForm({
                   {selectedSuite ? (
                     <p
                       className={`mt-2 text-xs leading-5 ${
-                        selectedSuite.locally_runnable_count === selectedSuite.benchmark_count
+                        (selectedSuite.ready_count ?? selectedSuite.locally_runnable_count) ===
+                        selectedSuite.benchmark_count
                           ? "text-emerald-700"
                           : "text-amber-700"
                       }`}
                     >
-                      当前已接通 {selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个本地执行器
-                      {selectedSuite.locally_runnable_count === selectedSuite.benchmark_count
+                      当前已就绪 {selectedSuite.ready_count ?? selectedSuite.locally_runnable_count} / {selectedSuite.benchmark_count} 个执行器
+                      {(selectedSuite.ready_count ?? selectedSuite.locally_runnable_count) ===
+                      selectedSuite.benchmark_count
                         ? "，全部可运行。"
-                        : "；未就绪节点会记录为阻塞。"}
+                        : "；其余节点会明确记录为阻塞，不会产生虚假分数。"}
                     </p>
                   ) : null}
                 </div>

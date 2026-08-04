@@ -5,6 +5,7 @@ from collections.abc import Callable
 from evalhub.evaluators.base import Evaluator
 from evalhub.evaluators.choice import ChoiceLetterEvaluator
 from evalhub.evaluators.exact_match import ExactMatchEvaluator
+from evalhub.evaluators.ifeval import IFEvalStrictEvaluator
 from evalhub.evaluators.numeric import NumericExactMatchEvaluator
 
 EvaluatorFactory = Callable[[], Evaluator]
@@ -49,10 +50,11 @@ class EvaluatorRegistry:
 
 
 def default_evaluator_registry() -> EvaluatorRegistry:
-    """创建包含仓库内置三种指标实现的新注册表。"""
+    """创建包含仓库内置指标实现的新注册表。"""
     # 每次构造独立注册表，允许调用方扩展而不污染其他任务的默认配置。
     registry = EvaluatorRegistry()
     registry.register("exact_match", ExactMatchEvaluator)
     registry.register("numeric_exact_match", NumericExactMatchEvaluator)
     registry.register("choice_letter", ChoiceLetterEvaluator)
+    registry.register("ifeval_strict", IFEvalStrictEvaluator)
     return registry

@@ -7,6 +7,8 @@ from typing import Literal
 from evalhub.tasks.models import EvaluationTask
 
 PerformanceScopeKind = Literal["benchmark", "suite"]
+_HEXAGON_SUITE_ID = "evalhub-hexagon-v1"
+_HEXAGON_SAMPLE_COUNT = 60
 
 
 @dataclass(frozen=True)
@@ -73,12 +75,8 @@ def build_model_performance(
     Raises:
         ValueError: 请求的范围没有任何可比较模型成绩。
     """
-    # 只有模型评测和已形成分数的任务可进入榜单，Agent 协议必须完全隔离。
-    comparable = [
-        task
-        for task in tasks
-        if task.request.evaluation_type == "model" and task.average_score is not None
-    ]
+    # 所有排行榜只接受成功模型任务；Hexagon 再核对固定题数和协议指纹。
+    comparable = [task for task in tasks if _is_comparable(task)]
     grouped = _group_by_scope(comparable)
     scopes = tuple(_build_scope(key, items) for key, items in grouped.items())
     scopes = tuple(sorted(scopes, key=lambda item: (-item.run_count, item.key)))
@@ -106,6 +104,33 @@ def build_model_performance(
     return ModelPerformanceReport(scopes, selected_scope, models, record)
 
 
+def _is_comparable(task: EvaluationTask) -> bool:
+    """判断任务是否具备进入模型历史比较的最小持久化事实。
+
+    Args:
+        task: 不含大型结果正文、但包含请求、终态和样本计数的任务摘要。
+
+    Returns:
+        非成功、Agent 或无分任务返回 ``False``；Hexagon 还必须是 60 题全量运行。
+    """
+    if (
+        task.status != "success"
+        or task.request.evaluation_type != "model"
+        or task.average_score is None
+    ):
+        return False
+    if task.request.suite_id != _HEXAGON_SUITE_ID:
+        return True
+    # 仅靠 success 不足以识别旧数据中的部分套件，必须同时核对模式和持久化计数。
+    return (
+        task.status == "success"
+        and task.request.sample_mode == "all"
+        and task.completed_samples == _HEXAGON_SAMPLE_COUNT
+        and task.total_samples == _HEXAGON_SAMPLE_COUNT
+        and task.comparison_fingerprint is not None
+    )
+
+
 def _group_by_scope(tasks: list[EvaluationTask]) -> dict[str, list[EvaluationTask]]:
     """按 Suite 或单 Benchmark 稳定键对有效模型任务分组。
 
@@ -119,7 +144,24 @@ def _group_by_scope(tasks: list[EvaluationTask]) -> dict[str, list[EvaluationTas
     for task in tasks:
         key = _scope_key(task)
         grouped.setdefault(key, []).append(task)
+    hexagon_key = f"suite:{_HEXAGON_SUITE_ID}"
+    if hexagon_key in grouped:
+        grouped[hexagon_key] = _latest_protocol_tasks(grouped[hexagon_key])
     return grouped
+
+
+def _latest_protocol_tasks(tasks: list[EvaluationTask]) -> list[EvaluationTask]:
+    """只保留与最近一次完整 Hexagon 运行具有相同协议指纹的成绩。
+
+    Args:
+        tasks: 已通过完整性检查、但可能来自多个历史协议 revision 的 Suite 任务。
+
+    Returns:
+        与最近完成任务协议完全一致的可比较任务，公开 Suite 范围键保持不变。
+    """
+    latest = max(tasks, key=_task_time_key)
+    fingerprint = latest.comparison_fingerprint
+    return [task for task in tasks if task.comparison_fingerprint == fingerprint]
 
 
 def _scope_key(task: EvaluationTask) -> str:

@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { estimateDownloadRange, formatBytes, formatDuration, formatRate } from "./assets";
+import {
+  estimateDownloadRange,
+  formatBytes,
+  formatDuration,
+  formatRate,
+  sampleMetadata,
+} from "./assets";
 
 describe("local asset formatting", () => {
   it("formats Ollama decimal byte sizes and transfer rates", () => {
@@ -23,5 +29,23 @@ describe("local asset formatting", () => {
       maximumSeconds: 395,
     });
     expect(estimateDownloadRange(null)).toBeNull();
+  });
+
+  it("accepts only safe string translation and provenance metadata", () => {
+    expect(
+      sampleMetadata({
+        input_zh: "中文辅助翻译",
+        reference_zh: null,
+        source: "HumanEval",
+        source_key: "HumanEval/7",
+        canonical_solution: "must not render",
+      }),
+    ).toEqual({
+      input_zh: "中文辅助翻译",
+      reference_zh: null,
+      source: "HumanEval",
+      source_key: "HumanEval/7",
+    });
+    expect(sampleMetadata({ input_zh: 7 })).toBeNull();
   });
 });

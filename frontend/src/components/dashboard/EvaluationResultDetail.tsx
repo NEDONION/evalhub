@@ -9,6 +9,7 @@ import { CapabilityRadar } from "./CapabilityRadar";
 
 interface EvaluationResultDetailProps {
   result: EvaluationResult;
+  isHexagon?: boolean;
 }
 
 const difficultyLabels: Record<AgentDifficulty, string> = {
@@ -24,7 +25,7 @@ const difficultyLabels: Record<AgentDifficulty, string> = {
  * @param props 后端持久化的完整评测结果。
  * @returns 只属于当前任务详情的结果区，避免列表页一次展开大量原始数据。
  */
-export function EvaluationResultDetail({ result }: EvaluationResultDetailProps): JSX.Element {
+export function EvaluationResultDetail({ result, isHexagon = false }: EvaluationResultDetailProps): JSX.Element {
   return (
     <div className="border-t border-border">
       <div className="flex items-start justify-between gap-3 px-5 py-5 sm:px-6">
@@ -71,6 +72,8 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
       ) : null}
 
       {result.capability_profile ? <CapabilityRadar profile={result.capability_profile} /> : null}
+
+      {result.reproducibility ? <ReproducibilityLedger reproducibility={result.reproducibility} /> : null}
 
       {result.difficulty_report && result.difficulty_report.length > 0 ? (
         <section aria-labelledby="difficulty-report-title" className="border-b border-border px-5 py-5 sm:px-6">
@@ -129,26 +132,72 @@ export function EvaluationResultDetail({ result }: EvaluationResultDetailProps):
         </div>
       ) : null}
 
-      <details className="group">
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-3 text-xs font-medium text-muted transition-colors hover:bg-slate-50 hover:text-ink sm:px-6">
-          <span className="flex items-center gap-2">
-            <Braces className="h-3.5 w-3.5" aria-hidden="true" />
-            原始 JSON
-          </span>
-          <span className="font-mono text-[10px] text-slate-400 group-open:hidden">EXPAND</span>
-          <span className="hidden font-mono text-[10px] text-slate-400 group-open:inline">COLLAPSE</span>
-        </summary>
-        <pre className="max-h-[32rem] overflow-auto border-t border-slate-800 bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200 sm:p-6">
-          {JSON.stringify(result, null, 2)}
-        </pre>
-      </details>
+      {!isHexagonResult(result, isHexagon) ? (
+        <details className="group">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-5 py-3 text-xs font-medium text-muted transition-colors hover:bg-slate-50 hover:text-ink sm:px-6">
+            <span className="flex items-center gap-2">
+              <Braces className="h-3.5 w-3.5" aria-hidden="true" />
+              原始 JSON
+            </span>
+            <span className="font-mono text-[10px] text-slate-400 group-open:hidden">EXPAND</span>
+            <span className="hidden font-mono text-[10px] text-slate-400 group-open:inline">COLLAPSE</span>
+          </summary>
+          <pre className="max-h-[32rem] overflow-auto border-t border-slate-800 bg-slate-950 p-5 font-mono text-xs leading-5 text-slate-200 sm:p-6">
+            {JSON.stringify(result, null, 2)}
+          </pre>
+        </details>
+      ) : null}
+
+    </div>
+  );
+}
+
+function ReproducibilityLedger({
+  reproducibility,
+}: {
+  reproducibility: NonNullable<EvaluationResult["reproducibility"]>;
+}): JSX.Element {
+  const sourceRevisions = Object.entries(reproducibility.source_revisions || {});
+  const promptTemplates = Object.entries(reproducibility.prompt_template_versions || {});
+  const promptConfig = Object.entries(reproducibility.generation_config || {});
+
+  return (
+    <details className="border-b border-border">
+      <summary className="cursor-pointer px-5 py-3 text-xs font-medium text-muted hover:bg-slate-50 sm:px-6">
+        可复现性账本
+      </summary>
+      <dl className="grid gap-x-5 gap-y-2 border-t border-border px-5 py-4 text-xs sm:grid-cols-2 sm:px-6">
+        <LedgerRow label="套件版本" value={reproducibility.suite_version} />
+        <LedgerRow label="清单摘要" value={reproducibility.manifest_sha256} mono />
+        <LedgerRow label="来源版本" value={sourceRevisions.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+        <LedgerRow label="提示模板" value={promptTemplates.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+        <LedgerRow label="生成配置" value={promptConfig.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+      </dl>
+    </details>
+  );
+}
+
+function isHexagonResult(result: EvaluationResult, isHexagon: boolean): boolean {
+  return (
+    isHexagon ||
+    result.suite_id === "evalhub-hexagon-v1" ||
+    (typeof result.dataset === "string" && result.dataset.startsWith("hexagon-")) ||
+    (typeof result.benchmark === "string" && result.benchmark.includes("六边形"))
+  );
+}
+
+function LedgerRow({ label, value, mono = false }: { label: string; value?: string; mono?: boolean }): JSX.Element {
+  return (
+    <div>
+      <dt className="text-muted">{label}</dt>
+      <dd className={`${mono ? "font-mono" : ""} mt-1 break-all text-ink`}>{value || "—"}</dd>
     </div>
   );
 }
 
 interface ResultMetricProps {
   label: string;
-  value: string;
+  value: unknown;
   meta?: string;
   mono?: boolean;
   accent?: boolean;
@@ -167,14 +216,16 @@ function ResultMetric({
   mono = false,
   accent = false,
 }: ResultMetricProps): JSX.Element {
+  const displayValue = typeof value === "string" ? value : "—";
+
   return (
     <div className="min-w-0 border-b border-border px-5 py-4 last:border-b-0 sm:nth-[2n]:border-l lg:border-b-0 lg:border-l lg:first:border-l-0 sm:px-6">
       <span className="block text-xs font-medium text-muted">{label}</span>
       <strong
         className={`${mono ? "font-mono text-xs" : "text-base"} ${accent ? "text-primary" : "text-ink"} mt-2 block truncate font-semibold tracking-tight`}
-        title={value}
+        title={displayValue}
       >
-        {value}
+        {displayValue}
       </strong>
       {meta ? <span className="mt-1 block text-xs font-medium text-blue-600">{meta}</span> : null}
     </div>
