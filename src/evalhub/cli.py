@@ -15,6 +15,7 @@ from evalhub.domain import (
 )
 from evalhub.engine import EvaluationRunner, ProgressCallback, SampleResultCallback
 from evalhub.evaluators import default_evaluator_registry
+from evalhub.ollama import DEFAULT_OLLAMA_MODEL
 from evalhub.registry import InMemoryRegistry
 
 
@@ -327,7 +328,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run_parser.add_argument("--dataset", choices=sorted(dataset_catalog()), default="gsm8k")
     run_parser.add_argument("--adapter", choices=["ollama", "oracle"], default="ollama")
-    run_parser.add_argument("--model", default="qwen2.5:0.5b")
+    run_parser.add_argument("--model", default=DEFAULT_OLLAMA_MODEL)
     run_parser.add_argument("--base-url", default="http://127.0.0.1:11434")
     # 数量与学科选项控制数据加载范围，不改变数据集和模型身份参数。
     run_parser.add_argument("--limit", type=int, default=None)

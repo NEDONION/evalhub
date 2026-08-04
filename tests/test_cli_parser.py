@@ -8,6 +8,14 @@ from evalhub.cli import build_parser
 class CliParserTest(unittest.TestCase):
     """保护 ``run-benchmark`` 参数解析与全量评测默认语义。"""
 
+    def test_run_benchmark_defaults_to_curated_agent_model(self) -> None:
+        """未指定模型时 CLI 应使用推荐目录的首个平衡模型。"""
+        # 只解析子命令即可验证 CLI 与共享 Ollama 默认值保持一致。
+        args = build_parser().parse_args(["run-benchmark"])
+
+        # 默认标签必须与控制台首选项一致，避免不同入口悄悄评测不同模型。
+        self.assertEqual(args.model, "granite4.1:3b")
+
     def test_run_benchmark_limit_defaults_to_none_for_full_dataset(self) -> None:
         """未提供 ``--limit`` 时应使用 ``None`` 表示完整数据集。"""
         # 只提供必需子命令与数据集，确保断言覆盖解析器自身的默认配置。

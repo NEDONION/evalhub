@@ -300,8 +300,8 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 result = run_real_benchmark(
                     dataset=str(payload.get("dataset", "gsm8k")),
                     adapter_type=str(payload.get("adapter", "ollama")),
-                    model=str(payload.get("model", "qwen2.5:0.5b")),
-                    base_url=str(payload.get("base_url", "http://127.0.0.1:11434")),
+                    model=str(payload.get("model", DEFAULT_OLLAMA_MODEL)),
+                    base_url=str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL)),
                     limit=limit,
                     subject=str(payload.get("subject", "abstract_algebra")),
                 )

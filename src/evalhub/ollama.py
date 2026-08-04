@@ -8,45 +8,39 @@ from urllib.request import urlopen
 
 # 默认连接与模型兼顾开箱即用和低资源机器的本地运行成本。
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:0.5b"
+DEFAULT_OLLAMA_MODEL = "granite4.1:3b"
 
 # 推荐列表提供未安装模型的展示信息，已安装模型仍会在最终选项中优先出现。
 RECOMMENDED_OLLAMA_MODELS = [
     {
-        "name": "qwen2.5:0.5b",
-        "label": "Qwen2.5 0.5B",
-        "description": "默认轻量模型，适合快速验证中文和数学任务。",
-        "estimated_size_bytes": 397_000_000,
+        "name": "granite4.1:3b",
+        "label": "Granite 4.1 3B",
+        "description": "默认轻量 Agent 模型，兼顾编码、工具调用和结构化输出。",
+        "estimated_size_bytes": 2_100_000_000,
     },
     {
-        "name": "qwen2.5:1.5b",
-        "label": "Qwen2.5 1.5B",
-        "description": "轻量中文能力更好，适合本地评测入门。",
-        "estimated_size_bytes": 986_000_000,
+        "name": "qwen2.5-coder:7b",
+        "label": "Qwen2.5 Coder 7B",
+        "description": "5 GB 内的代码专项能力档，适合比较实现与修复能力。",
+        "estimated_size_bytes": 4_700_000_000,
     },
     {
-        "name": "llama3.2:1b",
-        "label": "Llama 3.2 1B",
-        "description": "轻量英文通用模型，适合低资源机器试跑。",
-        "estimated_size_bytes": 1_300_000_000,
+        "name": "granite3.3:8b",
+        "label": "Granite 3.3 8B",
+        "description": "非 Qwen 高能力档，支持代码任务和函数调用。",
+        "estimated_size_bytes": 4_900_000_000,
+    },
+    {
+        "name": "phi4-mini:3.8b",
+        "label": "Phi-4 Mini 3.8B",
+        "description": "轻量推理与函数调用模型，适合作为通用 Agent 对照。",
+        "estimated_size_bytes": 2_500_000_000,
     },
     {
         "name": "llama3.2:3b",
         "label": "Llama 3.2 3B",
-        "description": "通用能力更强，本地运行成本中等。",
+        "description": "轻量通用工具模型，适合低成本 Agent 试跑。",
         "estimated_size_bytes": 2_000_000_000,
-    },
-    {
-        "name": "deepseek-r1:1.5b",
-        "label": "DeepSeek R1 1.5B",
-        "description": "轻量推理模型，适合观察推理题表现。",
-        "estimated_size_bytes": 1_110_000_000,
-    },
-    {
-        "name": "phi3:mini",
-        "label": "Phi-3 Mini",
-        "description": "小型通用模型，适合快速本地实验。",
-        "estimated_size_bytes": 2_200_000_000,
     },
 ]
 
