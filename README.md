@@ -234,11 +234,14 @@ cd /Users/nedonion/PycharmProjects/evalhub
 `input_zh`、`reference_zh` 和中文能力标签是非官方、仅供人工显示的翻译，绝不影响模型提示或得分。
 HumanEval 必须同时具备 Docker daemon 与本地 `evalhub-humaneval:1.0.0` 镜像；缺少任一
 条件会阻塞代码节点，响应会给出 `./scripts/build_humaneval_image.sh`。其他已经成功的节点仍会保留
-为 `partial` 结果，但不完整的 Hexagon 运行不会进入模型成绩比较。
+为 `partial` 结果，但不完整的 Hexagon 运行不会进入模型成绩比较。构建脚本使用
+`python:3.11-slim` 的固定上游摘要，并把 Dockerfile、`verify.py`、`worker.py` 的确定性身份写入
+镜像标签；readiness 会同时核对标签、非 root 用户和入口点，同一轮评测只使用首次核验的不可变镜像 ID。
 
 固定 URL、revision 和 SHA-256 共同构成来源合同。`prepare-dataset` 下载固定 URL 并校验缓存或
-下载文件的 SHA-256；工作流预检会拒绝已安装来源合同漂移。工作流还保存清单 SHA-256、来源
-revision、提示模板版本和生成配置，作为结果的 `reproducibility` 合同。七个官方来源如下：
+下载文件的 SHA-256；工作流预检会拒绝已安装来源合同漂移。完整套件与任一单项 Hexagon 工作流
+都会保存并核对清单 SHA-256；HumanEval 还冻结 verifier 身份。它们与来源 revision、提示模板版本和
+生成配置共同组成结果的 `reproducibility` 合同，恢复时任一身份漂移都会使旧检查点失效。七个官方来源如下：
 
 | Benchmark | 官方来源 | 固定 revision | SHA-256 |
 | --- | --- | --- | --- |

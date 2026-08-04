@@ -19,6 +19,7 @@ from evalhub.benchmarks import (
     aggregate_capability_profile,
     benchmark_readiness,
 )
+from evalhub.benchmarks.humaneval import humaneval_verifier_identity
 from evalhub.datasets import hexagon_source_specs, prepare_dataset
 from evalhub.tasks.executor import (
     SubprocessEvaluationExecutor,
@@ -200,6 +201,8 @@ class PersistentWorkflowExecutor:
         }
         # 先整体核对七条固定来源，防止第三条漂移时前两条已经开始下载。
         self._verify_source_contracts(benchmarks)
+        for benchmark in benchmarks.values():
+            self._verify_verifier_identity(benchmark)
         for benchmark_id in node.input.get("benchmark_ids", []):
             spec = _frozen_benchmark_spec(benchmarks[str(benchmark_id)])
             readiness = self._readiness_checker(spec)
@@ -289,6 +292,25 @@ class PersistentWorkflowExecutor:
             self._repository.clear_node_samples(benchmark.id, message)
         raise RuntimeBlockedError("source_contract_changed", message)
 
+    def _verify_verifier_identity(self, benchmark: EvaluationNode) -> None:
+        """核对 HumanEval 创建时身份与当前三文件执行上下文，并清除旧检查点。
+
+        Args:
+            benchmark: 可能属于 Hexagon HumanEval 的持久化 Benchmark 节点。
+
+        Raises:
+            RuntimeBlockedError: HumanEval 身份缺失或与当前部署字节不一致时抛出。
+        """
+        if benchmark.input.get("benchmark_id") != "hexagon-humaneval":
+            return
+        frozen_identity = benchmark.input.get("verifier_identity")
+        current_identity = humaneval_verifier_identity()
+        if isinstance(frozen_identity, str) and frozen_identity == current_identity:
+            return
+        message = "HumanEval verifier 与任务创建时冻结身份不一致，不能安全恢复"
+        self._repository.clear_node_samples(benchmark.id, message)
+        raise RuntimeBlockedError("verifier_identity_changed", message)
+
     def _run_benchmark(
         self,
         node: EvaluationNode,
@@ -316,6 +338,7 @@ class PersistentWorkflowExecutor:
         benchmark_id = str(node.input["benchmark_id"])
         spec = _frozen_benchmark_spec(node)
         protocol_fingerprint = str(node.input["protocol_fingerprint"])
+        self._verify_verifier_identity(node)
         prepare_node = next(
             item
             for item in self._repository.list_nodes(node.task_id)

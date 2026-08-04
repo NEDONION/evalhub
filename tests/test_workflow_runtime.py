@@ -10,6 +10,7 @@ import pytest
 import evalhub.tasks.runtime as runtime_module
 import evalhub.tasks.workflow as workflow_module
 from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
+from evalhub.benchmarks.humaneval import humaneval_verifier_identity
 from evalhub.datasets import PinnedSource, hexagon_source_specs
 from evalhub.tasks import (
     EvaluationSampleCheckpoint,
@@ -348,7 +349,16 @@ def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_sixty_samples
         for node in benchmarks
     )
     ifeval = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-ifeval")
+    humaneval = next(
+        node for node in benchmarks if node.input["benchmark_id"] == "hexagon-humaneval"
+    )
+    finalizer = next(node for node in graph if node.kind == "workflow_finalize")
     assert ifeval.input["dataset_revision"] == "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
+    assert humaneval.input["verifier_identity"] == humaneval_verifier_identity()
+    assert (
+        finalizer.input["reproducibility"]["humaneval_verifier_identity"]
+        == humaneval.input["verifier_identity"]
+    )
 
 
 def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
@@ -374,6 +384,12 @@ def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
         workflow_module,
         "_hexagon_manifest_sha256",
         lambda: "a" * 64,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'a' * 64}",
         raising=False,
     )
     baseline = fingerprint()
@@ -421,6 +437,13 @@ def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
         raising=False,
     )
     changed_source_fingerprint = fingerprint()
+    monkeypatch.setattr(
+        workflow_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'b' * 64}",
+        raising=False,
+    )
+    changed_verifier_fingerprint = fingerprint()
 
     assert len(
         {
@@ -430,8 +453,9 @@ def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
             changed_prompt_fingerprint,
             changed_generation_fingerprint,
             changed_source_fingerprint,
+            changed_verifier_fingerprint,
         }
-    ) == 6
+    ) == 7
 
 
 def test_hexagon_workflow_freezes_complete_pinned_source_contracts() -> None:
@@ -473,7 +497,10 @@ def test_standalone_hexagon_text_prepares_and_executes_with_matching_contract(
     """
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
     task_request = request(dataset="hexagon-gsm8k")
-    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    graph = build_workflow(task_request)
+    benchmark = next(node for node in graph if node.kind == "benchmark")
+    frozen_manifest = str(benchmark.input["manifest_sha256"])
+    task = repository.create_with_nodes(task_request, graph)
     asset = tmp_path / "hexagon-gsm8k.jsonl"
     asset.write_text("fixed source", encoding="utf-8")
     preparation_calls: list[str] = []
@@ -496,6 +523,8 @@ def test_standalone_hexagon_text_prepares_and_executes_with_matching_contract(
     assert preparation_calls == ["hexagon-gsm8k"]
     assert fake.attempts == {"hexagon-gsm8k": 1}
     assert result["status"] == "success"
+    assert len(frozen_manifest) == 64
+    assert result["reproducibility"]["manifest_sha256"] == frozen_manifest
     assert set(result["reproducibility"]["source_contracts"]) == {"hexagon-gsm8k"}
 
 
@@ -879,13 +908,26 @@ def test_runtime_uses_creation_frozen_protocol_after_registry_changes(
     assert all(output["prompt_template_version"] == "evalhub-v1" for output in benchmark_outputs)
 
 
+@pytest.mark.parametrize(
+    "task_request",
+    [
+        pytest.param(request(suite_id="evalhub-hexagon-v1"), id="full-suite"),
+        pytest.param(request(dataset="hexagon-gsm8k"), id="standalone"),
+    ],
+)
 def test_runtime_blocks_same_bytes_resume_when_packaged_manifest_changed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    task_request: TaskRequest,
 ) -> None:
-    """来源字节未变但包内清单漂移时，旧检查点必须清空且不得送入跳过集合。"""
+    """完整或单项 Hexagon 清单漂移时，旧检查点都不得复用或发布。
+
+    Args:
+        tmp_path: pytest 隔离数据库与固定字节伪资产目录。
+        monkeypatch: 把运行部署的包内清单摘要替换为另一组固定字节。
+        task_request: 参数化的完整 Suite 或单项 Hexagon 请求。
+    """
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
-    task_request = request(suite_id="evalhub-hexagon-v1")
     task = repository.create_with_nodes(task_request, build_workflow(task_request))
     nodes = repository.list_nodes(task.id)
     prepare = next(node for node in nodes if node.kind == "prepare_assets")
@@ -957,6 +999,90 @@ def test_runtime_blocks_same_bytes_resume_when_packaged_manifest_changed(
     finalizer = next(
         node for node in repository.list_nodes(task.id) if node.kind == "workflow_finalize"
     )
+    assert finalizer.output["reproducibility"] == frozen_reproducibility
+    assert finalizer.output["total_samples"] == 0
+
+
+def test_runtime_blocks_humaneval_resume_when_verifier_identity_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """部署更换 verifier 字节后必须清空 HumanEval 检查点并阻止继续执行。
+
+    Args:
+        tmp_path: pytest 隔离数据库与不变 HumanEval 伪资产目录。
+        monkeypatch: 把运行部署的 verifier 身份替换为另一个合法摘要。
+    """
+    repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
+    task_request = request(dataset="hexagon-humaneval")
+    task = repository.create_with_nodes(task_request, build_workflow(task_request))
+    prepare, benchmark = repository.list_nodes(task.id)[:2]
+    frozen_fingerprint = str(benchmark.input["protocol_fingerprint"])
+    frozen_reproducibility = next(
+        node for node in repository.list_nodes(task.id) if node.kind == "workflow_finalize"
+    ).input["reproducibility"]
+    asset = tmp_path / "HumanEval.jsonl.gz"
+    asset.write_bytes(b"unchanged source bytes")
+    content_sha256 = hashlib.sha256(asset.read_bytes()).hexdigest()
+    repository.start_node(prepare.id)
+    repository.complete_node(
+        prepare.id,
+        {
+            "assets": {
+                "hexagon-humaneval": {
+                    "status": "ready",
+                    "path": str(asset),
+                    "content_sha256": content_sha256,
+                    "dataset_revision": benchmark.input["dataset_revision"],
+                }
+            }
+        },
+    )
+    running = repository.start_node(benchmark.id)
+    repository.record_sample(
+        running.id,
+        EvaluationSampleCheckpoint(
+            node_id=running.id,
+            sample_key="hexagon-humaneval-1",
+            sample_index=0,
+            status="success",
+            attempt_count=1,
+            input={"protocol_fingerprint": frozen_fingerprint},
+            result={
+                "sample_id": "hexagon-humaneval-1",
+                "score": 1.0,
+                "protocol_fingerprint": frozen_fingerprint,
+            },
+        ),
+        completed=1,
+        total=10,
+        content_sha256=content_sha256,
+    )
+    repository.reschedule_node(running.id, "connection_reset", "fixture retry")
+    monkeypatch.setattr(
+        runtime_module,
+        "humaneval_verifier_identity",
+        lambda: f"sha256:{'f' * 64}",
+        raising=False,
+    )
+    fake = FakeBenchmarkExecutor()
+    runtime = PersistentWorkflowExecutor(repository, benchmark_executor=fake)
+
+    with pytest.raises(WorkflowIncompleteError):
+        runtime.execute(
+            task.id,
+            task_request,
+            on_progress=lambda completed, total: None,
+            on_resources=lambda usage: None,
+            cancel_event=Event(),
+        )
+
+    completed = repository.list_nodes(task.id)
+    restored = next(node for node in completed if node.kind == "benchmark")
+    finalizer = next(node for node in completed if node.kind == "workflow_finalize")
+    assert restored.error_type == "verifier_identity_changed"
+    assert repository.list_samples(restored.id).items == ()
+    assert fake.seen_skips == []
     assert finalizer.output["reproducibility"] == frozen_reproducibility
     assert finalizer.output["total_samples"] == 0
 

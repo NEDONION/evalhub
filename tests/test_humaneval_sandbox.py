@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from dataclasses import replace
@@ -22,6 +23,7 @@ from evalhub.benchmarks.humaneval import (
     HumanEvalProblem,
     SandboxInfrastructureError,
     SandboxResult,
+    humaneval_verifier_identity,
     load_humaneval_problems,
     run_humaneval_benchmark,
 )
@@ -29,6 +31,8 @@ from evalhub.benchmarks.readiness import benchmark_readiness
 from evalhub.datasets.hexagon_manifest import HexagonSampleSpec
 
 _IMAGE_ID = f"sha256:{'a' * 64}"
+_REPLACEMENT_IMAGE_ID = f"sha256:{'c' * 64}"
+_VERIFIER_IDENTITY = humaneval_verifier_identity()
 _CONTAINER_TOKEN = "b" * 32
 _CONTAINER_NAME = f"evalhub-humaneval-{_CONTAINER_TOKEN}"
 _CLEANUP_QUERY = [
@@ -41,8 +45,48 @@ _CLEANUP_QUERY = [
     f"name={_CONTAINER_NAME}",
 ]
 _IMAGE_INSPECT_OUTPUT = (
-    f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]\n'
+    f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]'
+    f"\t{_VERIFIER_IDENTITY}\n"
 )
+
+
+def test_dockerfile_pins_official_python_base_by_immutable_digest() -> None:
+    """HumanEval 基础镜像必须保留可读标签并绑定已核验的官方多架构摘要。"""
+    first_line = Path("docker/hexagon-humaneval/Dockerfile").read_text(
+        encoding="utf-8"
+    ).splitlines()[0]
+
+    assert first_line == (
+        "FROM python:3.11-slim@sha256:"
+        "db3ff2e1800a8581e2c48a27c3995339d47bdf046da21c7627accd3d51053a93"
+    )
+
+
+@pytest.mark.parametrize("changed_file", ["Dockerfile", "verify.py", "worker.py"])
+def test_verifier_identity_is_stable_and_sensitive_to_every_execution_file(
+    tmp_path: Path,
+    changed_file: str,
+) -> None:
+    """固定文件帧应产生稳定摘要，任一执行文件字节变化都必须改变身份。
+
+    Args:
+        tmp_path: pytest 隔离的最小 Docker 构建上下文。
+        changed_file: 本轮需要改写并证明纳入摘要的固定文件名。
+    """
+    files = {
+        "Dockerfile": b"FROM base\n",
+        "verify.py": b"print('verify')\n",
+        "worker.py": b"print('worker')\n",
+    }
+    for name, content in reversed(tuple(files.items())):
+        (tmp_path / name).write_bytes(content)
+
+    baseline = humaneval_verifier_identity(tmp_path)
+    assert baseline == "sha256:3a3dc840ff1f44cec08498b3c02001d114d1c375e66903c6a32965116aabaf17"
+    assert humaneval_verifier_identity(tmp_path) == baseline
+
+    (tmp_path / changed_file).write_bytes(files[changed_file] + b"changed")
+    assert humaneval_verifier_identity(tmp_path) != baseline
 
 
 def _confirmed_cleanup_result(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -598,6 +642,45 @@ def test_docker_command_has_fixed_isolation_and_no_host_mount() -> None:
     assert not any(item in {"-v", "--volume", "--mount"} for item in command)
 
 
+def test_build_script_labels_image_with_current_verifier_identity(tmp_path: Path) -> None:
+    """构建脚本必须调用共享算法，并把当前 verifier 身份写入镜像标签。
+
+    Args:
+        tmp_path: pytest 隔离的伪 Docker 可执行文件与参数记录目录。
+    """
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    arguments = tmp_path / "docker-arguments"
+    docker = fake_bin / "docker"
+    docker.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$EVALHUB_DOCKER_ARGS"\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    environment = dict(os.environ)
+    environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
+    environment["EVALHUB_DOCKER_ARGS"] = str(arguments)
+
+    completed = subprocess.run(
+        ["bash", "scripts/build_humaneval_image.sh"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+        env=environment,
+    )
+
+    assert completed.returncode == 0
+    assert arguments.read_text(encoding="utf-8").splitlines() == [
+        "build",
+        "--label",
+        f"io.evalhub.humaneval.verifier.sha256={_VERIFIER_IDENTITY}",
+        "--tag",
+        "evalhub-humaneval:1.0.0",
+        str(Path("docker/hexagon-humaneval").resolve()),
+    ]
+
+
 def test_sandbox_sends_hidden_payload_only_to_fixed_docker_stdin() -> None:
     """宿主只应把四个执行字段写入固定容器 stdin，并接受最小通过对象。"""
     calls: list[tuple[list[str], dict[str, object]]] = []
@@ -638,6 +721,42 @@ def test_sandbox_sends_hidden_payload_only_to_fixed_docker_stdin() -> None:
     }
     assert command == sandbox.command(image_id=_IMAGE_ID, container_name=_CONTAINER_NAME)
     assert kwargs["timeout"] == 10
+
+
+def test_sandbox_caches_one_validated_image_id_across_samples() -> None:
+    """同一沙箱的多题运行只能解析一次标签，并始终使用首次验证的不可变 ID。"""
+    inspect_calls = 0
+    run_image_ids: list[str] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """第二次标签检查会返回替代 ID，用于证明生产代码不会再次解析标签。
+
+        Args:
+            command: 固定镜像检查或容器运行参数。
+            **kwargs: subprocess 兼容参数，本测试不读取其中的隐藏载荷。
+
+        Returns:
+            镜像检查返回合法配置，容器运行返回固定通过判定。
+        """
+        del kwargs
+        nonlocal inspect_calls
+        if command[1:3] == ["image", "inspect"]:
+            inspect_calls += 1
+            image_id = _IMAGE_ID if inspect_calls == 1 else _REPLACEMENT_IMAGE_ID
+            output = (
+                f'{image_id}\t10001:10001\t["python","/opt/evalhub/verify.py"]'
+                f"\t{_VERIFIER_IDENTITY}\n"
+            )
+            return subprocess.CompletedProcess(command, 0, output, "")
+        run_image_ids.append(command[-1])
+        return subprocess.CompletedProcess(command, 0, '{"passed": true}\n', "")
+
+    sandbox = DockerHumanEvalSandbox(command_runner=runner)
+    sandbox.run(_problem(), "    return 1\n")
+    sandbox.run(_problem(), "    return 1\n")
+
+    assert inspect_calls == 1
+    assert run_image_ids == [_IMAGE_ID, _IMAGE_ID]
 
 
 @pytest.mark.parametrize(
@@ -940,6 +1059,46 @@ def test_sandbox_rejects_untrusted_local_image_before_sending_payload(
     assert len(calls) == 1
     assert "input" not in calls[0][1]
     assert "SECRET_HIDDEN_TEST" not in json.dumps(calls)
+
+
+@pytest.mark.parametrize(
+    "inspect_output",
+    [
+        f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]\n',
+        (
+            f'{_IMAGE_ID}\t10001:10001\t["python","/opt/evalhub/verify.py"]'
+            f"\tsha256:{'d' * 64}\n"
+        ),
+    ],
+)
+def test_sandbox_rejects_missing_or_stale_verifier_label_before_payload(
+    inspect_output: str,
+) -> None:
+    """固定标签缺少或携带旧 verifier 身份时必须在发送隐藏载荷前拒绝。
+
+    Args:
+        inspect_output: 缺少标签或携带旧执行上下文摘要的镜像元数据。
+    """
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """记录唯一允许的镜像检查并返回参数化 verifier 标签。
+
+        Args:
+            command: 应为固定本地标签的只读检查命令。
+            **kwargs: 检查参数，不得含候选或隐藏测试标准输入。
+
+        Returns:
+            命令成功但 verifier 身份不可信的镜像元数据。
+        """
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, inspect_output, "")
+
+    with pytest.raises(SandboxInfrastructureError, match="^image_untrusted$"):
+        DockerHumanEvalSandbox(command_runner=runner).run(_problem(), "    return 1\n")
+
+    assert len(calls) == 1
+    assert "input" not in calls[0][1]
 
 
 def test_sandbox_rejects_unexpected_verifier_fields() -> None:

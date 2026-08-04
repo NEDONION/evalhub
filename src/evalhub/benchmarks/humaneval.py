@@ -25,9 +25,16 @@ TokenFactory = Callable[[], str]
 _IMAGE = "evalhub-humaneval:1.0.0"
 _IMAGE_USER = "10001:10001"
 _IMAGE_ENTRYPOINT = ["python", "/opt/evalhub/verify.py"]
-_IMAGE_INSPECT_FORMAT = "{{.Id}}\t{{.Config.User}}\t{{json .Config.Entrypoint}}"
+_VERIFIER_LABEL = "io.evalhub.humaneval.verifier.sha256"
+_IMAGE_INSPECT_FORMAT = (
+    "{{.Id}}\t{{.Config.User}}\t{{json .Config.Entrypoint}}\t"
+    f'{{{{index .Config.Labels "{_VERIFIER_LABEL}"}}}}'
+)
 _IMAGE_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _CONTAINER_NAME_PATTERN = re.compile(r"evalhub-humaneval-[0-9a-f]{32}")
+_VERIFIER_CONTEXT = Path(__file__).resolve().parents[3] / "docker/hexagon-humaneval"
+_VERIFIER_FILES = ("Dockerfile", "verify.py", "worker.py")
+_VERIFIER_FRAME_VERSION = b"evalhub-humaneval-verifier-v1\0"
 _MAX_PAYLOAD_BYTES = 1024 * 1024
 _MAX_RESULT_BYTES = 1024
 _VERIFICATION_FAILURE_REASONS = frozenset({"timeout", "verification_failed"})
@@ -111,6 +118,32 @@ class HumanEvalSandbox(Protocol):
         """在隔离边界验证一次候选，并返回不含源码的安全结果。"""
 
 
+def humaneval_verifier_identity(context: Path | None = None) -> str:
+    """计算固定 HumanEval 镜像执行上下文的稳定内容身份。
+
+    Args:
+        context: 可选 Docker 构建上下文；缺省读取仓库内固定 verifier 目录。
+
+    Returns:
+        以 ``sha256:`` 开头的内容摘要；文件名与字节长度均使用固定大端帧。
+
+    Raises:
+        OSError: 任一固定文件不存在或不可读时保留文件系统诊断。
+    """
+    root = context if context is not None else _VERIFIER_CONTEXT
+    digest = hashlib.sha256()
+    digest.update(_VERIFIER_FRAME_VERSION)
+    for filename in _VERIFIER_FILES:
+        name = filename.encode("utf-8")
+        content = (root / filename).read_bytes()
+        # 显式长度帧消除文件名和内容拼接歧义，且不受目录顺序或时间戳影响。
+        digest.update(len(name).to_bytes(4, "big"))
+        digest.update(name)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return f"sha256:{digest.hexdigest()}"
+
+
 class DockerHumanEvalSandbox:
     """通过无网络、无宿主挂载的固定 Docker 镜像验证一个 HumanEval 候选。"""
 
@@ -121,15 +154,19 @@ class DockerHumanEvalSandbox:
         *,
         command_runner: CommandRunner = subprocess.run,
         token_factory: TokenFactory | None = None,
+        verifier_identity: str | None = None,
     ) -> None:
         """注入宿主命令边界，生产环境缺省使用 ``subprocess.run``。
 
         Args:
             command_runner: 接收固定 argv、stdin 和超时参数的文本命令执行器。
             token_factory: 测试可注入的容器名随机令牌生成器；生产缺省使用 UUID4。
+            verifier_identity: 可选的期望执行上下文身份；缺省在首次运行时读取固定文件。
         """
         self._command_runner = command_runner
         self._token_factory = token_factory or _container_token
+        self._verifier_identity = verifier_identity
+        self._image_id: str | None = None
 
     def command(self, *, image_id: str, container_name: str) -> list[str]:
         """返回固定 Docker argv，以不可变镜像 ID 和 controller 名字运行容器。
@@ -183,7 +220,13 @@ class DockerHumanEvalSandbox:
         Raises:
             SandboxInfrastructureError: 镜像、Docker、协议或宿主硬超时不可信时抛出。
         """
-        image_id = resolve_humaneval_image(self._command_runner)
+        # 一个 Benchmark 运行只解析一次可变标签；后续题目始终复用首次验证的不可变 ID。
+        if self._image_id is None:
+            self._image_id = resolve_humaneval_image(
+                self._command_runner,
+                verifier_identity=self._verifier_identity,
+            )
+        image_id = self._image_id
         try:
             payload = _sandbox_payload(problem, completion)
         except ValueError as exc:
@@ -310,11 +353,16 @@ def _container_token() -> str:
     return uuid.uuid4().hex
 
 
-def resolve_humaneval_image(command_runner: CommandRunner = subprocess.run) -> str:
-    """检查固定本地标签的用户、入口点和 ID，并返回不可变镜像 ID。
+def resolve_humaneval_image(
+    command_runner: CommandRunner = subprocess.run,
+    *,
+    verifier_identity: str | None = None,
+) -> str:
+    """检查固定本地标签的用户、入口点、verifier 标签和不可变镜像 ID。
 
     Args:
         command_runner: 用于只读 ``docker image inspect`` 的可替换命令边界。
+        verifier_identity: 可选期望执行上下文身份；缺省计算当前固定文件摘要。
 
     Returns:
         与固定标签当前指向一致、格式合法的 ``sha256:...`` 镜像 ID。
@@ -349,13 +397,20 @@ def resolve_humaneval_image(command_runner: CommandRunner = subprocess.run) -> s
     try:
         if len(completed.stdout.encode("utf-8")) > _MAX_RESULT_BYTES:
             raise ValueError("image metadata is too large")
-        image_id, user, entrypoint_raw = completed.stdout.rstrip("\n").split("\t")
+        image_id, user, entrypoint_raw, image_identity = completed.stdout.rstrip(
+            "\n"
+        ).split("\t")
         entrypoint = json.loads(entrypoint_raw)
     except (AttributeError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         raise SandboxInfrastructureError("image_untrusted") from exc
     if _IMAGE_ID_PATTERN.fullmatch(image_id) is None or user != _IMAGE_USER:
         raise SandboxInfrastructureError("image_untrusted")
     if entrypoint != _IMAGE_ENTRYPOINT:
+        raise SandboxInfrastructureError("image_untrusted")
+    expected_identity = (
+        verifier_identity if verifier_identity is not None else humaneval_verifier_identity()
+    )
+    if image_identity != expected_identity:
         raise SandboxInfrastructureError("image_untrusted")
     return image_id
 

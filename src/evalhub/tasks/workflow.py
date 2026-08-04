@@ -10,6 +10,7 @@ from evalhub.benchmarks import (
     get_benchmark_spec,
     get_suite_spec,
 )
+from evalhub.benchmarks.humaneval import humaneval_verifier_identity
 from evalhub.datasets import PinnedSource, dataset_catalog, hexagon_source_specs
 from evalhub.tasks.models import TaskRequest, WorkflowNodeSpec
 
@@ -38,13 +39,14 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
     """
     suite = workflow_suite(request)
     specs = tuple(get_benchmark_spec(item) for item in suite.benchmark_ids)
-    manifest_sha256 = (
-        _hexagon_manifest_sha256() if suite.id == "evalhub-hexagon-v1" else None
-    )
+    hexagon_ids = tuple(spec.id for spec in specs if spec.id.startswith("hexagon-"))
+    manifest_sha256 = _hexagon_manifest_sha256() if hexagon_ids else None
     datasets = dataset_catalog()
     # 由成员而非 Suite ID 识别 Hexagon，使单项与完整套件共享同一固定来源边界。
-    hexagon_ids = tuple(spec.id for spec in specs if spec.id.startswith("hexagon-"))
     pinned_sources = hexagon_source_specs() if hexagon_ids else {}
+    verifier_identity = (
+        humaneval_verifier_identity() if "hexagon-humaneval" in hexagon_ids else None
+    )
     source_contracts: dict[str, dict[str, str]] = {}
     for benchmark_id in hexagon_ids:
         source = pinned_sources.get(benchmark_id)
@@ -56,6 +58,7 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
             spec,
             datasets[spec.id].evaluator_type if spec.id in datasets else spec.metric,
             source_contracts.get(spec.id),
+            verifier_identity if spec.id == "hexagon-humaneval" else None,
         )
         for spec in specs
     ]
@@ -72,6 +75,8 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
     # 最终结果直接发布创建时冻结合同，不能在终结阶段重新读取当前部署固定来源。
     if source_contracts:
         reproducibility["source_contracts"] = source_contracts
+    if verifier_identity is not None:
+        reproducibility["humaneval_verifier_identity"] = verifier_identity
     benchmark_keys = tuple(f"benchmark:{item}" for item in suite.benchmark_ids)
     nodes: list[WorkflowNodeSpec] = [
         WorkflowNodeSpec(
@@ -148,6 +153,7 @@ def _benchmark_protocol(
     spec: BenchmarkSpec,
     evaluator_type: str,
     source_contract: dict[str, str] | None = None,
+    verifier_identity: str | None = None,
 ) -> dict[str, object]:
     """把 Registry 规格冻结为后续运行无需重新查询的 JSON 协议事实。
 
@@ -155,6 +161,7 @@ def _benchmark_protocol(
         spec: 创建任务时读取的一条不可变 Benchmark 规格。
         evaluator_type: 创建时数据集目录为该 Benchmark 选择的评分器类型。
         source_contract: Hexagon 在创建时读取的 Task 2 固定下载合同；其他套件为空。
+        verifier_identity: HumanEval 固定镜像三文件执行上下文身份；其他成员为空。
 
     Returns:
         覆盖执行、评分、归一化、来源 revision 和固定下载合同的完整 JSON 映射。
@@ -184,6 +191,8 @@ def _benchmark_protocol(
     # 仅 Hexagon 增加该字段，避免改变非 Hexagon 工作流的持久化兼容形状。
     if source_contract is not None:
         protocol["source_contract"] = dict(source_contract)
+    if verifier_identity is not None:
+        protocol["verifier_identity"] = verifier_identity
     return protocol
 
 
