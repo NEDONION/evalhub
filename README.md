@@ -109,8 +109,9 @@ flowchart TB
 `data/` 和 Ollama 都在本机；本图只展示当前实现，不把规划中的组件混入其中。
 
 Web 异步模型评测使用持久化节点工作流。当前 Registry 预设 13 个真实主流 Benchmark；
-`GSM8K` 和 `MMLU` 已接通原生本地执行器，其余项目会明确显示执行器未配置并阻塞，
-不会生成虚假分数。行业能力套件固定用全部官方 MMLU 学科，并汇总成功节点形成六维画像和
+`GSM8K`、`MMLU` 使用原生执行器，生成型任务通过 Ollama Chat Completions 运行，代码任务使用
+Docker。ARC、MuSR、HellaSwag、TruthfulQA 和 BBQ 的官方协议需要 prompt logprobs，当前 Ollama
+不提供该字段，因此会明确阻塞而不是生成虚假分数。行业能力套件固定用全部官方 MMLU 学科，并汇总成功节点形成六维画像和
 覆盖率；真实本地资产的 SHA-256 会写入节点和 Benchmark 结果，便于复现实验。
 
 ## 快速开始
@@ -225,8 +226,9 @@ cd /Users/nedonion/PycharmProjects/evalhub
 
 ## Professional Hexagon Mini Suite
 
-`evalhub-hexagon-v1` 是一个可复现的 60 次模型调用 Mini Suite：知识、指令遵循、数学、综合
-推理、代码各 10 条，安全可信由 TruthfulQA 和 BBQ 各 5 条合计 10 条。它用于本地能力画像，
+`evalhub-hexagon-v1` 是一个可复现的 30 次模型调用 Mini Suite：知识、指令遵循、数学、综合
+推理、代码各 5 条，安全可信由 TruthfulQA 3 条和 BBQ 2 条合计 5 条。当前协议版本为
+`1.1.0`。它用于本地能力画像，
 **不是**七个上游 Benchmark 的完整官方分数，不能与其论文或排行榜分数直接比较。
 
 先从仓库根目录准备全部固定资产、构建代码评分镜像，再启动控制台：
@@ -278,8 +280,8 @@ cd /Users/nedonion/PycharmProjects/evalhub
 ./scripts/start_local.sh
 ```
 
-首次启动会安装固定版本的 `lm-eval` 官方评测运行时。若 Docker Desktop 已启动，脚本还会构建
-`evalhub-lm-eval:0.4.12` 隔离镜像用于 HumanEval 和 MBPP；其他 11 项 Benchmark 不依赖该镜像。
+首次启动会安装固定版本的 `lm-eval` 官方评测运行时。交互式启动会按需打开 Docker Desktop，
+并构建 `evalhub-lm-eval:0.4.12` 与固定 Hexagon HumanEval verifier 镜像。
 页面打开后，“资产管理”会列出行业套件的全部 13 项数据集，首次评测或点击“缓存”时下载真实公开数据。
 
 ```mermaid

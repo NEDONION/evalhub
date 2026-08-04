@@ -40,10 +40,13 @@ def test_hexagon_suite_has_fixed_source_counts_and_six_dimensions() -> None:
     suite = get_suite_spec("evalhub-hexagon-v1")
     specs = [get_benchmark_spec(item) for item in suite.benchmark_ids]
 
-    assert [item.expected_sample_count for item in specs] == [10, 10, 10, 10, 10, 5, 5]
+    assert [item.expected_sample_count for item in specs] == [5, 5, 5, 5, 5, 3, 2]
+    assert suite.version == "1.1.0"
+    assert all(item.version == "1.1.0" for item in specs)
     assert {item.capability for item in specs} == set(Capability)
     assert all(item.normalization == NormalizationKind.SCALE_100 for item in specs)
-    assert sum(item.weight for item in specs if item.capability == Capability.SAFETY_TRUST) == 1
+    safety_specs = [item for item in specs if item.capability == Capability.SAFETY_TRUST]
+    assert [item.weight for item in safety_specs] == [0.6, 0.4]
 
 
 def test_registry_returns_new_mappings_with_stable_members() -> None:

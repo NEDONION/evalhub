@@ -14,7 +14,7 @@
 # distributed under the License is distributed on an "AS IS" BASIS,
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 
-"""实现 Hexagon 选定十条 IFEval 官方提示级严格评分规则。"""
+"""实现 Hexagon 选定五条 IFEval 官方提示级严格评分规则。"""
 
 import json
 import re
@@ -99,7 +99,7 @@ def validate_ifeval_rules(
         已确认规则均受支持、顺序对应的规则标识和参数对象列表。
 
     Raises:
-        ValueError: 元数据结构、规则标识或规则参数不符合本地十条规则契约时抛出。
+        ValueError: 元数据结构、规则标识或规则参数不符合本地五条规则契约时抛出。
     """
     if metadata is None:
         raise ValueError("IFEval metadata is required")
@@ -117,7 +117,7 @@ def validate_ifeval_rules(
         raise ValueError(f"unsupported IFEval instruction: {unsupported[0]}")
     if any(not isinstance(item, dict) for item in arguments):
         raise ValueError("IFEval kwargs entries must be objects")
-    # 固定清单只允许这十条规则的原始官方参数形状，加载和评分必须共用同一边界。
+    # 固定清单只允许这五条规则的原始官方参数形状，加载和评分必须共用同一边界。
     for instruction_id, item_arguments in zip(instruction_ids, arguments, strict=True):
         _validate_rule_arguments(instruction_id, item_arguments)
     return instruction_ids, arguments

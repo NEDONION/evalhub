@@ -387,8 +387,7 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
                 if native is not None
                 else f".runtime/benchmarks/{benchmark.id}.json"
             )
-            path = Path(local_path)
-            prepared = path.exists() and (path.is_file() or any(path.glob("*")))
+            prepared = _dataset_is_prepared(benchmark.id)
             # 未准备的数据集不尝试加载；准备完成后尽可能计算控制台展示用样本数。
             sample_count = benchmark.expected_sample_count
             if prepared and native is not None:
@@ -515,7 +514,7 @@ def _dataset_is_prepared(dataset: str) -> bool:
         dataset: 数据集目录中已注册的稳定名称。
 
     Returns:
-        本地路径为文件或包含任意资产时返回 ``True``。
+        原生资产存在，或外部任务标记确认已真实加载数据时返回 ``True``。
 
     Raises:
         KeyError: 数据集名称未在公开目录注册。
@@ -523,9 +522,14 @@ def _dataset_is_prepared(dataset: str) -> bool:
     benchmark = get_benchmark_spec(dataset)
     if benchmark.executor == ExecutorKind.NATIVE:
         path = Path(dataset_catalog()[dataset].local_path)
-    else:
-        path = Path(f".runtime/benchmarks/{dataset}.json")
-    return path.exists() and (path.is_file() or any(path.glob("*")))
+        return path.exists() and (path.is_file() or any(path.glob("*")))
+
+    marker = Path(f".runtime/benchmarks/{dataset}.json")
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("preparation") == "task_data_loaded"
 
 
 def _benchmark_catalog() -> dict[str, object]:

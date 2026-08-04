@@ -69,6 +69,17 @@ def test_dataset_catalog_uses_pinned_hexagon_paths() -> None:
     assert catalog["hexagon-humaneval"].evaluator_type == "pass@1"
 
 
+@pytest.mark.parametrize(
+    "benchmark_id",
+    ("hexagon-mmlu", "hexagon-truthfulqa", "hexagon-bbq"),
+)
+def test_hexagon_multiple_choice_catalog_uses_choice_letter_evaluator(
+    benchmark_id: str,
+) -> None:
+    """固定选择题入口必须使用已注册且与规范化样本一致的字母评分器。"""
+    assert dataset_catalog()[benchmark_id].evaluator_type == "choice_letter"
+
+
 def test_hexagon_ifeval_catalog_type_dispatches_to_the_registered_evaluator() -> None:
     """目录中 IFEval 的评测器类型必须可由默认注册表创建严格评分器。"""
     evaluator_type = dataset_catalog()["hexagon-ifeval"].evaluator_type

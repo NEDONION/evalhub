@@ -527,7 +527,7 @@ def load_selected_humaneval_rows(
     selected = set(requested)
     rows: dict[str, HumanEvalSourceRow] = {}
 
-    # 逐行只暂存命中的十条记录，避免完整测试集的标准实现和隐藏测试长期驻留内存。
+    # 逐行只暂存命中的五条记录，避免完整测试集的标准实现和隐藏测试长期驻留内存。
     with gzip.open(path, "rt", encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
             payload = json.loads(line)

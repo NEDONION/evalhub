@@ -54,7 +54,11 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
     }
     # Hexagon 原始资产由固定来源目录统一定义，目录条目只补充加载和展示所需的信息。
     attributes = {
-        "hexagon-mmlu": ("multiple_choice", "acc", "https://github.com/hendrycks/test"),
+        "hexagon-mmlu": (
+            "multiple_choice",
+            "choice_letter",
+            "https://github.com/hendrycks/test",
+        ),
         "hexagon-ifeval": (
             "instruction_following",
             "ifeval_strict",
@@ -63,8 +67,16 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
         "hexagon-gsm8k": ("math_reasoning", "exact_match", "https://github.com/openai/grade-school-math"),
         "hexagon-bbh": ("reasoning", "exact_match", "https://github.com/suzgunmirac/BIG-Bench-Hard"),
         "hexagon-humaneval": ("code_generation", "pass@1", "https://github.com/openai/human-eval"),
-        "hexagon-truthfulqa": ("multiple_choice", "acc", "https://github.com/sylinrl/TruthfulQA"),
-        "hexagon-bbq": ("multiple_choice", "acc", "https://github.com/nyu-mll/BBQ"),
+        "hexagon-truthfulqa": (
+            "multiple_choice",
+            "choice_letter",
+            "https://github.com/sylinrl/TruthfulQA",
+        ),
+        "hexagon-bbq": (
+            "multiple_choice",
+            "choice_letter",
+            "https://github.com/nyu-mll/BBQ",
+        ),
     }
     # 每个固定来源都生成对应入口，缓存位置和下载 URL 不在目录中重复维护。
     for benchmark_id, source in hexagon_source_specs().items():

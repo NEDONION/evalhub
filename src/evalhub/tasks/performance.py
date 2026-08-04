@@ -8,7 +8,7 @@ from evalhub.tasks.models import EvaluationTask
 
 PerformanceScopeKind = Literal["benchmark", "suite"]
 _HEXAGON_SUITE_ID = "evalhub-hexagon-v1"
-_HEXAGON_SAMPLE_COUNT = 60
+_HEXAGON_SAMPLE_COUNT = 30
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ def _is_comparable(task: EvaluationTask) -> bool:
         task: 不含大型结果正文、但包含请求、终态和样本计数的任务摘要。
 
     Returns:
-        非成功、Agent 或无分任务返回 ``False``；Hexagon 还必须是 60 题全量运行。
+        非成功、Agent 或无分任务返回 ``False``；Hexagon 还必须是 30 题全量运行。
     """
     if (
         task.status != "success"

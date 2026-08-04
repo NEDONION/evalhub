@@ -385,13 +385,13 @@ def test_suite_freezes_mmlu_to_all_subjects() -> None:
     assert mmlu.input["subject"] == "all"
 
 
-def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_sixty_samples() -> None:
+def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_thirty_samples() -> None:
     """Hexagon 工作流应冻结七个来源的题数、revision、提示版本和生成配置。"""
     graph = build_workflow(request(suite_id="evalhub-hexagon-v1"))
     benchmarks = [node for node in graph if node.kind == "benchmark"]
 
     assert len(benchmarks) == 7
-    assert sum(int(node.input["expected_sample_count"]) for node in benchmarks) == 60
+    assert sum(int(node.input["expected_sample_count"]) for node in benchmarks) == 30
     assert all(node.input["prompt_template_version"] == "evalhub-v1" for node in benchmarks)
     assert all(
         node.input["generation_config"] == {"temperature": 0, "num_predict": 256}
@@ -952,7 +952,7 @@ def test_runtime_uses_creation_frozen_protocol_after_registry_changes(
     assert result["reproducibility"] == frozen_reproducibility
     assert result["comparison_fingerprint"] == frozen_fingerprint
     assert result["benchmark"] == "EvalHub 专业六边形套件 v1"
-    assert result["capability_profile"]["suite_version"] == "1.0.0"
+    assert result["capability_profile"]["suite_version"] == "1.1.0"
     assert all(output["protocol_fingerprint"] == frozen_fingerprint for output in benchmark_outputs)
     assert all(output["prompt_template_version"] == "evalhub-v1" for output in benchmark_outputs)
 
@@ -1136,10 +1136,10 @@ def test_runtime_blocks_humaneval_resume_when_verifier_identity_changed(
     assert finalizer.output["total_samples"] == 0
 
 
-def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
+def test_hexagon_runtime_persists_thirty_metadata_results_and_reproducibility(
     tmp_path: Path,
 ) -> None:
-    """七节点 Oracle 流程应持久化 60 条溯源结果并生成完整六维复现信息。"""
+    """七节点 Oracle 流程应持久化 30 条溯源结果并生成完整六维复现信息。"""
     repository = SQLiteTaskRepository(tmp_path / "evalhub.db")
     task_request = request(suite_id="evalhub-hexagon-v1")
     task = repository.create_with_nodes(task_request, build_workflow(task_request))
@@ -1166,7 +1166,7 @@ def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
         for sample in repository.list_samples(node.id, limit=200).items
     ]
 
-    assert len(samples) == 60
+    assert len(samples) == 30
     assert all((sample.result or {})["metadata"]["input_zh"] for sample in samples)
     assert all((sample.input or {})["metadata"]["source_key"] for sample in samples)
     humaneval = next(
@@ -1179,7 +1179,7 @@ def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
     assert humaneval_metadata["translation_version"] == "evalhub-zh-v1"
     assert "canonical_solution" not in humaneval_metadata
     assert "test" not in humaneval_metadata
-    assert result["total_samples"] == 60
+    assert result["total_samples"] == 30
     assert result["capability_profile"]["status"] == "complete"
     assert {
         capability["score"]
@@ -1187,9 +1187,9 @@ def test_hexagon_runtime_persists_sixty_metadata_results_and_reproducibility(
     } == {100.0}
     reproducibility = result["reproducibility"]
     assert len(result["comparison_fingerprint"]) == 64
-    assert reproducibility["suite_version"] == "1.0.0"
+    assert reproducibility["suite_version"] == "1.1.0"
     assert reproducibility["manifest_sha256"] == (
-        "9ff977a258c61dacb568d1fc5d30209fa340687ee2e1be8e7365f5a18df2b6f2"
+        "d62b71974c5c7cfdba240ba432078fc403352ce0eacde9a150748a7a59be1ea3"
     )
     assert reproducibility["source_revisions"]["hexagon-ifeval"] == (
         "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
@@ -1343,6 +1343,13 @@ def test_runtime_retries_transient_benchmark_error_three_times(tmp_path: Path) -
 def test_runtime_classifies_missing_tokenizer_as_blocked() -> None:
     """确定性模型映射缺失应等待配置修复，不能伪装为模型评分失败。"""
     error = TaskExecutionError("tokenizer_not_configured: private-model")
+
+    assert classify_runtime_error(error) == "blocked"
+
+
+def test_runtime_classifies_missing_prompt_logprobs_as_blocked() -> None:
+    """运行时能力不满足官方协议时应阻塞，不能记录为模型失败。"""
+    error = TaskExecutionError("ollama_prompt_logprobs_unsupported: hellaswag")
 
     assert classify_runtime_error(error) == "blocked"
 

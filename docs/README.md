@@ -5,10 +5,12 @@
 ## 推荐阅读顺序
 
 1. 从[本地运行指南](getting-started/20260804_本地运行指南.md)启动 EvalHub，并按需配置 [Ollama](getting-started/20260804_Ollama本地模型安装与验证.md)。
+   遇到节点失败或套件阻塞时，按[本地 Benchmark 故障排查](getting-started/20260804_本地Benchmark评测故障排查.md)定位协议、数据和运行环境问题。
 2. 阅读[系统架构](architecture/20260804_系统架构.md)，建立模块和扩展点的整体认识。
 3. 结合 [API 草案](architecture/20260804_API接口草案.md)与[数据模型](architecture/20260804_数据模型.md)理解接口和领域对象。
 4. 通过 [PRD](product/20260804_产品需求文档.md) 与 [Roadmap](product/20260804_Agent评测路线图.md)了解产品边界和演进方向。
 5. 使用 [Codex 文档沉淀流程](development/20260804_Codex对话沉淀工作流.md)维护设计、计划和实现记录。
+6. 参考[专业六边形评测集建设与交付复盘](development/20260804_专业六边形评测集建设与交付复盘.md)复用数据集固定、评分安全、恢复和交付经验。
 
 ## 快速开始
 
@@ -16,6 +18,7 @@
 | --- | --- |
 | [本地运行指南](getting-started/20260804_本地运行指南.md) | 安装、启动、真实 Benchmark 与本地控制台 |
 | [Ollama 指南](getting-started/20260804_Ollama本地模型安装与验证.md) | 模型安装、服务验证与故障排查 |
+| [本地 Benchmark 故障排查](getting-started/20260804_本地Benchmark评测故障排查.md) | 节点状态、协议兼容、数据准备、Docker 与重跑原则 |
 
 ## 架构与参考
 
@@ -39,6 +42,7 @@
 | 文档 | 内容 |
 | --- | --- |
 | [Codex 文档沉淀流程](development/20260804_Codex对话沉淀工作流.md) | 对话后同步设计、运行方式与决策的规则 |
+| [专业六边形评测集建设与交付复盘](development/20260804_专业六边形评测集建设与交付复盘.md) | 专业数据集选型、固定协议、安全评分、恢复、合并与验证经验 |
 
 ## 设计与实施记录
 

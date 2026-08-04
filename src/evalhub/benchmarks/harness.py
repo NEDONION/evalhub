@@ -21,6 +21,10 @@ MODEL_TOKENIZERS = {
     "deepseek-r1:1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "phi3:mini": "microsoft/Phi-3-mini-4k-instruct",
 }
+_CHAT_COMPLETION_BENCHMARKS = frozenset({"mmlu-pro", "ifeval", "math-500", "bbh"})
+_PROMPT_LOGPROB_BENCHMARKS = frozenset(
+    {"arc-challenge", "musr", "hellaswag", "truthfulqa", "bbq"}
+)
 
 _DOCKER_RUN_SCRIPT = """
 import json
@@ -29,7 +33,7 @@ import lm_eval
 
 limit = os.environ.get("EVALHUB_LIMIT")
 result = lm_eval.simple_evaluate(
-    model="local-completions",
+    model="local-chat-completions",
     model_args=os.environ["EVALHUB_MODEL_ARGS"],
     tasks=[os.environ["EVALHUB_TASK"]],
     limit=int(limit) if limit else None,
@@ -39,6 +43,13 @@ result = lm_eval.simple_evaluate(
 )
 with open("/output/result.json", "w", encoding="utf-8") as file:
     json.dump(result, file, ensure_ascii=False, default=str)
+""".strip()
+
+_PREPARE_TASK_SCRIPT = """
+import sys
+from lm_eval.tasks import TaskManager
+
+TaskManager().load([sys.argv[1]])
 """.strip()
 
 
@@ -105,6 +116,8 @@ def benchmark_readiness(spec: BenchmarkSpec) -> tuple[bool, str | None]:
         return True, None
     if not _lm_eval_installed():
         return False, "lm-eval 评测依赖尚未安装"
+    if spec.id in _PROMPT_LOGPROB_BENCHMARKS:
+        return False, "Ollama 当前不提供官方多选协议所需的 prompt logprobs"
     # 只有生成代码的任务需要额外的宿主隔离运行时。
     if spec.executor == ExecutorKind.SANDBOXED_CODE and not _docker_ready():
         return False, "Docker 评测镜像尚未就绪"
@@ -134,19 +147,29 @@ def prepare_harness_benchmark(
     spec = get_benchmark_spec(benchmark_id)
     if spec.executor == ExecutorKind.NATIVE:
         raise ValueError(f"native benchmark does not use lm-eval: {benchmark_id}")
+    if spec.id in _PROMPT_LOGPROB_BENCHMARKS:
+        raise ValueError(
+            f"ollama_prompt_logprobs_unsupported: {spec.display_name} 官方协议需要 "
+            "prompt logprobs"
+        )
     ready, reason = benchmark_readiness(spec)
     if not ready:
         raise RuntimeError(reason or f"{spec.display_name} 执行器未就绪")
 
     marker = root / ".runtime/benchmarks" / f"{spec.id}.json"
     if marker.is_file() and not force:
-        return marker
+        try:
+            existing = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            existing = {}
+        if existing.get("preparation") == "task_data_loaded":
+            return marker
     cache = root / ".runtime/huggingface"
     cache.mkdir(parents=True, exist_ok=True)
     marker.parent.mkdir(parents=True, exist_ok=True)
-    # validate 会加载官方任务配置和数据集，但不会调用模型或产生虚假分数。
+    # TaskManager 构造任务时会真实加载数据集，但不会调用模型或产生虚假分数。
     environment = {**os.environ, "HF_HOME": str(cache.resolve())}
-    command = [sys.executable, "-m", "lm_eval", "validate", "--tasks", spec.task_name]
+    command = [sys.executable, "-c", _PREPARE_TASK_SCRIPT, spec.task_name]
     try:
         subprocess.run(
             command,
@@ -167,6 +190,7 @@ def prepare_harness_benchmark(
                 "dataset_source": spec.dataset_source,
                 "dataset_revision": spec.dataset_revision,
                 "executor": spec.executor.value,
+                "preparation": "task_data_loaded",
             },
             ensure_ascii=False,
             indent=2,
@@ -181,7 +205,6 @@ def _run_code_benchmark(
     *,
     model: str,
     base_url: str,
-    tokenizer: str,
     limit: int | None,
 ) -> dict[str, object]:
     """在受限 Docker 容器运行代码 Benchmark 并读取 JSON 结果。
@@ -190,7 +213,6 @@ def _run_code_benchmark(
         spec: HumanEval 或 MBPP 的 Registry 规格。
         model: Ollama 模型标签。
         base_url: 宿主 Ollama 服务根地址。
-        tokenizer: 与模型匹配的 Hugging Face tokenizer。
         limit: 可选样本上限；``None`` 表示完整数据集。
 
     Returns:
@@ -208,7 +230,6 @@ def _run_code_benchmark(
             spec,
             model=model,
             base_url=base_url,
-            tokenizer=tokenizer,
             limit=limit,
             output_dir=output,
             cache_dir=cache,
@@ -255,17 +276,37 @@ def run_harness_benchmark(
     spec = get_benchmark_spec(benchmark_id)
     if spec.executor == ExecutorKind.NATIVE:
         raise ValueError(f"native benchmark does not use lm-eval: {benchmark_id}")
-    tokenizer = tokenizer_for_model(model)
+    if spec.id in _PROMPT_LOGPROB_BENCHMARKS:
+        raise ValueError(
+            f"ollama_prompt_logprobs_unsupported: {spec.display_name} 官方协议需要 "
+            "prompt logprobs"
+        )
+    cache = Path(".runtime/huggingface").resolve()
+    cache.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(cache)
     on_progress(0, 0)
     if spec.executor == ExecutorKind.SANDBOXED_CODE:
         raw = _run_code_benchmark(
             spec,
             model=model,
             base_url=base_url,
-            tokenizer=tokenizer,
             limit=limit,
         )
+    elif spec.id in _CHAT_COMPLETION_BENCHMARKS:
+        raw = _simple_evaluate(
+            model="local-chat-completions",
+            model_args=_chat_model_args(
+                model,
+                f"{base_url.rstrip('/')}/v1/chat/completions",
+            ),
+            tasks=[spec.task_name],
+            limit=limit,
+            batch_size=1,
+            log_samples=True,
+            apply_chat_template=True,
+        )
     else:
+        tokenizer = tokenizer_for_model(model)
         raw = _simple_evaluate(
             model="local-completions",
             model_args=_model_args(
@@ -428,12 +469,12 @@ def _container_base_url(base_url: str) -> str:
         base_url: 用户在控制台配置的 Ollama 服务根地址。
 
     Returns:
-        指向 OpenAI completions 端点的容器内 URL。
+        指向 OpenAI Chat Completions 端点的容器内 URL。
     """
     root = base_url.rstrip("/")
     root = root.replace("http://127.0.0.1", "http://host.docker.internal", 1)
     root = root.replace("http://localhost", "http://host.docker.internal", 1)
-    return f"{root}/v1/completions"
+    return f"{root}/v1/chat/completions"
 
 
 def _model_args(model: str, base_url: str, tokenizer: str) -> str:
@@ -461,12 +502,24 @@ def _model_args(model: str, base_url: str, tokenizer: str) -> str:
     )
 
 
+def _chat_model_args(model: str, base_url: str) -> str:
+    """生成 Ollama Chat Completions 使用的确定性模型参数。"""
+    return ",".join(
+        (
+            f"model={model}",
+            f"base_url={base_url}",
+            "num_concurrent=1",
+            "max_retries=3",
+            "timeout=120",
+        )
+    )
+
+
 def build_docker_command(
     spec: BenchmarkSpec,
     *,
     model: str,
     base_url: str,
-    tokenizer: str,
     limit: int | None,
     output_dir: Path,
     cache_dir: Path,
@@ -477,7 +530,6 @@ def build_docker_command(
         spec: HumanEval 或 MBPP 的 Registry 规格。
         model: Ollama 模型标签。
         base_url: 宿主 Ollama 服务根地址。
-        tokenizer: 与模型匹配的 Hugging Face tokenizer。
         limit: 可选的调试样本上限；``None`` 表示完整数据集。
         output_dir: 仅用于写入本次 JSON 结果的宿主目录。
         cache_dir: 可复用的 Hugging Face 数据和 tokenizer 缓存。
@@ -485,7 +537,7 @@ def build_docker_command(
     Returns:
         不经 shell 解释、可直接交给 ``subprocess.run`` 的参数列表。
     """
-    model_args = _model_args(model, _container_base_url(base_url), tokenizer)
+    model_args = _chat_model_args(model, _container_base_url(base_url))
     command = [
         "docker",
         "run",

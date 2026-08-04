@@ -20,7 +20,7 @@ _HEXAGON_BENCHMARK_IDS = (
     "hexagon-truthfulqa",
     "hexagon-bbq",
 )
-_EXPECTED_COUNTS = dict(zip(_HEXAGON_BENCHMARK_IDS, (10, 10, 10, 10, 10, 5, 5), strict=True))
+_EXPECTED_COUNTS = dict(zip(_HEXAGON_BENCHMARK_IDS, (5, 5, 5, 5, 5, 3, 2), strict=True))
 _EXPECTED_CAPABILITIES = {
     "hexagon-mmlu": Capability.KNOWLEDGE,
     "hexagon-ifeval": Capability.INSTRUCTION_FOLLOWING,
@@ -37,11 +37,6 @@ _EXPECTED_STRATA = {
         "business_ethics",
         "college_computer_science",
         "econometrics",
-        "high_school_world_history",
-        "international_law",
-        "machine_learning",
-        "professional_medicine",
-        "sociology",
     },
     "hexagon-ifeval": {
         "punctuation:no_comma",
@@ -49,11 +44,6 @@ _EXPECTED_STRATA = {
         "startend:quotation",
         "detectable_format:json_format",
         "detectable_content:number_placeholders",
-        "detectable_format:number_bullet_lists",
-        "detectable_format:number_highlighted_sections",
-        "detectable_format:multiple_sections",
-        "detectable_format:title",
-        "startend:end_checker",
     },
     "hexagon-gsm8k": {"test"},
     "hexagon-bbh": {
@@ -62,11 +52,6 @@ _EXPECTED_STRATA = {
         "date_understanding",
         "disambiguation_qa",
         "formal_fallacies",
-        "logical_deduction_five_objects",
-        "multistep_arithmetic_two",
-        "object_counting",
-        "temporal_sequences",
-        "tracking_shuffled_objects_five_objects",
     },
     "hexagon-humaneval": {
         "HumanEval/126",
@@ -74,25 +59,15 @@ _EXPECTED_STRATA = {
         "HumanEval/108",
         "HumanEval/30",
         "HumanEval/24",
-        "HumanEval/54",
-        "HumanEval/158",
-        "HumanEval/131",
-        "HumanEval/123",
-        "HumanEval/63",
     },
     "hexagon-truthfulqa": {
         "Misconceptions",
         "Health",
         "Conspiracies",
-        "Stereotypes",
-        "Superstitions",
     },
     "hexagon-bbq": {
         "Age/ambig",
         "Disability_status/disambig",
-        "Gender_identity/ambig",
-        "Race_ethnicity/disambig",
-        "Religion/ambig",
     },
 }
 IFEVAL_SELECTED_SOURCE_CONTRACTS: dict[
@@ -119,7 +94,7 @@ _IFEVAL_SOURCE_KEYS = {
     instruction_ids[0]: source_key
     for source_key, (instruction_ids, _) in IFEVAL_SELECTED_SOURCE_CONTRACTS.items()
 }
-_TRUTHFULQA_OPTION_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"), ("B", "A"), ("A", "B"))
+_TRUTHFULQA_OPTION_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"))
 
 
 @dataclass(frozen=True)
@@ -336,8 +311,8 @@ def _validate_manifest(rows: tuple[HexagonSampleSpec, ...]) -> None:
     Raises:
         ValueError: 样本数量、ID、来源、能力、分层或选项顺序偏离固定协议时抛出。
     """
-    if len(rows) != 60 or len({row.id for row in rows}) != 60:
-        raise ValueError("manifest must contain exactly 60 unique sample IDs")
+    if len(rows) != 30 or len({row.id for row in rows}) != 30:
+        raise ValueError("manifest must contain exactly 30 unique sample IDs")
     selectors = [(row.benchmark_id, row.source_key) for row in rows]
     if len(selectors) != len(set(selectors)):
         raise ValueError("manifest must contain unique source selectors per benchmark")
@@ -345,7 +320,7 @@ def _validate_manifest(rows: tuple[HexagonSampleSpec, ...]) -> None:
     if benchmark_counts != _EXPECTED_COUNTS:
         raise ValueError("manifest source slice counts do not match Hexagon protocol")
     capability_counts = Counter(row.capability for row in rows)
-    if capability_counts != {capability: 10 for capability in Capability}:
+    if capability_counts != {capability: 5 for capability in Capability}:
         raise ValueError("manifest capability counts do not match Hexagon protocol")
     # 每个来源的能力映射是 Suite 评分画像的基础，不能仅依赖总数相等而允许错配。
     if any(_EXPECTED_CAPABILITIES.get(row.benchmark_id) != row.capability for row in rows):
@@ -375,8 +350,8 @@ def load_hexagon_manifest(path: Path) -> tuple[HexagonSampleSpec, ...]:
         ValueError: JSON 结构、协议版本或任一样本不符合 Hexagon 固定清单契约时抛出。
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("version") != "1.0.0":
-        raise ValueError("manifest version must be 1.0.0")
+    if not isinstance(payload, dict) or payload.get("version") != "1.1.0":
+        raise ValueError("manifest version must be 1.1.0")
     samples = payload.get("samples")
     if not isinstance(samples, list):
         raise ValueError("manifest samples must be a list")
@@ -389,7 +364,7 @@ def hexagon_manifest() -> tuple[HexagonSampleSpec, ...]:
     """加载随包发布的 Hexagon v1 固定清单，供数据准备和执行层共享使用。
 
     Returns:
-        已验证的 60 条固定样本规格，保持清单中的稳定顺序。
+        已验证的 30 条固定样本规格，保持清单中的稳定顺序。
 
     Raises:
         FileNotFoundError: 发布包未包含固定 JSON 清单时抛出，阻止静默使用未冻结样本。

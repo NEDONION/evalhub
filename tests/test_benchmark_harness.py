@@ -8,6 +8,7 @@ import pytest
 
 import evalhub.benchmarks.harness as harness_module
 from evalhub.benchmarks.harness import (
+    _DOCKER_RUN_SCRIPT,
     DOCKER_IMAGE,
     benchmark_readiness,
     build_docker_command,
@@ -102,7 +103,6 @@ def test_code_benchmark_command_applies_container_limits(tmp_path: Path) -> None
         get_benchmark_spec("humaneval"),
         model="qwen2.5:0.5b",
         base_url="http://127.0.0.1:11434",
-        tokenizer="Qwen/Qwen2.5-0.5B-Instruct",
         limit=None,
         output_dir=output,
         cache_dir=cache,
@@ -114,11 +114,13 @@ def test_code_benchmark_command_applies_container_limits(tmp_path: Path) -> None
     assert "no-new-privileges" in command
     assert "--pids-limit" in command
     assert "host.docker.internal:11434" in " ".join(command)
+    assert "host.docker.internal:11434/v1/chat/completions" in " ".join(command)
+    assert 'model="local-chat-completions"' in _DOCKER_RUN_SCRIPT
     assert DOCKER_IMAGE in command
     assert "--confirm-run-unsafe-code" not in command
 
 
-def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
+def test_lm_eval_run_uses_ollama_chat_endpoint_and_full_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """外部任务应使用官方 Python API，并保持全量评测的 ``None`` 上限。"""
@@ -128,15 +130,15 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
         """记录传给官方 Harness 的参数并返回一条成功样本。"""
         observed.update(kwargs)
         return {
-            "results": {"arc_challenge": {"acc_norm,none": 1.0}},
+            "results": {"mmlu_pro": {"exact_match,custom-extract": 1.0}},
             "samples": {
-                "arc_challenge": [
+                "mmlu_pro_biology": [
                     {
                         "doc_id": 0,
                         "doc": {"question": "Q"},
                         "target": "A",
                         "filtered_resps": ["A"],
-                        "acc_norm": 1.0,
+                        "exact_match": 1.0,
                     }
                 ]
             },
@@ -147,7 +149,7 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
     progress: list[tuple[int, int]] = []
 
     result = run_harness_benchmark(
-        "arc-challenge",
+        "mmlu-pro",
         model="qwen2.5:0.5b",
         base_url="http://127.0.0.1:11434",
         limit=None,
@@ -155,11 +157,11 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
         on_sample_result=lambda sample, completed, total: samples.append(sample),
     )
 
-    assert observed["model"] == "local-completions"
-    assert "base_url=http://127.0.0.1:11434/v1/completions" in str(
+    assert observed["model"] == "local-chat-completions"
+    assert "base_url=http://127.0.0.1:11434/v1/chat/completions" in str(
         observed["model_args"]
     )
-    assert observed["tasks"] == ["arc_challenge"]
+    assert observed["tasks"] == ["mmlu_pro"]
     assert observed["limit"] is None
     assert observed["log_samples"] is True
     assert result["raw_score"] == 1.0
@@ -167,10 +169,53 @@ def test_lm_eval_run_uses_ollama_completion_endpoint_and_full_limit(
     assert progress[-1] == (1, 1)
 
 
-def test_prepare_external_benchmark_validates_task_and_writes_marker(
+def test_generation_harness_uses_ollama_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生成型任务应使用 Ollama 真正兼容的单请求 Chat Completions 接口。"""
+    observed: dict[str, object] = {}
+    monkeypatch.delenv("HF_HOME", raising=False)
+
+    def fake_evaluate(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        observed["hf_home"] = harness_module.os.environ.get("HF_HOME")
+        return {
+            "results": {"hendrycks_math500": {"exact_match,none": 1.0}},
+            "samples": {
+                "hendrycks_math500": [
+                    {
+                        "doc_id": 0,
+                        "doc": {"problem": "1+1?"},
+                        "target": "2",
+                        "filtered_resps": ["2"],
+                        "exact_match": 1.0,
+                    }
+                ]
+            },
+        }
+
+    monkeypatch.setattr(harness_module, "_simple_evaluate", fake_evaluate)
+
+    run_harness_benchmark(
+        "math-500",
+        model="granite4.1:3b",
+        base_url="http://127.0.0.1:11434",
+        limit=1,
+        on_progress=lambda completed, total: None,
+        on_sample_result=lambda sample, completed, total: None,
+    )
+
+    assert observed["model"] == "local-chat-completions"
+    assert "base_url=http://127.0.0.1:11434/v1/chat/completions" in str(
+        observed["model_args"]
+    )
+    assert observed["hf_home"] == str(Path(".runtime/huggingface").resolve())
+
+
+def test_prepare_external_benchmark_loads_task_data_and_writes_marker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """资产准备应通过官方 validate 加载任务，并留下 UI 可读取的本地标记。"""
+    """资产准备应实际加载官方任务数据，并留下 UI 可读取的本地标记。"""
     run = Mock()
     monkeypatch.setattr(harness_module, "_lm_eval_installed", lambda: True)
     monkeypatch.setattr(harness_module.subprocess, "run", run)
@@ -178,11 +223,14 @@ def test_prepare_external_benchmark_validates_task_and_writes_marker(
     marker = prepare_harness_benchmark("ifeval", root=tmp_path)
 
     command = run.call_args.args[0]
-    assert command[-2:] == ["--tasks", "ifeval"]
+    assert command[1] == "-c"
+    assert "TaskManager().load" in command[2]
+    assert command[3] == "ifeval"
     assert run.call_args.kwargs["check"] is True
     assert marker == tmp_path / ".runtime/benchmarks/ifeval.json"
     assert marker.is_file()
     assert '"task_name": "ifeval"' in marker.read_text(encoding="utf-8")
+    assert '"preparation": "task_data_loaded"' in marker.read_text(encoding="utf-8")
 
 
 def test_readiness_checks_dependency_and_docker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,6 +247,33 @@ def test_readiness_checks_dependency_and_docker(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(harness_module, "_lm_eval_installed", lambda: True)
     monkeypatch.setattr(harness_module, "_docker_ready", lambda: False)
     assert benchmark_readiness(code) == (False, "Docker 评测镜像尚未就绪")
+
+
+def test_ollama_prompt_logprob_task_is_reported_as_incompatible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ollama 不提供 prompt logprobs 时不能把官方多选协议标成可运行。"""
+    monkeypatch.setattr(harness_module, "_lm_eval_installed", lambda: True)
+
+    ready, reason = benchmark_readiness(get_benchmark_spec("hellaswag"))
+
+    assert ready is False
+    assert reason is not None and "prompt logprobs" in reason
+    monkeypatch.setattr(
+        harness_module,
+        "_simple_evaluate",
+        lambda **kwargs: pytest.fail("incompatible task reached lm-eval"),
+    )
+
+    with pytest.raises(ValueError, match="ollama_prompt_logprobs_unsupported"):
+        run_harness_benchmark(
+            "hellaswag",
+            model="qwen2.5:0.5b",
+            base_url="http://127.0.0.1:11434",
+            limit=1,
+            on_progress=lambda completed, total: None,
+            on_sample_result=lambda sample, completed, total: None,
+        )
 
 
 def test_code_benchmark_reads_docker_result_without_host_execution(

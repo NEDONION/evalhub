@@ -50,7 +50,7 @@ def _spec(
     option_order: tuple[str, ...] | None = None,
     selection_stratum: str = "test",
 ) -> HexagonSampleSpec:
-    """构造单条已冻结规格，用于隔离验证加载器而不依赖完整 60 行清单。
+    """构造单条已冻结规格，用于隔离验证加载器而不依赖完整 30 行清单。
 
     Args:
         benchmark_id: 需要触发的 Hexagon 来源 ID。
@@ -575,6 +575,7 @@ def test_manifest_writer_is_byte_stable(tmp_path: Path) -> None:
     first = path.read_bytes()
     write_manifest(path, samples)
 
+    assert json.loads(first)["version"] == "1.1.0"
     assert path.read_bytes() == first
 
 

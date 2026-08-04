@@ -10,6 +10,7 @@ OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://127.0.0.1:11434}"
 OLLAMA_PID=""
 OLLAMA_LOG=".runtime/ollama.log"
 LM_EVAL_IMAGE="evalhub-lm-eval:0.4.12"
+HUMANEVAL_IMAGE="evalhub-humaneval:1.0.0"
 
 if [ ! -x "${PYTHON}" ]; then
   echo "Python environment not found. Run: python3 -m venv .venv"
@@ -26,9 +27,21 @@ if [ ! -d "frontend/node_modules" ]; then
   exit 1
 fi
 
-if ! "${PYTHON}" -c "import lm_eval, transformers" >/dev/null 2>&1; then
+if ! "${PYTHON}" -c "import immutabledict, langdetect, lm_eval, nltk, transformers" >/dev/null 2>&1; then
   echo "Installing official Benchmark runtime..."
   "${PYTHON}" -m pip install -e ".[benchmarks]"
+fi
+
+if command -v docker >/dev/null 2>&1 \
+  && ! docker info >/dev/null 2>&1 \
+  && [ -t 1 ] \
+  && [ -d "/Applications/Docker.app" ]; then
+  echo "Starting Docker Desktop..."
+  open -ga Docker
+  for _ in {1..30}; do
+    docker info >/dev/null 2>&1 && break
+    sleep 2
+  done
 fi
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -36,6 +49,12 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     echo "Building isolated HumanEval/MBPP runtime..."
     if ! docker build -t "${LM_EVAL_IMAGE}" -f docker/lm-eval.Dockerfile .; then
       echo "Docker image build failed; HumanEval and MBPP will remain unavailable."
+    fi
+  fi
+  if ! docker image inspect "${HUMANEVAL_IMAGE}" >/dev/null 2>&1; then
+    echo "Building fixed Hexagon HumanEval verifier..."
+    if ! ./scripts/build_humaneval_image.sh; then
+      echo "HumanEval verifier build failed; Hexagon HumanEval will remain unavailable."
     fi
   fi
 else

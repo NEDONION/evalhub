@@ -9,7 +9,7 @@ from typing import cast
 from unittest.mock import patch
 
 from evalhub.benchmarks import Capability, ExecutorReadiness
-from evalhub.server import EvalHubRequestHandler
+from evalhub.server import EvalHubRequestHandler, _dataset_is_prepared
 from evalhub.tasks import (
     EvaluationNode,
     EvaluationNodeEvent,
@@ -594,9 +594,15 @@ def test_registry_endpoints_preserve_mixed_executor_readiness(monkeypatch) -> No
 def test_dataset_endpoint_lists_all_registry_assets() -> None:
     """资产页数据源必须同时包含行业套件与专业 Hexagon 的注册项。"""
     service = FakeTaskService(task_fixture())
-    with patch(
-        "evalhub.server.benchmark_readiness",
-        return_value=ExecutorReadiness(True, "ready", "fixture ready"),
+    with (
+        patch(
+            "evalhub.server.benchmark_readiness",
+            return_value=ExecutorReadiness(True, "ready", "fixture ready"),
+        ),
+        patch(
+            "evalhub.server._dataset_is_prepared",
+            side_effect=lambda dataset: dataset == "ifeval",
+        ),
     ):
         status, response = call_handler(
             method="GET",
@@ -611,9 +617,29 @@ def test_dataset_endpoint_lists_all_registry_assets() -> None:
     assert datasets["mmlu-pro"]["executor"] == "lm_eval"
     assert datasets["humaneval"]["executor"] == "sandboxed_code"
     assert datasets["bbq"]["capability_label"] == "安全可信"
+    assert datasets["ifeval"]["prepared"] is True
+    assert datasets["mmlu-pro"]["prepared"] is False
 
 
-def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness(monkeypatch) -> None:
+def test_external_dataset_requires_verified_preparation_marker(
+    tmp_path, monkeypatch
+) -> None:
+    """旧版存在但未真实加载数据的标记不能显示为已缓存。"""
+    monkeypatch.chdir(tmp_path)
+    marker = tmp_path / ".runtime/benchmarks/ifeval.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"benchmark_id": "ifeval"}', encoding="utf-8")
+
+    assert _dataset_is_prepared("ifeval") is False
+
+    marker.write_text(
+        '{"benchmark_id": "ifeval", "preparation": "task_data_loaded"}',
+        encoding="utf-8",
+    )
+    assert _dataset_is_prepared("ifeval") is True
+
+
+def test_hexagon_suite_api_reports_thirty_samples_and_member_readiness(monkeypatch) -> None:
     """Hexagon 套件应公开固定样本数、六维能力和每个成员的真实就绪状态。"""
     monkeypatch.setattr(
         "evalhub.server.benchmark_readiness",
@@ -635,7 +661,7 @@ def test_hexagon_suite_api_reports_sixty_samples_and_member_readiness(monkeypatc
     humaneval = next(item for item in suite["members"] if item["id"] == "hexagon-humaneval")
 
     assert status == 200
-    assert suite["expected_sample_count"] == 60
+    assert suite["expected_sample_count"] == 30
     assert suite["benchmark_count"] == 7
     assert suite["capabilities"] == [item.value for item in Capability]
     assert suite["ready_count"] == sum(item["readiness"]["ready"] for item in suite["members"])

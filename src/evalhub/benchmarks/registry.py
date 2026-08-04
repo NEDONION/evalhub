@@ -229,8 +229,10 @@ HEXAGON_ROWS: tuple[BenchmarkRow, ...] = (
 
 DATASET_REVISION = "resolved-at-runtime:sha256"
 PROTOCOL_VERSION = "1.0.0"
+HEXAGON_PROTOCOL_VERSION = "1.1.0"
 
-_HEXAGON_SAMPLE_COUNTS = (10, 10, 10, 10, 10, 5, 5)
+_HEXAGON_SAMPLE_COUNTS = (5, 5, 5, 5, 5, 3, 2)
+_HEXAGON_WEIGHTS = (1.0, 1.0, 1.0, 1.0, 1.0, 0.6, 0.4)
 _HEXAGON_REVISIONS = {
     "hexagon-mmlu": "sha256:bec563ba4bac1d6aaf04141cd7d1605d7a5ca833e38f994051e818489592989b",
     "hexagon-ifeval": "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0",
@@ -291,9 +293,10 @@ def _build_benchmark_registry() -> dict[str, BenchmarkSpec]:
         # Hexagon 使用固定来源资产；原有 Core Suite 仍保持运行时解析来源版本的兼容行为。
         is_hexagon = benchmark_id.startswith("hexagon-")
         sample_count = _HEXAGON_SAMPLE_COUNTS[index - len(CORE_ROWS)] if is_hexagon else None
+        hexagon_index = index - len(CORE_ROWS)
         spec = BenchmarkSpec(
             id=benchmark_id,
-            version=PROTOCOL_VERSION,
+            version=HEXAGON_PROTOCOL_VERSION if is_hexagon else PROTOCOL_VERSION,
             display_name=display_name,
             capability=capability,
             dataset_source=source,
@@ -310,7 +313,7 @@ def _build_benchmark_registry() -> dict[str, BenchmarkSpec]:
                 else NormalizationKind.CHANCE_CORRECTED
             ),
             random_baseline=None if is_hexagon else baseline,
-            weight=0.5 if is_hexagon and capability == Capability.SAFETY_TRUST else 1.0,
+            weight=_HEXAGON_WEIGHTS[hexagon_index] if is_hexagon else 1.0,
         )
         if spec.weight <= 0:
             raise ValueError(f"benchmark weight must be positive: {benchmark_id}")
@@ -324,7 +327,7 @@ def benchmark_registry() -> dict[str, BenchmarkSpec]:
 
 
 def suite_registry() -> dict[str, BenchmarkSuiteSpec]:
-    """返回核心套件及固定 60 题 Hexagon 套件的版本化规格映射。
+    """返回核心套件及固定 30 题 Hexagon 套件的版本化规格映射。
 
     Returns:
         以套件稳定 ID 为键的新映射，成员顺序决定每个套件的固定执行顺序。
@@ -348,7 +351,7 @@ def suite_registry() -> dict[str, BenchmarkSuiteSpec]:
         ),
         "evalhub-hexagon-v1": BenchmarkSuiteSpec(
             id="evalhub-hexagon-v1",
-            version=PROTOCOL_VERSION,
+            version=HEXAGON_PROTOCOL_VERSION,
             display_name="EvalHub 专业六边形套件 v1",
             benchmark_ids=hexagon_ids,
         ),

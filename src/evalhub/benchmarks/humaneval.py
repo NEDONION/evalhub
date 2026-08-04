@@ -420,7 +420,7 @@ def load_humaneval_problems(
     *,
     manifest: tuple[HexagonSampleSpec, ...] | None = None,
 ) -> list[HumanEvalProblem]:
-    """按冻结清单顺序从 gzip 加载十条 HumanEval 问题，并复核英文摘要。
+    """按冻结清单顺序从 gzip 加载五条 HumanEval 问题，并复核英文摘要。
 
     Args:
         path: 已通过固定来源摘要校验的 HumanEval gzip JSONL 文件。

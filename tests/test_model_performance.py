@@ -167,7 +167,7 @@ def test_performance_ties_are_deterministic_and_equal_scores_do_not_set_records(
 
 
 def test_performance_excludes_numeric_partial_hexagon_suite_even_if_marked_success() -> None:
-    """Hexagon 只有 all 模式且 60 条全部完成时才能进入比较范围和排行榜。"""
+    """Hexagon 仅接收当前 30 题完整任务，旧 60 题和部分任务都不能进入排行榜。"""
     tasks = [
         performance_task(
             "old-revision-hexagon",
@@ -186,8 +186,8 @@ def test_performance_excludes_numeric_partial_hexagon_suite_even_if_marked_succe
             minute=1,
             suite_id="evalhub-hexagon-v1",
             status="success",
-            completed_samples=50,
-            total_samples=60,
+            completed_samples=29,
+            total_samples=30,
         ),
         performance_task(
             "complete-hexagon",
@@ -196,8 +196,8 @@ def test_performance_excludes_numeric_partial_hexagon_suite_even_if_marked_succe
             minute=2,
             suite_id="evalhub-hexagon-v1",
             status="success",
-            completed_samples=60,
-            total_samples=60,
+            completed_samples=30,
+            total_samples=30,
         ),
     ]
 

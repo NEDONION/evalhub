@@ -65,6 +65,7 @@ def classify_runtime_error(exc: Exception) -> str:
             "lm-eval 评测依赖尚未安装",
             "docker 评测镜像尚未就绪",
             "仅支持 ollama",
+            "ollama_prompt_logprobs_unsupported",
         )
         if any(marker in message for marker in blocked_markers):
             return "blocked"

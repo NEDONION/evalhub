@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from evalhub.benchmarks import Capability
 from evalhub.datasets.hexagon_manifest import hexagon_manifest, load_hexagon_manifest
 
 
@@ -62,7 +63,7 @@ def _sample(
 
 
 def _manifest_payload() -> dict[str, object]:
-    """构造覆盖全部七个固定分层的有效 60 行清单，避免测试依赖公开网络来源。
+    """构造覆盖全部七个固定分层的有效 30 行清单，避免测试依赖公开网络来源。
 
     Returns:
         使用字面量来源层级和 IFEval 键映射的完整 Hexagon v1 JSON 对象。
@@ -78,17 +79,12 @@ def _manifest_payload() -> dict[str, object]:
                 "business_ethics",
                 "college_computer_science",
                 "econometrics",
-                "high_school_world_history",
-                "international_law",
-                "machine_learning",
-                "professional_medicine",
-                "sociology",
             ),
         ),
         (
             "hexagon-gsm8k",
             "mathematics",
-            ("test",) * 10,
+            ("test",) * 5,
         ),
         (
             "hexagon-bbh",
@@ -99,11 +95,6 @@ def _manifest_payload() -> dict[str, object]:
                 "date_understanding",
                 "disambiguation_qa",
                 "formal_fallacies",
-                "logical_deduction_five_objects",
-                "multistep_arithmetic_two",
-                "object_counting",
-                "temporal_sequences",
-                "tracking_shuffled_objects_five_objects",
             ),
         ),
         (
@@ -115,17 +106,12 @@ def _manifest_payload() -> dict[str, object]:
                 "HumanEval/108",
                 "HumanEval/30",
                 "HumanEval/24",
-                "HumanEval/54",
-                "HumanEval/158",
-                "HumanEval/131",
-                "HumanEval/123",
-                "HumanEval/63",
             ),
         ),
         (
             "hexagon-truthfulqa",
             "safety_trust",
-            ("Misconceptions", "Health", "Conspiracies", "Stereotypes", "Superstitions"),
+            ("Misconceptions", "Health", "Conspiracies"),
         ),
         (
             "hexagon-bbq",
@@ -133,9 +119,6 @@ def _manifest_payload() -> dict[str, object]:
             (
                 "Age/ambig",
                 "Disability_status/disambig",
-                "Gender_identity/ambig",
-                "Race_ethnicity/disambig",
-                "Religion/ambig",
             ),
         ),
     )
@@ -157,17 +140,12 @@ def _manifest_payload() -> dict[str, object]:
         ("startend:quotation", "2829"),
         ("detectable_format:json_format", "321"),
         ("detectable_content:number_placeholders", "3221"),
-        ("detectable_format:number_bullet_lists", "2832"),
-        ("detectable_format:number_highlighted_sections", "2253"),
-        ("detectable_format:multiple_sections", "2925"),
-        ("detectable_format:title", "1551"),
-        ("startend:end_checker", "1659"),
     ):
         index = len(samples) + 1
         samples.append(
             _sample(index, "hexagon-ifeval", "instruction_following", stratum, source_key)
         )
-    return {"version": "1.0.0", "samples": samples}
+    return {"version": "1.1.0", "samples": samples}
 
 
 def _source_key(benchmark_id: str, stratum: str, index: int) -> str:
@@ -206,7 +184,7 @@ def test_hexagon_manifest_requires_complete_bilingual_provenance(tmp_path: Path)
     """缺少固定样本必填溯源字段时，清单读取必须明确拒绝。"""
     path = tmp_path / "manifest.json"
     path.write_text(
-        json.dumps({"version": "1.0.0", "samples": [{"id": "broken"}]}),
+        json.dumps({"version": "1.1.0", "samples": [{"id": "broken"}]}),
         encoding="utf-8",
     )
 
@@ -219,7 +197,7 @@ def test_hexagon_manifest_accepts_fixed_ifeval_key_stratum_mapping(tmp_path: Pat
     path = tmp_path / "manifest.json"
     _write_manifest(path, _manifest_payload())
 
-    assert len(load_hexagon_manifest(path)) == 60
+    assert len(load_hexagon_manifest(path)) == 30
 
 
 def test_hexagon_manifest_rejects_changed_translation_with_stale_digest(tmp_path: Path) -> None:
@@ -269,10 +247,17 @@ def test_hexagon_manifest_rejects_duplicate_source_selectors(tmp_path: Path) -> 
         load_hexagon_manifest(path)
 
 
-def test_packaged_hexagon_manifest_contains_sixty_verified_translations() -> None:
-    """发布包必须携带冻结的 60 行清单，且每条中文辅助翻译均非空并通过摘要校验。"""
+def test_packaged_hexagon_manifest_contains_thirty_verified_translations() -> None:
+    """发布包必须携带冻结的 30 行清单，且每条中文辅助翻译均非空并通过摘要校验。"""
     rows = hexagon_manifest()
 
-    assert len(rows) == 60
+    assert len(rows) == 30
+    capability_counts = {
+        capability: sum(row.capability == capability for row in rows)
+        for capability in Capability
+    }
+    assert capability_counts == {
+        capability: 5 for capability in Capability
+    }
     assert all(row.input_zh.strip() for row in rows)
     assert all(row.translation_version == "evalhub-zh-v1" for row in rows)

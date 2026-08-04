@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from evalhub.benchmarks.registry import HEXAGON_PROTOCOL_VERSION  # noqa: E402
 from evalhub.datasets.hexagon_sources import (  # noqa: E402
     NormalizedSourceRow,
     hexagon_source_specs,
@@ -28,11 +29,6 @@ MMLU_STRATA = (
     "business_ethics",
     "college_computer_science",
     "econometrics",
-    "high_school_world_history",
-    "international_law",
-    "machine_learning",
-    "professional_medicine",
-    "sociology",
 )
 IFEVAL_SELECTIONS = (
     ("32", "punctuation:no_comma"),
@@ -40,11 +36,6 @@ IFEVAL_SELECTIONS = (
     ("2829", "startend:quotation"),
     ("321", "detectable_format:json_format"),
     ("3221", "detectable_content:number_placeholders"),
-    ("2832", "detectable_format:number_bullet_lists"),
-    ("2253", "detectable_format:number_highlighted_sections"),
-    ("2925", "detectable_format:multiple_sections"),
-    ("1551", "detectable_format:title"),
-    ("1659", "startend:end_checker"),
 )
 BBH_STRATA = (
     "boolean_expressions",
@@ -52,11 +43,6 @@ BBH_STRATA = (
     "date_understanding",
     "disambiguation_qa",
     "formal_fallacies",
-    "logical_deduction_five_objects",
-    "multistep_arithmetic_two",
-    "object_counting",
-    "temporal_sequences",
-    "tracking_shuffled_objects_five_objects",
 )
 HUMANEVAL_TASK_IDS = (
     "HumanEval/126",
@@ -64,26 +50,16 @@ HUMANEVAL_TASK_IDS = (
     "HumanEval/108",
     "HumanEval/30",
     "HumanEval/24",
-    "HumanEval/54",
-    "HumanEval/158",
-    "HumanEval/131",
-    "HumanEval/123",
-    "HumanEval/63",
 )
 TRUTHFULQA_STRATA = (
     "Misconceptions",
     "Health",
     "Conspiracies",
-    "Stereotypes",
-    "Superstitions",
 )
-TRUTHFULQA_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"), ("B", "A"), ("A", "B"))
+TRUTHFULQA_ORDERS = (("A", "B"), ("B", "A"), ("A", "B"))
 BBQ_STRATA = (
     "Age/ambig",
     "Disability_status/disambig",
-    "Gender_identity/ambig",
-    "Race_ethnicity/disambig",
-    "Religion/ambig",
 )
 CAPABILITIES = {
     "hexagon-mmlu": "knowledge",
@@ -138,13 +114,13 @@ def _one_per_stratum(
 def _bbq_plan(
     rows: Mapping[str, NormalizedSourceRow],
 ) -> list[tuple[str, str, tuple[str, ...] | None]]:
-    """按 BBQ 类别和上下文条件组合分层选择固定五条安全可信样本。
+    """按 BBQ 类别和上下文条件组合分层选择固定两条安全可信样本。
 
     Args:
         rows: BBQ 归档中的全部规范化记录。
 
     Returns:
-        保持协议层级顺序的五条来源键选择计划。
+        保持协议层级顺序的两条来源键选择计划。
 
     Raises:
         ValueError: 任一类别/条件层级没有候选记录时抛出。
@@ -165,7 +141,7 @@ def _bbq_plan(
 def _ifeval_plan(
     rows: Mapping[str, NormalizedSourceRow],
 ) -> list[tuple[str, str, tuple[str, ...] | None]]:
-    """核对十个固定 IFEval 键各自只含指定官方规则，并建立选择计划。
+    """核对五个固定 IFEval 键各自只含指定官方规则，并建立选择计划。
 
     Args:
         rows: 固定 IFEval JSONL 的全部规范化记录。
@@ -196,7 +172,7 @@ def _humaneval_plan(
         rows: 固定 HumanEval gzip 中的全部规范化任务。
 
     Returns:
-        以任务 ID 同时作为层级和来源键的十条选择计划。
+        以任务 ID 同时作为层级和来源键的五条选择计划。
 
     Raises:
         ValueError: 任一协议固定任务 ID 不在官方来源中时抛出。
@@ -210,13 +186,13 @@ def _humaneval_plan(
 def _truthfulqa_plan(
     rows: Mapping[str, NormalizedSourceRow],
 ) -> list[tuple[str, str, tuple[str, ...] | None]]:
-    """按五个 TruthfulQA 类别选择记录并交替冻结正确答案选项位置。
+    """按三个 TruthfulQA 类别选择记录并交替冻结正确答案选项位置。
 
     Args:
         rows: 使用默认 AB 排列解析的全部 TruthfulQA 记录。
 
     Returns:
-        按类别顺序附带 ``AB/BA`` 选项排列的五条选择计划。
+        按类别顺序附带 ``AB/BA`` 选项排列的三条选择计划。
 
     Raises:
         ValueError: 任一固定类别没有候选记录时抛出。
@@ -231,7 +207,7 @@ def _truthfulqa_plan(
 def _source_plans(
     rows_by_benchmark: Mapping[str, Mapping[str, NormalizedSourceRow]],
 ) -> dict[str, list[tuple[str, str, tuple[str, ...] | None]]]:
-    """对七个完整来源应用协议精确分层和固定键规则，形成 60 条选择计划。
+    """对七个完整来源应用协议精确分层和固定键规则，形成 30 条选择计划。
 
     Args:
         rows_by_benchmark: 以 Hexagon ID 索引的七源规范化记录映射。
@@ -243,7 +219,7 @@ def _source_plans(
         ValueError: 任一来源缺少固定层级、键或 IFEval 精确规则时抛出。
     """
     mmlu = _one_per_stratum(rows_by_benchmark["hexagon-mmlu"], MMLU_STRATA, field="subject")
-    gsm_keys = select_keys(rows_by_benchmark["hexagon-gsm8k"], count=10, seed=SEED)
+    gsm_keys = select_keys(rows_by_benchmark["hexagon-gsm8k"], count=5, seed=SEED)
     gsm = [("test", source_key, None) for source_key in gsm_keys]
     bbh = _one_per_stratum(rows_by_benchmark["hexagon-bbh"], BBH_STRATA, field="task")
     # 各来源独立选择，避免跨来源来源键碰撞或遍历顺序影响固定切片。
@@ -259,7 +235,7 @@ def _source_plans(
 
 
 def build_manifest_rows(root: Path) -> list[dict[str, object]]:
-    """通过现有固定资产准备边界加载七源，并构造 60 条英文发现记录。
+    """通过现有固定资产准备边界加载七源，并构造 30 条英文发现记录。
 
     Args:
         root: 固定资产缓存相对的项目根目录。
@@ -298,7 +274,7 @@ def _discovered_rows(
 
     Args:
         rows_by_benchmark: 七源全部规范化记录，TruthfulQA 已使用冻结选项顺序重建。
-        plans: 按协议来源顺序和分层顺序排列的 60 条选择计划。
+        plans: 按协议来源顺序和分层顺序排列的 30 条选择计划。
 
     Returns:
         可供翻译合并器计算摘要并剥离英文正文的有序字典列表。
@@ -450,7 +426,7 @@ def write_manifest(path: Path, samples: Sequence[Mapping[str, object]]) -> None:
         OSError: 目标目录创建或文件写入失败时保留底层错误。
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": "1.0.0", "samples": list(samples)}
+    payload = {"version": HEXAGON_PROTOCOL_VERSION, "samples": list(samples)}
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     path.write_text(text, encoding="utf-8")
 
