@@ -27,7 +27,6 @@ Agent 壳、任务和隐藏 Verifier 下比较编码 Agent 的基模能力；每
 
 <img width="1405" height="830" alt="EvalHub model evaluation setup" src="https://github.com/user-attachments/assets/72975455-f13a-4f96-9cdb-bb005c5fc139" />
 
-
 <p align="center"><sub>从同一控制台选择 Benchmark、模型和样本范围，并跟踪完整评测过程。</sub></p>
 
 ## Features
@@ -69,7 +68,6 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
       <strong>模型 Benchmark 工作流</strong><br />
       <sub>查看任务 DAG、节点进度、资源指标和执行审计。</sub><br /><br />
       <img width="1387" height="842" alt="EvalHub model Benchmark workflow and resource metrics" src="https://github.com/user-attachments/assets/00629820-390d-4688-b23c-53a7edc2ca97" />
-
     </td>
     <td width="50%" valign="top">
       <strong>Agent 失败样本审计</strong><br />
