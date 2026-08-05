@@ -15,6 +15,9 @@ const options: ModelOption[] = [
     size_kind: "actual",
     evaluation_types: ["model", "agent"],
     capability_label: "Agent 基线",
+    benchmark_protocol: "verified",
+    benchmark_protocol_reason: "模型已安装且生成协议已注册。",
+    benchmark_protocol_version: "ollama-generate-v1",
   },
   {
     name: "ministral-3:8b",
@@ -25,6 +28,9 @@ const options: ModelOption[] = [
     size_kind: "estimated",
     evaluation_types: ["model", "agent"],
     capability_label: "Agent 工具",
+    benchmark_protocol: "static_only",
+    benchmark_protocol_reason: "生成协议已静态校验；模型未安装。",
+    benchmark_protocol_version: "ollama-generate-v1",
   },
 ];
 
@@ -43,10 +49,31 @@ describe("ModelSelector", () => {
     expect(screen.getByText("推荐下载")).toBeInTheDocument();
     const recommended = screen.getByRole("option", { name: /Ministral 3 8B/ });
     expect(recommended).toHaveTextContent("约 6.0 GB");
+    expect(recommended).toHaveTextContent("协议待实测");
     await user.click(recommended);
 
     expect(onChange).toHaveBeenCalledWith("ministral-3:8b");
     expect(trigger).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("展示已验证与不支持的 Benchmark 协议状态", async () => {
+    const user = userEvent.setup();
+    const unsupported: ModelOption = {
+      ...options[0]!,
+      name: "custom-local:latest",
+      label: "Custom Local",
+      benchmark_protocol: "unsupported",
+      benchmark_protocol_reason: "该模型未注册 Benchmark 生成协议。",
+      benchmark_protocol_version: null,
+    };
+    render(
+      <ModelSelector id="model" label="模型" options={[...options, unsupported]} value="granite4.1:3b" onChange={vi.fn()} />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "模型" }));
+
+    expect(screen.getByRole("option", { name: /Granite 4.1 3B/ })).toHaveTextContent("Benchmark 已适配");
+    expect(screen.getByRole("option", { name: /Custom Local/ })).toHaveTextContent("Benchmark 不支持");
   });
 
   it("支持方向键、首尾跳转、确认和退出", async () => {

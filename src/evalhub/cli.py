@@ -9,6 +9,7 @@ from evalhub.adapters import (
     OpenAICompatibleAdapter,
     StaticMappingAdapter,
 )
+from evalhub.benchmarks import get_benchmark_spec
 from evalhub.datasets import dataset_catalog, get_dataset_spec, load_samples, prepare_dataset
 from evalhub.domain import (
     BenchmarkRecord,
@@ -20,6 +21,7 @@ from evalhub.domain import (
 )
 from evalhub.engine import EvaluationRunner, ProgressCallback, SampleResultCallback
 from evalhub.evaluators import default_evaluator_registry
+from evalhub.model_protocols import effective_generation_config
 from evalhub.model_providers import (
     ModelProviderRepository,
     default_model_provider_repository,
@@ -253,17 +255,26 @@ def run_real_benchmark(
             sample_count=len(samples),
         )
     )
-    # Benchmark 从目录选择匹配的评测器，并配置本地模型的确定性生成选项。
+    # 直接 CLI 运行同样读取 Registry 的分项预算；自定义数据集保留历史 256 token 默认值。
+    if generation_config is None:
+        try:
+            default_config = dict(get_benchmark_spec(dataset).generation_config)
+        except KeyError:
+            default_config = {"temperature": 0, "num_predict": 256}
+        effective_config = (
+            effective_generation_config(model, default_config)
+            if adapter_type == "ollama"
+            else default_config
+        )
+    else:
+        effective_config = dict(generation_config)
+    # Benchmark 从目录选择匹配的评测器，并保存已经合并完成的确定性生成选项。
     benchmark = registry.benchmarks.add(
         BenchmarkRecord(
             name=spec.display_name,
             dataset_id=dataset_record.id,
             evaluator_type=spec.evaluator_type,
-            config=(
-                dict(generation_config)
-                if generation_config is not None
-                else {"temperature": 0, "num_predict": 256}
-            ),
+            config=effective_config,
         )
     )
     # 调度层提供任务标识时沿用同一 ID，CLI 直接运行则继续使用领域默认值。

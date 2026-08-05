@@ -17,13 +17,14 @@ from types import ModuleType
 import pytest
 
 import evalhub.benchmarks.readiness as readiness_module
-from evalhub.adapters import StaticMappingAdapter
+from evalhub.adapters import ModelGeneration, StaticMappingAdapter
 from evalhub.benchmarks import Capability, ExecutorKind, get_benchmark_spec
 from evalhub.benchmarks.humaneval import (
     DockerHumanEvalSandbox,
     HumanEvalProblem,
     SandboxInfrastructureError,
     SandboxResult,
+    _sandbox_payload,
     humaneval_verifier_identity,
     load_humaneval_problems,
     run_humaneval_benchmark,
@@ -1258,6 +1259,79 @@ def test_runner_reports_pass_at_one_without_exposing_tests_or_solution() -> None
     assert "SECRET_HIDDEN_TEST" not in serialized
     assert "canonical_solution" not in serialized
     assert "    return 1\\n" in serialized
+
+
+@pytest.mark.parametrize(
+    ("response", "expected_candidate"),
+    [
+        (
+            "```python\n    return 1\n```",
+            "    return 1\n",
+        ),
+        (
+            "Here is the function:\n```python\ndef one():\n    return 1\n```",
+            "def one():\n    return 1\n",
+        ),
+    ],
+)
+def test_runner_normalizes_one_python_fence_only_for_sandbox_submission(
+    response: str, expected_candidate: str
+) -> None:
+    """单个 Python 围栏应被安全剥离，但持久化预测必须保留模型原始输出。"""
+    sandbox = FakeSandbox(SandboxResult(passed=True))
+
+    result = run_humaneval_benchmark(
+        job_id="job_fenced",
+        adapter=StaticMappingAdapter({"def one():\n": response}),
+        problems=[_problem()],
+        sandbox=sandbox,
+    )
+
+    assert sandbox.calls == [("HumanEval/1", expected_candidate)]
+    assert result["sample_results"][0]["prediction"] == response
+
+
+def test_sandbox_payload_treats_complete_entry_point_function_as_full_source() -> None:
+    """模型返回完整目标函数时，Docker 应直接编译该源码而不是再次拼接官方 prompt。"""
+    source = "def one():\n    return 1\n"
+
+    payload = json.loads(_sandbox_payload(_problem(), source))
+
+    assert payload["prompt"] == source
+    assert payload["completion"] == ""
+    assert payload["test"] == "SECRET_HIDDEN_TEST"
+    assert payload["entry_point"] == "one"
+
+
+def test_humaneval_persists_generation_diagnostics_without_changing_candidate() -> None:
+    """HumanEval 应兼容结构化生成结果并把完成原因加入公开样本元数据。"""
+
+    class StructuredAdapter(StaticMappingAdapter):
+        """为单题返回带完成诊断的合法代码补全。"""
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelGeneration:
+            """返回一次因长度停止但已形成完整代码的生成结果。
+
+            Args:
+                prompt: HumanEval 官方公开英文提示。
+                **kwargs: 工作流冻结的生成参数。
+
+            Returns:
+                带候选文本和完成诊断的结构化结果。
+            """
+            del prompt, kwargs
+            return ModelGeneration("    return 1\n", True, "length", 1024)
+
+    result = run_humaneval_benchmark(
+        job_id="job_structured",
+        adapter=StructuredAdapter({}),
+        problems=[_problem()],
+        sandbox=FakeSandbox(SandboxResult(passed=True)),
+    )
+
+    metadata = result["sample_results"][0]["metadata"]
+    assert metadata["generation_done_reason"] == "length"
+    assert metadata["generation_output_tokens"] == 1024
 
 
 def test_runner_marks_failed_candidate_without_leaking_sandbox_details() -> None:

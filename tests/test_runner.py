@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import evalhub.cli as cli_module
-from evalhub.adapters import StaticMappingAdapter
+from evalhub.adapters import ModelGeneration, StaticMappingAdapter
 from evalhub.domain import (
     BenchmarkRecord,
     EvaluationJob,
@@ -30,6 +30,7 @@ class RecordingAdapter(StaticMappingAdapter):
         """
         super().__init__({}, default_response=response)
         self.inputs: list[str] = []
+        self.configs: list[dict[str, object]] = []
 
     def generate(self, prompt: str, **kwargs: object) -> str:
         """记录英文提示并返回固定响应。
@@ -42,6 +43,7 @@ class RecordingAdapter(StaticMappingAdapter):
             构造测试适配器时配置的固定响应。
         """
         self.inputs.append(prompt)
+        self.configs.append(dict(kwargs))
         return super().generate(prompt, **kwargs)
 
 
@@ -232,6 +234,52 @@ def test_runner_preserves_display_metadata_without_sending_it_to_model_or_evalua
     assert results[0].metadata == sample.metadata
 
 
+def test_runner_accepts_structured_generation_and_persists_finish_diagnostics() -> None:
+    """Runner 应评分结构化文本，并把后端完成事实写入样本结果元数据。"""
+
+    class StructuredAdapter(RecordingAdapter):
+        """返回带终止原因的固定模型结果。"""
+
+        def generate(self, prompt: str, **kwargs: object) -> ModelGeneration:
+            """记录输入并返回一个因长度停止但仍有答案的结构化结果。
+
+            Args:
+                prompt: Runner 提交的公开样本输入。
+                **kwargs: Benchmark 冻结的生成参数。
+
+            Returns:
+                含可评分文本和 Ollama 完成诊断的结果。
+            """
+            self.inputs.append(prompt)
+            return ModelGeneration("A", True, "length", 256)
+
+    sample = EvaluationSample(
+        id="s1",
+        input="Choose one",
+        reference="A",
+        metadata={"source_key": "fixture:1"},
+    )
+    runner = EvaluationRunner(StructuredAdapter("unused"), ExactMatchEvaluator())
+    job = EvaluationJob(model_id="model_1", benchmark_id="benchmark_1")
+    benchmark = BenchmarkRecord(
+        id="benchmark_1",
+        name="structured-mini",
+        dataset_id="dataset_1",
+        evaluator_type="exact_match",
+    )
+
+    results, _ = runner.run(job=job, benchmark=benchmark, samples=[sample])
+
+    assert results[0].prediction == "A"
+    assert results[0].score == 1.0
+    assert results[0].metadata == {
+        "source_key": "fixture:1",
+        "generation_done": True,
+        "generation_done_reason": "length",
+        "generation_output_tokens": 256,
+    }
+
+
 def test_real_benchmark_failed_example_keeps_sample_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -270,3 +318,35 @@ def test_real_benchmark_failed_example_keeps_sample_metadata(
     )
 
     assert result["failed_examples"][0]["metadata"] == sample.metadata
+
+
+def test_direct_ollama_benchmark_applies_model_and_answer_generation_protocols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """绕过任务工作流的 CLI 调用也必须合并模型思考开关与分项预算。"""
+    sample = EvaluationSample(id="mmlu-1", input="Choose", reference="A")
+    adapter = RecordingAdapter("A")
+    monkeypatch.setattr(cli_module, "prepare_dataset", lambda dataset: None)
+    monkeypatch.setattr(cli_module, "load_samples", lambda *args, **kwargs: [sample])
+    monkeypatch.setattr(
+        cli_module,
+        "get_dataset_spec",
+        lambda dataset: SimpleNamespace(
+            name=dataset,
+            display_name="Hexagon MMLU fixture",
+            local_path="fixture.csv",
+            evaluator_type="choice_letter",
+        ),
+    )
+    monkeypatch.setattr(cli_module, "build_model_adapter", lambda *args, **kwargs: adapter)
+
+    cli_module.run_real_benchmark(
+        dataset="hexagon-mmlu",
+        adapter_type="ollama",
+        model="gemma4:12b",
+        base_url="http://127.0.0.1:11434",
+        limit=None,
+        subject="all",
+    )
+
+    assert adapter.configs == [{"temperature": 0, "num_predict": 256, "think": False}]

@@ -80,6 +80,11 @@ it("shows frozen suite reproducibility as a compact disclosure", () => {
           source_revisions: { "hexagon-gsm8k": "revision-1" },
           prompt_template_versions: { "hexagon-gsm8k": "evalhub-v1" },
           generation_config: { temperature: 0, num_predict: 256 },
+          generation_configs: {
+            "hexagon-gsm8k": { temperature: 0, num_predict: 512, think: false },
+          },
+          model_generation_protocol_version: "ollama-generate-v1",
+          answer_protocol_versions: { "hexagon-gsm8k": "numeric-exact-v1" },
         },
       }}
     />,
@@ -89,6 +94,9 @@ it("shows frozen suite reproducibility as a compact disclosure", () => {
   expect(screen.getByText("sha256:manifest")).toBeInTheDocument();
   expect(screen.getByText("hexagon-gsm8k: revision-1")).toBeInTheDocument();
   expect(screen.getByText("hexagon-gsm8k: evalhub-v1")).toBeInTheDocument();
+  expect(screen.getByText("ollama-generate-v1")).toBeInTheDocument();
+  expect(screen.getByText("hexagon-gsm8k: numeric-exact-v1")).toBeInTheDocument();
+  expect(screen.getByText(/hexagon-gsm8k: temperature=0, num_predict=512, think=false/)).toBeInTheDocument();
 });
 
 it("suppresses raw JSON for a Hexagon result without reproducibility", () => {

@@ -92,8 +92,34 @@ class OllamaStatusTest(unittest.TestCase):
             option_by_name["custom-local:latest"]["evaluation_types"], ["model", "agent"]
         )
         self.assertEqual(option_by_name["custom-local:latest"]["capability_label"], "本机模型")
+        self.assertEqual(
+            option_by_name["custom-local:latest"]["benchmark_protocol"], "unsupported"
+        )
+        self.assertIn(
+            "未注册", option_by_name["custom-local:latest"]["benchmark_protocol_reason"]
+        )
         self.assertEqual(option_by_name["ministral-3:8b"]["installed"], False)
+        self.assertEqual(
+            option_by_name["ministral-3:8b"]["benchmark_protocol"], "static_only"
+        )
         self.assertIn("函数调用", option_by_name["ministral-3:8b"]["description"])
+
+    def test_installed_registered_model_reports_verified_protocol(self) -> None:
+        """已安装且已登记模型应向控制台报告可执行的 Benchmark 协议。"""
+        from evalhub.ollama import get_ollama_status
+
+        response = _Response(b'{"models":[{"name":"granite3.3:8b"}]}')
+        with (
+            patch("evalhub.ollama.find_ollama_command", return_value="/usr/local/bin/ollama"),
+            patch("evalhub.ollama.urlopen", return_value=response),
+        ):
+            status = get_ollama_status(model="granite3.3:8b")
+
+        option = next(
+            item for item in status["model_options"] if item["name"] == "granite3.3:8b"
+        )
+        self.assertEqual(option["benchmark_protocol"], "verified")
+        self.assertEqual(option["benchmark_protocol_version"], "ollama-generate-v1")
 
     def test_installed_model_size_overrides_catalog_estimate(self) -> None:
         """已安装模型必须展示 Ollama 返回的真实磁盘大小。"""

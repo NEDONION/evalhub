@@ -416,7 +416,7 @@ def _parse_bbh_task(rows: dict[str, NormalizedSourceRow], task: str, payload: ob
         _add_row(
             rows,
             NormalizedSourceRow(
-                source_key, f"{input_text}\n\nAnswer:", target, "exact_match", metadata
+                source_key, f"{input_text}\n\nAnswer:", target, "bbh_answer", metadata
             ),
         )
 

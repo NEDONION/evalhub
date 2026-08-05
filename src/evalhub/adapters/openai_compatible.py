@@ -7,7 +7,7 @@ from time import sleep
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from evalhub.adapters.base import ModelAdapter
+from evalhub.adapters.base import ModelAdapter, ModelGenerationError
 
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 3
@@ -287,4 +287,11 @@ def _completion_text(body: object) -> str:
     message = choices[0].get("message")
     if not isinstance(message, dict) or not isinstance(message.get("content"), str):
         raise RuntimeError("模型服务响应不符合 Chat Completions 协议")
-    return message["content"]
+    content = message["content"]
+    if not content.strip():
+        # 空助手消息没有可评分语义，必须沿用其他模型后端的稳定阻塞分类。
+        raise ModelGenerationError(
+            "empty_model_response",
+            "empty_model_response: 模型服务未返回可评分的最终回答",
+        )
+    return content

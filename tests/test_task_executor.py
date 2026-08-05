@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 
 import evalhub.tasks.executor as executor_module
+from evalhub.adapters import ModelGenerationError
 from evalhub.benchmarks import HumanEvalProblem, SandboxInfrastructureError
 from evalhub.domain import EvaluationSampleResult
 from evalhub.tasks import ResourceUsage, TaskRequest
@@ -399,6 +400,40 @@ def test_humaneval_infrastructure_error_keeps_stable_type_across_process_boundar
     assert result is None
     assert isinstance(error, TaskExecutionError)
     assert error.error_type == "image_untrusted"
+
+
+def test_model_generation_error_keeps_stable_type_across_process_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型没有最终回答时应阻塞 Benchmark 节点而不是写入零分样本。"""
+    child_queue = RecordingQueue()
+
+    def fail_generation(**kwargs: object) -> dict[str, object]:
+        """模拟 Ollama 思考耗尽预算后返回空最终答案。
+
+        Raises:
+            ModelGenerationError: 每次调用均报告稳定的不完整生成分类。
+        """
+        del kwargs
+        raise ModelGenerationError("generation_incomplete", "没有可评分最终答案")
+
+    monkeypatch.setattr(executor_module, "run_real_benchmark", fail_generation)
+    _evaluation_process("job_empty", asdict(request_fixture()), child_queue)
+
+    parent_queue: Queue[dict[str, object]] = Queue()
+    parent_queue.put(child_queue.events[-1])
+    result, error = SubprocessEvaluationExecutor._read_event(
+        parent_queue,
+        result=None,
+        error_message=None,
+        on_progress=lambda completed, total: None,
+        on_sample_result=None,
+        on_trace=None,
+    )
+
+    assert result is None
+    assert isinstance(error, TaskExecutionError)
+    assert error.error_type == "generation_incomplete"
 
 
 class EmptyParentQueue:

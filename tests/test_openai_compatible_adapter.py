@@ -218,6 +218,17 @@ def test_generate_rejects_malformed_chat_completion(body: bytes) -> None:
             )
 
 
+def test_generate_rejects_empty_chat_completion_as_unscorable() -> None:
+    """远程模型返回空 content 时应阻塞节点，不能保存为空答案零分。"""
+    response = _Response(b'{"choices":[{"message":{"content":"   "}}]}')
+
+    with patch("evalhub.adapters.openai_compatible.urlopen", return_value=response):
+        with pytest.raises(RuntimeError, match="empty_model_response"):
+            OpenAICompatibleAdapter("model", "https://api.example.com", "sk-key").generate(
+                "hello"
+            )
+
+
 def test_discover_models_returns_sorted_unique_ids() -> None:
     """模型探测应使用 GET 请求并过滤、去重和排序合法模型 ID。"""
     response = _Response(

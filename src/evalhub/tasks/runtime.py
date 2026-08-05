@@ -465,6 +465,10 @@ class PersistentWorkflowExecutor:
                     "dataset_revision": _resolved_dataset_revision(spec, execution_digest_after),
                     "expected_sample_count": spec.expected_sample_count,
                     "prompt_template_version": spec.prompt_template_version,
+                    "answer_protocol_version": spec.answer_protocol_version,
+                    "model_generation_protocol_version": node.input.get(
+                        "model_generation_protocol_version"
+                    ),
                     "generation_config": dict(spec.generation_config),
                     "protocol_fingerprint": protocol_fingerprint,
                     "score_sum": round(sum(scores), 6),
@@ -488,6 +492,10 @@ class PersistentWorkflowExecutor:
             "dataset_revision": _resolved_dataset_revision(spec, execution_digest_after),
             "expected_sample_count": spec.expected_sample_count,
             "prompt_template_version": spec.prompt_template_version,
+            "answer_protocol_version": spec.answer_protocol_version,
+            "model_generation_protocol_version": node.input.get(
+                "model_generation_protocol_version"
+            ),
             "generation_config": dict(spec.generation_config),
             "protocol_fingerprint": protocol_fingerprint,
             "raw_score": round(sum(scores) / len(scores), 6) if scores else 0.0,
@@ -739,6 +747,9 @@ def _frozen_benchmark_spec(node: EvaluationNode) -> BenchmarkSpec:
         ),
         weight=float(payload["weight"]),
         prompt_template_version=str(payload["prompt_template_version"]),
+        answer_protocol_version=str(
+            payload.get("answer_protocol_version", "legacy-answer-v1")
+        ),
         few_shot=int(payload["few_shot"]),
         generation_config=dict(payload["generation_config"]),
         requirements=tuple(str(item) for item in payload["requirements"]),

@@ -145,7 +145,7 @@ def _manifest_payload() -> dict[str, object]:
         samples.append(
             _sample(index, "hexagon-ifeval", "instruction_following", stratum, source_key)
         )
-    return {"version": "1.1.0", "samples": samples}
+    return {"version": "1.2.0", "samples": samples}
 
 
 def _source_key(benchmark_id: str, stratum: str, index: int) -> str:
@@ -184,7 +184,7 @@ def test_hexagon_manifest_requires_complete_bilingual_provenance(tmp_path: Path)
     """缺少固定样本必填溯源字段时，清单读取必须明确拒绝。"""
     path = tmp_path / "manifest.json"
     path.write_text(
-        json.dumps({"version": "1.1.0", "samples": [{"id": "broken"}]}),
+        json.dumps({"version": "1.2.0", "samples": [{"id": "broken"}]}),
         encoding="utf-8",
     )
 

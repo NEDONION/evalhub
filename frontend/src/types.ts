@@ -33,6 +33,9 @@ export interface ModelOption {
   size_kind: "actual" | "estimated" | "unknown";
   evaluation_types: EvaluationType[];
   capability_label: string;
+  benchmark_protocol?: "verified" | "static_only" | "unsupported";
+  benchmark_protocol_reason?: string;
+  benchmark_protocol_version?: string | null;
 }
 
 export type PullStatus = "pending" | "pulling" | "verifying" | "success" | "failed" | "canceled";
@@ -228,6 +231,9 @@ export interface EvaluationReproducibility {
   source_revisions?: Record<string, string>;
   prompt_template_versions?: Record<string, string>;
   generation_config?: Record<string, string | number | boolean | null>;
+  generation_configs?: Record<string, Record<string, string | number | boolean | null>>;
+  model_generation_protocol_version?: string;
+  answer_protocol_versions?: Record<string, string>;
 }
 
 export interface ModelCapabilityBenchmarkResult {

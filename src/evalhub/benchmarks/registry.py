@@ -1,5 +1,6 @@
 """声明并校验 EvalHub 内置的版本化 Benchmark 与 Suite Registry。"""
 
+from types import MappingProxyType
 from typing import TypeAlias
 
 from evalhub.benchmarks.models import (
@@ -182,7 +183,7 @@ HEXAGON_ROWS: tuple[BenchmarkRow, ...] = (
         "openai/grade-school-math",
         ExecutorKind.NATIVE,
         "hexagon_gsm8k",
-        "exact_match",
+        "numeric_exact_match",
         None,
     ),
     (
@@ -192,7 +193,7 @@ HEXAGON_ROWS: tuple[BenchmarkRow, ...] = (
         "suzgunmirac/BIG-Bench-Hard",
         ExecutorKind.NATIVE,
         "hexagon_bbh",
-        "exact_match",
+        "bbh_answer",
         None,
     ),
     (
@@ -229,10 +230,28 @@ HEXAGON_ROWS: tuple[BenchmarkRow, ...] = (
 
 DATASET_REVISION = "resolved-at-runtime:sha256"
 PROTOCOL_VERSION = "1.0.0"
-HEXAGON_PROTOCOL_VERSION = "1.1.0"
+HEXAGON_PROTOCOL_VERSION = "1.2.0"
 
 _HEXAGON_SAMPLE_COUNTS = (5, 5, 5, 5, 5, 3, 2)
 _HEXAGON_WEIGHTS = (1.0, 1.0, 1.0, 1.0, 1.0, 0.6, 0.4)
+_HEXAGON_NUM_PREDICT = {
+    "hexagon-mmlu": 256,
+    "hexagon-ifeval": 1024,
+    "hexagon-gsm8k": 512,
+    "hexagon-bbh": 512,
+    "hexagon-humaneval": 1024,
+    "hexagon-truthfulqa": 256,
+    "hexagon-bbq": 256,
+}
+_HEXAGON_ANSWER_PROTOCOLS = {
+    "hexagon-mmlu": "choice-letter-v1",
+    "hexagon-ifeval": "ifeval-strict-v1",
+    "hexagon-gsm8k": "numeric-exact-v1",
+    "hexagon-bbh": "bbh-answer-v1",
+    "hexagon-humaneval": "humaneval-code-v2",
+    "hexagon-truthfulqa": "choice-letter-v1",
+    "hexagon-bbq": "choice-letter-v1",
+}
 _HEXAGON_REVISIONS = {
     "hexagon-mmlu": "sha256:bec563ba4bac1d6aaf04141cd7d1605d7a5ca833e38f994051e818489592989b",
     "hexagon-ifeval": "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0",
@@ -314,6 +333,19 @@ def _build_benchmark_registry() -> dict[str, BenchmarkSpec]:
             ),
             random_baseline=None if is_hexagon else baseline,
             weight=_HEXAGON_WEIGHTS[hexagon_index] if is_hexagon else 1.0,
+            answer_protocol_version=(
+                _HEXAGON_ANSWER_PROTOCOLS[benchmark_id]
+                if is_hexagon
+                else "legacy-answer-v1"
+            ),
+            generation_config=MappingProxyType(
+                {
+                    "temperature": 0,
+                    "num_predict": (
+                        _HEXAGON_NUM_PREDICT[benchmark_id] if is_hexagon else 256
+                    ),
+                }
+            ),
         )
         if spec.weight <= 0:
             raise ValueError(f"benchmark weight must be positive: {benchmark_id}")

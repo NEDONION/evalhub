@@ -41,12 +41,39 @@ def test_hexagon_suite_has_fixed_source_counts_and_six_dimensions() -> None:
     specs = [get_benchmark_spec(item) for item in suite.benchmark_ids]
 
     assert [item.expected_sample_count for item in specs] == [5, 5, 5, 5, 5, 3, 2]
-    assert suite.version == "1.1.0"
-    assert all(item.version == "1.1.0" for item in specs)
+    assert suite.version == "1.2.0"
+    assert all(item.version == "1.2.0" for item in specs)
     assert {item.capability for item in specs} == set(Capability)
     assert all(item.normalization == NormalizationKind.SCALE_100 for item in specs)
     safety_specs = [item for item in specs if item.capability == Capability.SAFETY_TRUST]
     assert [item.weight for item in safety_specs] == [0.6, 0.4]
+
+
+def test_hexagon_answer_protocols_freeze_per_benchmark_generation_budgets() -> None:
+    """七项回答协议必须固定各自预算和版本，不能继续共享 256 token 默认值。"""
+    suite = get_suite_spec("evalhub-hexagon-v1")
+    specs = [get_benchmark_spec(item) for item in suite.benchmark_ids]
+
+    assert [item.generation_config["num_predict"] for item in specs] == [
+        256,
+        1024,
+        512,
+        512,
+        1024,
+        256,
+        256,
+    ]
+    assert [item.answer_protocol_version for item in specs] == [
+        "choice-letter-v1",
+        "ifeval-strict-v1",
+        "numeric-exact-v1",
+        "bbh-answer-v1",
+        "humaneval-code-v2",
+        "choice-letter-v1",
+        "choice-letter-v1",
+    ]
+    assert get_benchmark_spec("hexagon-gsm8k").metric == "numeric_exact_match"
+    assert get_benchmark_spec("hexagon-bbh").metric == "bbh_answer"
 
 
 def test_registry_returns_new_mappings_with_stable_members() -> None:

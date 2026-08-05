@@ -64,8 +64,16 @@ def dataset_catalog() -> dict[str, DatasetSpec]:
             "ifeval_strict",
             "https://github.com/google-research/google-research/tree/master/instruction_following_eval",
         ),
-        "hexagon-gsm8k": ("math_reasoning", "exact_match", "https://github.com/openai/grade-school-math"),
-        "hexagon-bbh": ("reasoning", "exact_match", "https://github.com/suzgunmirac/BIG-Bench-Hard"),
+        "hexagon-gsm8k": (
+            "math_reasoning",
+            "numeric_exact_match",
+            "https://github.com/openai/grade-school-math",
+        ),
+        "hexagon-bbh": (
+            "reasoning",
+            "bbh_answer",
+            "https://github.com/suzgunmirac/BIG-Bench-Hard",
+        ),
         "hexagon-humaneval": ("code_generation", "pass@1", "https://github.com/openai/human-eval"),
         "hexagon-truthfulqa": (
             "multiple_choice",

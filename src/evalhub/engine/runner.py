@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from evalhub.adapters.base import ModelAdapter
+from evalhub.adapters.base import ModelAdapter, unpack_model_generation
 from evalhub.domain.entities import (
     BenchmarkRecord,
     EvaluationJob,
@@ -70,7 +70,8 @@ class EvaluationRunner:
                 if sample.id in skip_sample_ids:
                     continue
                 # 每条样本先调用模型，再把预测、参考答案和上下文交给统一评测器。
-                prediction = self.model_adapter.generate(sample.input, **runtime_config)
+                generation = self.model_adapter.generate(sample.input, **runtime_config)
+                prediction, generation_metadata = unpack_model_generation(generation)
                 evaluator_metadata = {
                     key: value
                     for key, value in sample.metadata.items()
@@ -93,7 +94,7 @@ class EvaluationRunner:
                         metric=metric.metric,
                         score=metric.score,
                         reason=metric.reason,
-                        metadata=sample.metadata,
+                        metadata={**sample.metadata, **generation_metadata},
                     )
                 )
                 completed += 1

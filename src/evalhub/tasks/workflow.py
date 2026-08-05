@@ -12,6 +12,10 @@ from evalhub.benchmarks import (
 )
 from evalhub.benchmarks.humaneval import humaneval_verifier_identity
 from evalhub.datasets import PinnedSource, dataset_catalog, hexagon_source_specs
+from evalhub.model_protocols import (
+    effective_generation_config,
+    get_model_generation_profile,
+)
 from evalhub.tasks.models import TaskRequest, WorkflowNodeSpec
 
 
@@ -47,21 +51,34 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
     verifier_identity = (
         humaneval_verifier_identity() if "hexagon-humaneval" in hexagon_ids else None
     )
+    model_profile = (
+        get_model_generation_profile(request.model)
+        if hexagon_ids and request.adapter == "ollama"
+        else None
+    )
     source_contracts: dict[str, dict[str, str]] = {}
     for benchmark_id in hexagon_ids:
         source = pinned_sources.get(benchmark_id)
         if source is None:
             raise ValueError(f"missing pinned source contract: {benchmark_id}")
         source_contracts[benchmark_id] = _source_contract(source, benchmark_id)
-    benchmark_protocols = [
-        _benchmark_protocol(
-            spec,
-            datasets[spec.id].evaluator_type if spec.id in datasets else spec.metric,
-            source_contracts.get(spec.id),
-            verifier_identity if spec.id == "hexagon-humaneval" else None,
+    benchmark_protocols: list[dict[str, object]] = []
+    for spec in specs:
+        generation_config = (
+            effective_generation_config(request.model, spec.generation_config)
+            if model_profile is not None
+            else dict(spec.generation_config)
         )
-        for spec in specs
-    ]
+        benchmark_protocols.append(
+            _benchmark_protocol(
+                spec,
+                datasets[spec.id].evaluator_type if spec.id in datasets else spec.metric,
+                generation_config,
+                model_profile.protocol_version if model_profile is not None else None,
+                source_contracts.get(spec.id),
+                verifier_identity if spec.id == "hexagon-humaneval" else None,
+            )
+        )
     protocol_fingerprint = _protocol_fingerprint(suite, manifest_sha256, benchmark_protocols)
     reproducibility = {
         "suite_version": suite.version,
@@ -70,8 +87,23 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
         "prompt_template_versions": {
             spec.id: spec.prompt_template_version for spec in specs
         },
-        "generation_config": dict(specs[0].generation_config) if specs else {},
+        "generation_config": (
+            dict(benchmark_protocols[0]["generation_config"])
+            if benchmark_protocols
+            else {}
+        ),
+        "generation_configs": {
+            str(protocol["benchmark_id"]): dict(protocol["generation_config"])
+            for protocol in benchmark_protocols
+        },
+        "answer_protocol_versions": {
+            spec.id: spec.answer_protocol_version for spec in specs
+        },
     }
+    if model_profile is not None:
+        reproducibility["model_generation_protocol_version"] = (
+            model_profile.protocol_version
+        )
     # 最终结果直接发布创建时冻结合同，不能在终结阶段重新读取当前部署固定来源。
     if source_contracts:
         reproducibility["source_contracts"] = source_contracts
@@ -154,6 +186,8 @@ def build_workflow(request: TaskRequest) -> tuple[WorkflowNodeSpec, ...]:
 def _benchmark_protocol(
     spec: BenchmarkSpec,
     evaluator_type: str,
+    generation_config: dict[str, object],
+    model_generation_protocol_version: str | None,
     source_contract: dict[str, str] | None = None,
     verifier_identity: str | None = None,
 ) -> dict[str, object]:
@@ -162,6 +196,8 @@ def _benchmark_protocol(
     Args:
         spec: 创建任务时读取的一条不可变 Benchmark 规格。
         evaluator_type: 创建时数据集目录为该 Benchmark 选择的评分器类型。
+        generation_config: 已合并模型传输协议的最终生成参数。
+        model_generation_protocol_version: Ollama 模型生成协议版本；其他适配器为空。
         source_contract: Hexagon 在创建时读取的 Task 2 固定下载合同；其他套件为空。
         verifier_identity: HumanEval 固定镜像三文件执行上下文身份；其他成员为空。
 
@@ -186,10 +222,13 @@ def _benchmark_protocol(
         "random_baseline": spec.random_baseline,
         "weight": spec.weight,
         "prompt_template_version": spec.prompt_template_version,
+        "answer_protocol_version": spec.answer_protocol_version,
         "few_shot": spec.few_shot,
-        "generation_config": dict(spec.generation_config),
+        "generation_config": dict(generation_config),
         "requirements": list(spec.requirements),
     }
+    if model_generation_protocol_version is not None:
+        protocol["model_generation_protocol_version"] = model_generation_protocol_version
     # 仅 Hexagon 增加该字段，避免改变非 Hexagon 工作流的持久化兼容形状。
     if source_contract is not None:
         protocol["source_contract"] = dict(source_contract)

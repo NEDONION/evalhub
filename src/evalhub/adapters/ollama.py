@@ -4,7 +4,7 @@ import json
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from evalhub.adapters.base import ModelAdapter
+from evalhub.adapters.base import ModelAdapter, ModelGeneration, ModelGenerationError
 
 
 class OllamaAdapter(ModelAdapter):
@@ -24,18 +24,20 @@ class OllamaAdapter(ModelAdapter):
         self.model = model
         self.base_url = base_url.rstrip("/")
 
-    def generate(self, prompt: str, **kwargs: object) -> str:
-        """调用 Ollama 非流式生成接口并返回完整文本预测。
+    def generate(self, prompt: str, **kwargs: object) -> ModelGeneration:
+        """调用 Ollama 非流式生成接口并返回文本及完成诊断。
 
         Args:
             prompt: 发送给本地模型的完整输入文本。
             **kwargs: 可选的温度、采样概率、生成长度和随机种子参数。
 
         Returns:
-            Ollama 响应中的完整 ``response`` 文本。
+            Ollama 响应中的完整文本、完成状态、终止原因和可选 token 数。
 
         Raises:
-            RuntimeError: HTTP 请求失败、服务不可达或响应缺少文本字段。
+            ModelGenerationError: 服务没有返回任何可评分文本。
+            RuntimeError: HTTP 请求失败、服务不可达或响应字段类型不符合协议。
+            ValueError: 调用方提供的 ``think`` 不是布尔值。
         """
         # 只透传 Ollama 明确支持的运行参数，避免 Benchmark 配置意外污染请求体。
         options = {
@@ -50,6 +52,12 @@ class OllamaAdapter(ModelAdapter):
             "stream": False,
             "options": options,
         }
+        think = kwargs.get("think")
+        if think is not None:
+            if type(think) is not bool:
+                raise ValueError("Ollama think must be a boolean")
+            # Ollama 的思考开关属于请求顶层，不是 options 中的采样参数。
+            payload["think"] = think
         # 请求对象集中声明编码、内容类型和方法，便于在网络边界统一测试替换。
         request = Request(
             f"{self.base_url}/api/generate",
@@ -84,7 +92,31 @@ class OllamaAdapter(ModelAdapter):
                 f"然后执行：ollama pull {self.model}"
             ) from exc
 
-        # 缺少生成文本代表协议不符合预期，不能把空字符串伪装成有效模型输出。
-        if "response" not in body:
+        # 三个完成字段共同构成非流式响应边界，拒绝字符串强转掩盖服务协议变化。
+        if (
+            not isinstance(body, dict)
+            or not isinstance(body.get("response"), str)
+            or type(body.get("done")) is not bool
+            or not isinstance(body.get("done_reason"), str)
+        ):
             raise RuntimeError(f"unexpected Ollama response: {body}")
-        return str(body["response"])
+        text = body["response"]
+        done_reason = body["done_reason"]
+        if not text.strip():
+            # 长度耗尽通常表示思考占满预算；其他空停止仍是不可评分的模型响应。
+            code = (
+                "generation_incomplete"
+                if done_reason == "length"
+                else "empty_model_response"
+            )
+            raise ModelGenerationError(code, f"{code}: Ollama 未返回可评分的最终回答")
+        output_tokens = body.get("eval_count")
+        if not isinstance(output_tokens, int) or isinstance(output_tokens, bool):
+            output_tokens = None
+        # 非空的 length 响应仍可正常评分，同时保留终止原因供账本和排障使用。
+        return ModelGeneration(
+            text=text,
+            done=body["done"],
+            done_reason=done_reason,
+            output_tokens=output_tokens,
+        )

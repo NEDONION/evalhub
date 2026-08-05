@@ -6,6 +6,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+from evalhub.model_protocols import model_generation_profiles
+
 # 默认连接与模型兼顾开箱即用和低资源机器的本地运行成本。
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "granite4.1:3b"
@@ -313,7 +315,18 @@ def _model_option(
     capability_label = (
         str(recommended["capability_label"]) if recommended else "本机模型"
     )
-    # 容量来源显式返回给前端，界面才能正确区分“约 986 MB”和已安装实际值。
+    profile = model_generation_profiles().get(name)
+    if profile is None:
+        benchmark_protocol = "unsupported"
+        benchmark_protocol_reason = "该模型未注册 Benchmark 生成协议。"
+    elif installed:
+        benchmark_protocol = "verified"
+        benchmark_protocol_reason = "模型已安装且生成协议已注册，可执行正式 Benchmark。"
+    else:
+        benchmark_protocol = "static_only"
+        benchmark_protocol_reason = "生成协议已静态校验；模型未安装，尚未执行真实验证。"
+
+    # 容量来源和协议状态显式返回，让前端无需复制后端注册判断。
     return {
         "name": name,
         "label": label,
@@ -323,6 +336,9 @@ def _model_option(
         "size_kind": size_kind,
         "evaluation_types": evaluation_types,
         "capability_label": capability_label,
+        "benchmark_protocol": benchmark_protocol,
+        "benchmark_protocol_reason": benchmark_protocol_reason,
+        "benchmark_protocol_version": profile.protocol_version if profile else None,
     }
 
 

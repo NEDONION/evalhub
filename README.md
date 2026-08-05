@@ -113,13 +113,17 @@ Benchmark 或 Suite 下的基模成绩。
 | 入口 | 当前范围 | 主要输出 |
 | --- | --- | --- |
 | **单项模型 Benchmark** | MMLU、GSM8K、IFEval、HumanEval、MBPP 等已注册公开评测 | 官方或固定评测指标、样本结果、失败样本 |
-| **Hexagon Mini Suite** | `evalhub-hexagon-v1` `1.1.0`，固定 30 次模型调用，覆盖六个能力维度 | 六维画像、覆盖率和可复现性元数据 |
+| **Hexagon Mini Suite** | `evalhub-hexagon-v1` `1.2.0`，固定 30 次模型调用，覆盖六个能力维度 | 六维画像、覆盖率和可复现性元数据 |
 | **Coding Mini Agent** | `coding-mini-v2`，固定 Pi CLI 壳、6 道分级编码任务和隐藏 Verifier | 通过率、难度报告、Agent 六维画像和过程审计 |
 
 > [!IMPORTANT]
 > Hexagon Mini Suite 是本地能力画像，不是七个上游 Benchmark 的完整官方分数，不能直接复述为论文
 > 或排行榜成绩。代码评测需要 Docker；当前 Ollama 适配器缺少 prompt logprobs，因此部分单项官方
 > 协议会明确阻塞，而不会用生成式近似产生虚假分数。
+
+Hexagon 1.2 将模型传输和答案评分分开冻结：已登记的思考模型在 Ollama `/api/generate` 顶层使用
+`think=false`，七项 Benchmark 分别使用选择题、IFEval 原文规则、数值、BBH 子任务和 HumanEval
+代码协议。空最终回答会阻塞节点，不再被保存为零分；非空但答错的回答仍按统一标准记零分。
 
 ## Project Status
 

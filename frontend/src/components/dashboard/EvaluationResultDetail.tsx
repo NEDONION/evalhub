@@ -160,6 +160,8 @@ function ReproducibilityLedger({
   const sourceRevisions = Object.entries(reproducibility.source_revisions || {});
   const promptTemplates = Object.entries(reproducibility.prompt_template_versions || {});
   const promptConfig = Object.entries(reproducibility.generation_config || {});
+  const answerProtocols = Object.entries(reproducibility.answer_protocol_versions || {});
+  const generationConfigs = Object.entries(reproducibility.generation_configs || {});
 
   return (
     <details className="border-b border-border">
@@ -172,6 +174,16 @@ function ReproducibilityLedger({
         <LedgerRow label="来源版本" value={sourceRevisions.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
         <LedgerRow label="提示模板" value={promptTemplates.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
         <LedgerRow label="生成配置" value={promptConfig.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+        <LedgerRow label="模型生成协议" value={reproducibility.model_generation_protocol_version} mono />
+        <LedgerRow label="回答协议" value={answerProtocols.map(([key, value]) => `${key}: ${value}`).join(" · ")} />
+        <LedgerRow
+          label="分项生成配置"
+          value={generationConfigs
+            .map(([benchmark, config]) => (
+              `${benchmark}: ${Object.entries(config).map(([key, value]) => `${key}=${value}`).join(", ")}`
+            ))
+            .join(" · ")}
+        />
       </dl>
     </details>
   );

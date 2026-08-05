@@ -13,6 +13,17 @@ interface ModelSelectorProps {
   onChange: (model: string) => void;
 }
 
+const protocolLabels = {
+  verified: "Benchmark 已适配",
+  static_only: "协议待实测",
+  unsupported: "Benchmark 不支持",
+} as const;
+
+/** 返回模型选项的简短 Benchmark 协议状态；旧接口缺字段时不展示。 */
+function protocolLabel(option: ModelOption): string | null {
+  return option.benchmark_protocol ? protocolLabels[option.benchmark_protocol] : null;
+}
+
 /**
  * 展示带安装状态、能力标签和容量信息的本地模型选择器。
  *
@@ -104,6 +115,7 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
           const index = orderedOptions.findIndex((item) => item.name === option.name);
           const isSelected = option.name === value;
           const size = formatBytes(option.size_bytes);
+          const benchmarkProtocol = protocolLabel(option);
           return (
             <button
               key={option.name}
@@ -125,6 +137,14 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
                   <span className="rounded border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                     {option.capability_label}
                   </span>
+                  {benchmarkProtocol ? (
+                    <span
+                      className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600"
+                      title={option.benchmark_protocol_reason}
+                    >
+                      {benchmarkProtocol}
+                    </span>
+                  ) : null}
                 </span>
                 <span className="mt-1 block truncate text-xs text-slate-500">{option.description}</span>
                 <span className="mt-1.5 block font-mono text-[11px] text-slate-400">
@@ -170,6 +190,14 @@ export function ModelSelector({ id, label, options, value, describedBy, onChange
                 <span className="rounded border border-blue-100 bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700">
                   {selected.capability_label}
                 </span>
+                {protocolLabel(selected) ? (
+                  <span
+                    className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600"
+                    title={selected.benchmark_protocol_reason}
+                  >
+                    {protocolLabel(selected)}
+                  </span>
+                ) : null}
               </span>
               <span className="mt-1 block truncate font-mono text-[11px] text-slate-400">
                 {selected.size_kind === "estimated" ? "约 " : ""}{formatBytes(selected.size_bytes)} · {selected.installed ? "已安装" : "未下载"}

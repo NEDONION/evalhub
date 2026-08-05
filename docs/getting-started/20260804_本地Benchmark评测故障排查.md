@@ -31,6 +31,39 @@ Ollama 的 OpenAI 兼容 `/v1/completions` 当前只接受字符串 `prompt`。�
 官方多选似然任务所需的 prompt logprobs。接口范围以
 [Ollama OpenAI compatibility](https://docs.ollama.com/api/openai-compatibility) 为准。
 
+### 大量预测为空且分数接近零
+
+**症状**
+
+失败样例的 `prediction` 为空；思考模型偶尔只有少量样本返回最终答案，Ollama 响应的
+`done_reason` 常为 `length`。
+
+**根因**
+
+旧生成请求没有为思考模型发送顶层 `think=false`，而所有 Hexagon 节点又共享 256 token 上限。
+模型可能把预算全部用于独立思考字段，最终 `response` 为空。旧适配器丢弃 `done_reason`，Runner
+随后把空字符串当成普通错误答案，因此出现“少量通过、绝大多数空预测”的假性低分。
+
+**处理**
+
+- 使用 Hexagon 1.2 新建任务；旧 1.1 节点不会原地升级协议。
+- 在模型下拉框确认状态为“Benchmark 已适配”或“协议待实测”；未知模型不能运行正式 Suite。
+- `generation_incomplete` 表示长度耗尽且没有最终答案，`empty_model_response` 表示其他空响应；两者
+  都会阻塞节点，不产生能力分。
+- 非空且 `done_reason=length` 的回答仍可评分，完成原因和输出 token 数会写入样本 metadata。
+
+### 答案内容正确但仍被记为零分
+
+**症状**
+
+GSM8K 输出含 `Final answer: 500`，或 BBH 输出 `(C)`、`True`、`valid`，但旧任务显示零分。
+
+**根因与处理**
+
+旧目录把 Hexagon GSM8K 和 BBH 都路由到整段 `exact_match`。1.2 改为 GSM8K 最终数值精确比较，
+BBH 按所选子任务的布尔、是非、选项或 valid/invalid 答案域解析。IFEval 不使用这些通用清洗，
+始终把原始输出交给官方严格规则；HumanEval 只规范化单个 Python 围栏或完整入口函数后进入 Docker。
+
 ## 已验证的典型根因
 
 ### `/v1/completions` 返回 HTTP 400

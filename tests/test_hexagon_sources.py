@@ -12,7 +12,12 @@ from evalhub.datasets.hexagon_sources import (
     hexagon_source_specs,
     prepare_hexagon_dataset,
 )
-from evalhub.evaluators import IFEvalStrictEvaluator, default_evaluator_registry
+from evalhub.evaluators import (
+    BBHAnswerEvaluator,
+    IFEvalStrictEvaluator,
+    NumericExactMatchEvaluator,
+    default_evaluator_registry,
+)
 
 
 def test_pinned_download_rejects_wrong_digest_without_replacing_cache(tmp_path: Path) -> None:
@@ -85,6 +90,21 @@ def test_hexagon_ifeval_catalog_type_dispatches_to_the_registered_evaluator() ->
     evaluator_type = dataset_catalog()["hexagon-ifeval"].evaluator_type
 
     assert isinstance(default_evaluator_registry().create(evaluator_type), IFEvalStrictEvaluator)
+
+
+def test_hexagon_free_text_catalog_uses_protocol_specific_evaluators() -> None:
+    """GSM8K 与 BBH 必须分别分派数值和任务感知评分器。"""
+    catalog = dataset_catalog()
+    registry = default_evaluator_registry()
+
+    assert isinstance(
+        registry.create(catalog["hexagon-gsm8k"].evaluator_type),
+        NumericExactMatchEvaluator,
+    )
+    assert isinstance(
+        registry.create(catalog["hexagon-bbh"].evaluator_type),
+        BBHAnswerEvaluator,
+    )
 
 
 def test_prepare_dataset_routes_hexagon_ids_to_pinned_preparation(tmp_path: Path) -> None:

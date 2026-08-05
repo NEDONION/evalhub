@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, Protocol
 
-from evalhub.adapters.base import ModelAdapter
+from evalhub.adapters.base import ModelAdapter, unpack_model_generation
 
 if TYPE_CHECKING:
     from evalhub.datasets.hexagon_manifest import HexagonSampleSpec
@@ -57,6 +57,10 @@ _PUBLIC_METADATA_KEYS = frozenset(
         "input_zh_sha256",
         "reference_zh_sha256",
     }
+)
+_PYTHON_FENCE_PATTERN = re.compile(
+    r"```(?:python|py)?[ \t]*\r?\n(.*?)```",
+    flags=re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -533,9 +537,16 @@ def run_humaneval_benchmark(
     for problem in problems:
         if problem.sample_id in skip_sample_ids:
             continue
-        completion = adapter.generate(problem.prompt, **runtime_config)
-        verdict = sandbox.run(problem, completion)
-        sample_result = _sample_result(problem, completion, verdict)
+        generation = adapter.generate(problem.prompt, **runtime_config)
+        completion, generation_metadata = unpack_model_generation(generation)
+        candidate = _normalize_completion(completion)
+        verdict = sandbox.run(problem, candidate)
+        sample_result = _sample_result(
+            problem,
+            completion,
+            verdict,
+            generation_metadata=generation_metadata,
+        )
         sample_results.append(sample_result)
         completed += 1
         if on_sample_result is not None:
@@ -568,6 +579,23 @@ def run_humaneval_benchmark(
     }
 
 
+def _normalize_completion(completion: str) -> str:
+    """只为沙箱提交剥离唯一 Python 代码围栏。
+
+    Args:
+        completion: 模型生成且需要原样持久化的候选文本。
+
+    Returns:
+        恰有一个 Python 或无语言代码围栏时返回其中源码；其他格式保持原文。
+    """
+    matches = _PYTHON_FENCE_PATTERN.findall(completion)
+    if len(matches) != 1:
+        return completion
+    # 只移除围栏边界换行，保留函数体缩进并补回稳定的源码结尾换行。
+    source = matches[0].strip("\r\n")
+    return f"{source}\n" if source else ""
+
+
 def _sandbox_payload(problem: HumanEvalProblem, completion: str) -> str:
     """序列化固定四字段容器输入，并拒绝会放大管道内存的超长载荷。
 
@@ -581,10 +609,16 @@ def _sandbox_payload(problem: HumanEvalProblem, completion: str) -> str:
     Raises:
         ValueError: 载荷超过固定一 MiB 上限时抛出。
     """
+    complete_function = re.search(
+        rf"(?m)^def\s+{re.escape(problem.entry_point)}\s*\(", completion
+    )
+    # 完整函数不能再次拼接官方签名；普通 completion 继续沿用官方 HumanEval 合同。
+    prompt = completion if complete_function else problem.prompt
+    candidate = "" if complete_function else completion
     payload = json.dumps(
         {
-            "prompt": problem.prompt,
-            "completion": completion,
+            "prompt": prompt,
+            "completion": candidate,
             "test": problem.test,
             "entry_point": problem.entry_point,
         },
@@ -638,7 +672,11 @@ def _parse_sandbox_result(output: str) -> SandboxResult:
 
 
 def _sample_result(
-    problem: HumanEvalProblem, completion: str, verdict: SandboxResult
+    problem: HumanEvalProblem,
+    completion: str,
+    verdict: SandboxResult,
+    *,
+    generation_metadata: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """把隔离判定转换为可持久化结果，并用固定参考文案替代隐藏测试。
 
@@ -646,11 +684,19 @@ def _sample_result(
         problem: 当前题目的公开提示、来源键和中文展示翻译。
         completion: 模型生成且允许展示的一次候选补全。
         verdict: Docker 返回的脱敏通过状态。
+        generation_metadata: 模型后端返回的完成原因和可选 token 统计。
 
     Returns:
         不包含 ``test`` 或 ``canonical_solution`` 的 JSON 兼容样本结果。
     """
     reason = verdict.reason if verdict.reason in _PUBLIC_FAILURE_REASONS else "sandbox_failed"
+    public_metadata = {
+        key: value
+        for key, value in problem.metadata.items()
+        if key in _PUBLIC_METADATA_KEYS
+    }
+    # 完成诊断由可信适配器构造，可公开持久化且不会包含隐藏测试或标准实现。
+    public_metadata.update(generation_metadata or {})
     return {
         "sample_id": problem.sample_id,
         "input": problem.prompt,
@@ -659,9 +705,5 @@ def _sample_result(
         "metric": "pass@1",
         "score": 1.0 if verdict.passed else 0.0,
         "reason": None if verdict.passed else reason,
-        "metadata": {
-            key: value
-            for key, value in problem.metadata.items()
-            if key in _PUBLIC_METADATA_KEYS
-        },
+        "metadata": public_metadata,
     }

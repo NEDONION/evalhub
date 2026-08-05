@@ -575,7 +575,7 @@ def test_manifest_writer_is_byte_stable(tmp_path: Path) -> None:
     first = path.read_bytes()
     write_manifest(path, samples)
 
-    assert json.loads(first)["version"] == "1.1.0"
+    assert json.loads(first)["version"] == "1.2.0"
     assert path.read_bytes() == first
 
 

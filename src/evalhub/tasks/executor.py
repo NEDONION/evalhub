@@ -10,6 +10,7 @@ from threading import Event
 from time import monotonic
 from typing import Protocol
 
+from evalhub.adapters import ModelGenerationError
 from evalhub.agent.pi import AgentTraceEvent, TraceCallback
 from evalhub.benchmarks import (
     DockerHumanEvalSandbox,
@@ -196,6 +197,9 @@ def _evaluation_process(
     except SandboxInfrastructureError as exc:
         # 沙箱基础设施错误必须跨进程保留分类，父流程据此阻塞而不是记录模型失败。
         event_queue.put({"type": "error", "message": str(exc), "error_type": str(exc)})
+    except ModelGenerationError as exc:
+        # 没有可评分文本属于生成协议阻塞，不得落成错误答案或零分样本。
+        event_queue.put({"type": "error", "message": str(exc), "error_type": exc.code})
     except Exception as exc:
         # 子进程边界只发送安全字符串，不尝试跨进程序列化任意异常对象和堆栈。
         event_queue.put({"type": "error", "message": str(exc)})

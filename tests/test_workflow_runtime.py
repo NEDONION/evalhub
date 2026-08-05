@@ -12,6 +12,7 @@ import evalhub.tasks.workflow as workflow_module
 from evalhub.benchmarks import ExecutorReadiness, get_benchmark_spec
 from evalhub.benchmarks.humaneval import humaneval_verifier_identity
 from evalhub.datasets import PinnedSource, hexagon_source_specs
+from evalhub.model_protocols import model_generation_profiles
 from evalhub.tasks import (
     EvaluationSampleCheckpoint,
     ResourceUsage,
@@ -393,10 +394,24 @@ def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_thirty_sample
     assert len(benchmarks) == 7
     assert sum(int(node.input["expected_sample_count"]) for node in benchmarks) == 30
     assert all(node.input["prompt_template_version"] == "evalhub-v1" for node in benchmarks)
-    assert all(
-        node.input["generation_config"] == {"temperature": 0, "num_predict": 256}
-        for node in benchmarks
-    )
+    assert [node.input["generation_config"]["num_predict"] for node in benchmarks] == [
+        256,
+        1024,
+        512,
+        512,
+        1024,
+        256,
+        256,
+    ]
+    assert [node.input["answer_protocol_version"] for node in benchmarks] == [
+        "choice-letter-v1",
+        "ifeval-strict-v1",
+        "numeric-exact-v1",
+        "bbh-answer-v1",
+        "humaneval-code-v2",
+        "choice-letter-v1",
+        "choice-letter-v1",
+    ]
     ifeval = next(node for node in benchmarks if node.input["benchmark_id"] == "hexagon-ifeval")
     humaneval = next(
         node for node in benchmarks if node.input["benchmark_id"] == "hexagon-humaneval"
@@ -408,6 +423,42 @@ def test_hexagon_workflow_has_seven_revisioned_benchmark_nodes_for_thirty_sample
         finalizer.input["reproducibility"]["humaneval_verifier_identity"]
         == humaneval.input["verifier_identity"]
     )
+
+
+def test_all_registered_models_compose_with_all_hexagon_answer_protocols() -> None:
+    """十三个模型协议必须与七项回答协议形成 91 个静态可执行组合。"""
+    combinations: set[tuple[str, str]] = set()
+
+    for model, profile in model_generation_profiles().items():
+        task_request = replace(
+            request(suite_id="evalhub-hexagon-v1"),
+            adapter="ollama",
+            model=model,
+        )
+        benchmarks = [
+            node for node in build_workflow(task_request) if node.kind == "benchmark"
+        ]
+        for node in benchmarks:
+            combinations.add((model, str(node.input["benchmark_id"])))
+            assert isinstance(node.input["answer_protocol_version"], str)
+            assert node.input["model_generation_protocol_version"] == profile.protocol_version
+            assert node.input["generation_config"].get("think") == profile.think
+
+    assert len(combinations) == 13 * 7
+
+
+def test_unknown_ollama_model_is_rejected_for_formal_hexagon_suite() -> None:
+    """未知本机模型可展示，但创建正式 Hexagon 任务时必须稳定拒绝。"""
+    task_request = replace(
+        request(suite_id="evalhub-hexagon-v1"),
+        adapter="ollama",
+        model="custom-local:latest",
+    )
+
+    with pytest.raises(
+        ValueError, match="model_protocol_not_registered: custom-local:latest"
+    ):
+        build_workflow(task_request)
 
 
 def test_hexagon_protocol_fingerprint_changes_for_every_frozen_revision_fact(
@@ -952,7 +1003,7 @@ def test_runtime_uses_creation_frozen_protocol_after_registry_changes(
     assert result["reproducibility"] == frozen_reproducibility
     assert result["comparison_fingerprint"] == frozen_fingerprint
     assert result["benchmark"] == "EvalHub 专业六边形套件 v1"
-    assert result["capability_profile"]["suite_version"] == "1.1.0"
+    assert result["capability_profile"]["suite_version"] == "1.2.0"
     assert all(output["protocol_fingerprint"] == frozen_fingerprint for output in benchmark_outputs)
     assert all(output["prompt_template_version"] == "evalhub-v1" for output in benchmark_outputs)
 
@@ -1187,9 +1238,9 @@ def test_hexagon_runtime_persists_thirty_metadata_results_and_reproducibility(
     } == {100.0}
     reproducibility = result["reproducibility"]
     assert len(result["comparison_fingerprint"]) == 64
-    assert reproducibility["suite_version"] == "1.1.0"
+    assert reproducibility["suite_version"] == "1.2.0"
     assert reproducibility["manifest_sha256"] == (
-        "d62b71974c5c7cfdba240ba432078fc403352ce0eacde9a150748a7a59be1ea3"
+        "4e92c19d862759abd68d9200e109f146225606f07a723534c0888f2dae2c2254"
     )
     assert reproducibility["source_revisions"]["hexagon-ifeval"] == (
         "8dadc6c56e2c2e51a9dd7e0d4bf2840922b4b6c0"
@@ -1198,6 +1249,13 @@ def test_hexagon_runtime_persists_thirty_metadata_results_and_reproducibility(
         node.input["benchmark_id"]: "evalhub-v1" for node in benchmarks
     }
     assert reproducibility["generation_config"] == {"temperature": 0, "num_predict": 256}
+    assert reproducibility["generation_configs"]["hexagon-humaneval"] == {
+        "temperature": 0,
+        "num_predict": 1024,
+    }
+    assert reproducibility["answer_protocol_versions"]["hexagon-gsm8k"] == (
+        "numeric-exact-v1"
+    )
 
 
 def test_hexagon_runtime_blocks_unready_humaneval_without_executing_it(tmp_path: Path) -> None:

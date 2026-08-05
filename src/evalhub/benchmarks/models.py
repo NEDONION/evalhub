@@ -57,6 +57,7 @@ class BenchmarkSpec:
     random_baseline: float | None = None
     weight: float = 1.0
     prompt_template_version: str = "evalhub-v1"
+    answer_protocol_version: str = "legacy-answer-v1"
     few_shot: int = 0
     generation_config: Mapping[str, object] = field(default_factory=_default_generation_config)
     requirements: tuple[str, ...] = ()

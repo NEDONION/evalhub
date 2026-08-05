@@ -350,8 +350,8 @@ def load_hexagon_manifest(path: Path) -> tuple[HexagonSampleSpec, ...]:
         ValueError: JSON 结构、协议版本或任一样本不符合 Hexagon 固定清单契约时抛出。
     """
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict) or payload.get("version") != "1.1.0":
-        raise ValueError("manifest version must be 1.1.0")
+    if not isinstance(payload, dict) or payload.get("version") != "1.2.0":
+        raise ValueError("manifest version must be 1.2.0")
     samples = payload.get("samples")
     if not isinstance(samples, list):
         raise ValueError("manifest samples must be a list")
