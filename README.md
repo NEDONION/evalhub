@@ -67,7 +67,8 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
     <td width="50%" valign="top">
       <strong>模型 Benchmark 工作流</strong><br />
       <sub>查看任务 DAG、节点进度、资源指标和执行审计。</sub><br /><br />
-      <img width="1387" height="842" alt="EvalHub model Benchmark workflow and resource metrics" src="https://github.com/user-attachments/assets/360899cf-270d-4133-9c40-f48097ceaa3d" />
+      <img width="1387" height="842" alt="EvalHub model Benchmark workflow and resource metrics" src="https://github.com/user-attachments/assets/00629820-390d-4688-b23c-53a7edc2ca97" />
+
     </td>
     <td width="50%" valign="top">
       <strong>Agent 失败样本审计</strong><br />
