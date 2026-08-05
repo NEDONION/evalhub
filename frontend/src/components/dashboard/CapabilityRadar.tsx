@@ -26,6 +26,7 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
   const points = capabilityRadarPoints(profile, CENTER, RADIUS);
   const assessedPoints = points.filter((point): point is [number, number] => point !== null);
   const pointString = assessedPoints.map(([x, y]) => `${x},${y}`).join(" ");
+  const canConnectProfile = assessedPoints.length >= 3;
   const dimensions: RadarDimension[] = CAPABILITY_ORDER.map((key) => ({
     key,
     label: profile.capabilities[key]?.label ?? key,
@@ -75,7 +76,7 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
               const [x, y] = axisPoint(index);
               return <line key={key} x1={CENTER} y1={CENTER} x2={x} y2={y} stroke="#e2e8f0" />;
             })}
-            {assessedPoints.length === CAPABILITY_ORDER.length ? (
+            {canConnectProfile ? (
               <polygon
                 points={pointString}
                 fill="rgba(37, 99, 235, 0.16)"
@@ -87,7 +88,7 @@ export function CapabilityRadar({ profile }: CapabilityRadarProps): JSX.Element 
             {points.map((point, index) =>
               point ? (
                 <g key={CAPABILITY_ORDER[index]}>
-                  {assessedPoints.length < CAPABILITY_ORDER.length ? (
+                  {!canConnectProfile ? (
                     <line
                       x1={CENTER}
                       y1={CENTER}

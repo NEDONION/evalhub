@@ -55,6 +55,37 @@ it("renders a model capability hexagon for a partial suite without inventing mis
   expect(screen.getAllByText("—")).toHaveLength(4);
 });
 
+it("connects five assessed axes without treating the missing axis as zero", () => {
+  const scores = [40, 100, 100, 40, null, 100];
+  const fiveAxisProfile: ModelCapabilityProfile = {
+    ...profile,
+    capabilities: Object.fromEntries(
+      CAPABILITY_ORDER.map((key, index) => {
+        const score = scores[index] ?? null;
+        return [
+          key,
+          {
+            label: key,
+            score,
+            status: score === null ? "unassessed" : "complete",
+            coverage: score === null ? 0 : 1,
+            benchmark_results: [],
+          },
+        ];
+      }),
+    ),
+  };
+  render(<EvaluationResultDetail result={{ ...result, capability_profile: fiveAxisProfile }} />);
+
+  const radar = screen.getByRole("img", { name: "六维模型能力雷达图" });
+  expect(radar.querySelector('polygon[stroke="#2563eb"]')).toHaveAttribute(
+    "points",
+    "180,138.4 270.07,128 270.07,232 180,221.6 89.93,128",
+  );
+  expect(radar.querySelectorAll('line[stroke="#2563eb"]')).toHaveLength(0);
+  expect(radar.querySelectorAll("circle")).toHaveLength(5);
+});
+
 it("derives profile completeness from six assessed axes for legacy results", () => {
   render(
     <EvaluationResultDetail
