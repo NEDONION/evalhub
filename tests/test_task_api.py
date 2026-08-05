@@ -318,8 +318,79 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
     assert service.submitted_request.dataset == "coding_mini"
 
 
+def test_create_deepseek_agent_evaluation_returns_accepted_task(tmp_path: Path) -> None:
+    """已配置凭据的官方 DeepSeek Provider 应可创建 Pi Agent 评测任务。"""
+    repository = _provider_repository(tmp_path)
+    repository.save(
+        "deepseek",
+        name="DeepSeek",
+        base_url="https://api.deepseek.com",
+        api_key="sk-deepseek-test",
+    )
+    service = FakeTaskService(task_fixture())
+
+    status, response = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        provider_repository=repository,
+        payload={
+            "evaluation_type": "agent",
+            "agent_framework": "pi",
+            "dataset": "coding_mini",
+            "adapter": "openai-compatible",
+            "provider_id": "deepseek",
+            "model": "deepseek-v4-pro",
+            "sample_mode": "all",
+            "agent_difficulty": "easy",
+        },
+    )
+
+    assert status == 202
+    assert response["ok"] is True
+    assert service.submitted_request is not None
+    assert service.submitted_request.adapter == "openai-compatible"
+    assert service.submitted_request.provider_id == "deepseek"
+    assert service.submitted_request.base_url == "https://api.deepseek.com"
+
+
+def test_create_siliconflow_agent_evaluation_returns_accepted_task(tmp_path: Path) -> None:
+    """已配置凭据的官方 SiliconFlow Provider 应可创建 Pi Agent 评测任务。"""
+    repository = _provider_repository(tmp_path)
+    repository.save(
+        "siliconflow",
+        name="SiliconFlow",
+        base_url="https://api.siliconflow.cn/v1",
+        api_key="sk-siliconflow-test",
+    )
+    service = FakeTaskService(task_fixture())
+
+    status, response = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        provider_repository=repository,
+        payload={
+            "evaluation_type": "agent",
+            "agent_framework": "pi",
+            "dataset": "coding_mini",
+            "adapter": "openai-compatible",
+            "provider_id": "siliconflow",
+            "model": "moonshotai/Kimi-K2.7-Code",
+            "sample_mode": "all",
+            "agent_difficulty": "easy",
+        },
+    )
+
+    assert status == 202
+    assert response["ok"] is True
+    assert service.submitted_request is not None
+    assert service.submitted_request.provider_id == "siliconflow"
+    assert service.submitted_request.base_url == "https://api.siliconflow.cn/v1"
+
+
 def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
-    """Agent 首版只允许 Pi、Coding Mini 和 Ollama 的固定组合。"""
+    """Agent 只允许已实现的 Pi、Coding Mini 与受支持 Provider 组合。"""
     base_payload = {
         "evaluation_type": "agent",
         "agent_framework": "pi",
@@ -331,7 +402,10 @@ def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
     invalid_cases = [
         ({**base_payload, "agent_framework": "unknown"}, "agent_framework must be pi"),
         ({**base_payload, "dataset": "gsm8k"}, "agent dataset must be coding_mini"),
-        ({**base_payload, "adapter": "oracle"}, "agent adapter must be ollama"),
+        (
+            {**base_payload, "adapter": "oracle"},
+            "agent adapter must be one of: ollama, openai-compatible",
+        ),
         (
             {**base_payload, "agent_difficulty": "expert"},
             "agent_difficulty must be one of: all, easy, medium, hard",

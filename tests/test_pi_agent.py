@@ -149,6 +149,65 @@ class RecordingProcessFactory:
         return CompletedStreamingProcess(self.stdout)
 
 
+class BrokenAfterHeadersWriter:
+    """模拟客户端接收响应头后立即断开连接的写入流。"""
+
+    def __init__(self) -> None:
+        """初始化写入次数，用于区分响应头和正文。"""
+        self.write_count = 0
+
+    def write(self, data: bytes) -> int:
+        """首次接受响应头，后续正文写入稳定抛出 BrokenPipeError。"""
+        self.write_count += 1
+        if self.write_count > 1:
+            raise BrokenPipeError("client disconnected")
+        return len(data)
+
+    def flush(self) -> None:
+        """实现处理器期望的流接口，不增加额外行为。"""
+
+
+class FakeProxyResponse:
+    """提供一次正文块的固定官方 API 响应。"""
+
+    status = 200
+
+    def __init__(self) -> None:
+        """记录正文是否已经返回。"""
+        self.sent = False
+
+    def getheaders(self) -> list[tuple[str, str]]:
+        """返回无额外响应头的最小集合。"""
+        return []
+
+    def read(self, size: int) -> bytes:
+        """忽略块大小并只返回一次正文。"""
+        del size
+        if self.sent:
+            return b""
+        self.sent = True
+        return b"chunk"
+
+
+class FakeHttpsConnection:
+    """替换真实上游连接，使代理断连测试不访问网络。"""
+
+    def __init__(self, host: str, port: int, timeout: int) -> None:
+        """接收固定官方连接参数但不建立套接字。"""
+        del host, port, timeout
+
+    def request(self, method: str, path: str, *, body: bytes, headers: dict[str, str]) -> None:
+        """接收代理请求并保持无副作用。"""
+        del method, path, body, headers
+
+    def getresponse(self) -> FakeProxyResponse:
+        """返回可触发正文 BrokenPipe 的固定响应。"""
+        return FakeProxyResponse()
+
+    def close(self) -> None:
+        """实现连接关闭接口。"""
+
+
 class HangingStreamingProcess:
     """模拟输出结束但拒绝优雅退出的 Pi 子进程。"""
 
@@ -212,6 +271,7 @@ def test_pi_runner_streams_whitelisted_events_counts_tools_and_extracts_message(
     assert result.tool_call_count == 1
     assert events[2]["actor"] == "pi"
     assert events[3]["payload"]["output"] == "updated pricing.py"
+    assert events[3]["payload"]["is_error"] is False
     assert all("secret" not in str(item) for item in events)
 
 
@@ -274,6 +334,142 @@ def test_pi_runner_uses_project_cli_isolated_config_and_macos_sandbox(tmp_path: 
     }
     assert kwargs["cwd"] == tmp_path
     assert result.cli_version == "0.74.1"
+
+
+def test_pi_runner_hides_deepseek_key_behind_loopback_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek 凭据应留在父进程，Pi 沙箱和工具只能访问本机受控代理。"""
+    command_runner = RecordingCommandRunner()
+    secret = "sk-deepseek-test-secret"
+    monkeypatch.setenv("OTHER_API_KEY", "must-not-reach-agent")
+    proxy = (object(), object())
+    monkeypatch.setattr(
+        pi_module,
+        "_start_api_proxy",
+        lambda api_key, provider: (
+            (*proxy, "http://localhost:49152")
+            if api_key == secret and provider == "deepseek"
+            else None
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(pi_module, "_stop_api_proxy", lambda *items: None, raising=False)
+    runner = PiAgentRunner(
+        run_command=command_runner,
+        adapter="openai-compatible",
+        provider_id="deepseek",
+        api_key=secret,
+    )
+
+    runner.run(
+        instruction="Fix the bug",
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+        workspace=tmp_path,
+        timeout_seconds=30,
+    )
+
+    command, kwargs = command_runner.calls[1]
+    assert '(remote tcp "localhost:' in command[2]
+    assert command[command.index("--provider") + 1] == "deepseek"
+    assert command[command.index("--model") + 1] == "deepseek-v4-pro"
+    environment = kwargs["env"]
+    assert "DEEPSEEK_API_KEY" not in environment
+    assert "OTHER_API_KEY" not in environment
+    pi_home = Path(environment["PI_CODING_AGENT_DIR"])
+    config_text = (pi_home / "models.json").read_text(encoding="utf-8")
+    config = json.loads(config_text)
+    assert config["providers"]["deepseek"]["baseUrl"].startswith("http://localhost:")
+    assert config["providers"]["deepseek"]["apiKey"] == "evalhub-proxy"
+    assert config["providers"]["deepseek"]["modelOverrides"] == {
+        "deepseek-v4-pro": {"compat": {"supportsDeveloperRole": False}}
+    }
+    assert secret not in " ".join(command)
+    assert secret not in config_text
+
+
+def test_pi_runner_hides_siliconflow_key_behind_loopback_proxy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SiliconFlow 凭据应留在父进程，Pi 只获得标准 OpenAI 协议的本机代理。"""
+    command_runner = RecordingCommandRunner()
+    secret = "sk-siliconflow-test-secret"
+    proxy = (object(), object())
+    monkeypatch.setattr(
+        pi_module,
+        "_start_api_proxy",
+        lambda api_key, provider: (
+            (*proxy, "http://localhost:49153")
+            if api_key == secret and provider == "siliconflow"
+            else None
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(pi_module, "_stop_api_proxy", lambda *items: None, raising=False)
+    runner = PiAgentRunner(
+        run_command=command_runner,
+        adapter="openai-compatible",
+        provider_id="siliconflow",
+        api_key=secret,
+    )
+
+    runner.run(
+        instruction="Fix the bug",
+        model="moonshotai/Kimi-K2.7-Code",
+        base_url="https://api.siliconflow.cn/v1",
+        workspace=tmp_path,
+        timeout_seconds=30,
+    )
+
+    command, kwargs = command_runner.calls[1]
+    assert command[command.index("--provider") + 1] == "siliconflow"
+    environment = kwargs["env"]
+    pi_home = Path(environment["PI_CODING_AGENT_DIR"])
+    config_text = (pi_home / "models.json").read_text(encoding="utf-8")
+    config = json.loads(config_text)
+    assert config == {
+        "providers": {
+            "siliconflow": {
+                "baseUrl": "http://localhost:49153",
+                "api": "openai-completions",
+                "apiKey": "evalhub-proxy",
+                "compat": {
+                    "supportsDeveloperRole": False,
+                    "supportsReasoningEffort": False,
+                },
+                "models": [{"id": "moonshotai/Kimi-K2.7-Code"}],
+            }
+        }
+    }
+    assert "SILICONFLOW_API_KEY" not in environment
+    assert secret not in " ".join(command)
+    assert secret not in config_text
+
+
+def test_api_proxy_ignores_client_disconnect_after_response_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pi 超时断开后代理不得再次写 502 并产生 BrokenPipe 堆栈。"""
+    monkeypatch.setattr(pi_module.http_client, "HTTPSConnection", FakeHttpsConnection)
+    handler_type = pi_module._api_proxy_handler("sk-test", "siliconflow")
+    handler = object.__new__(handler_type)
+    writer = BrokenAfterHeadersWriter()
+    handler.path = "/chat/completions"
+    handler.headers = {"Content-Length": "2", "Content-Type": "application/json"}
+    handler.rfile = io.BytesIO(b"{}")
+    handler.wfile = writer
+    handler.request_version = "HTTP/1.1"
+    handler.command = "POST"
+    handler.requestline = "POST /chat/completions HTTP/1.1"
+    handler.close_connection = False
+
+    handler.do_POST()
+
+    assert writer.write_count == 2
+    assert handler.close_connection is True
 
 
 def test_pi_runner_rejects_non_loopback_ollama_before_start(tmp_path: Path) -> None:
@@ -344,6 +540,27 @@ def test_pi_runner_rejects_nonzero_exit(tmp_path: Path) -> None:
             workspace=tmp_path,
             timeout_seconds=30,
         )
+
+
+def test_pi_runner_classifies_sandbox_exit_as_executor_not_ready(tmp_path: Path) -> None:
+    """macOS sandbox-exec 启用失败必须带基础设施分类，不能变成模型运行时错误。"""
+    runner = PiAgentRunner(
+        run_command=RecordingCommandRunner(
+            return_code=71,
+            stderr="sandbox-exec: sandbox_apply: Operation not permitted",
+        )
+    )
+
+    with pytest.raises(PiAgentError, match="sandbox_apply") as raised:
+        runner.run(
+            instruction="Fix the bug",
+            model="local-test",
+            base_url="http://127.0.0.1:11434",
+            workspace=tmp_path,
+            timeout_seconds=30,
+        )
+
+    assert raised.value.error_type == "executor_not_ready"
 
 
 def test_pi_runner_rejects_missing_final_message(tmp_path: Path) -> None:

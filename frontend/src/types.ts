@@ -181,6 +181,45 @@ export interface AgentRunMetadata {
   scaffold_hash: string;
 }
 
+export type AgentProtocolStatus = "compatible" | "degraded" | "incompatible";
+export type AgentSampleOutcome =
+  | "passed"
+  | "no_action"
+  | "wrong_solution"
+  | "runtime_error"
+  | "protocol_error";
+
+export interface AgentProtocolPreflight {
+  status: AgentProtocolStatus;
+  marker_written: boolean;
+  tool_call_count: number;
+  tool_error_count: number;
+  wall_time_seconds: number;
+  final_message_present: boolean;
+  message?: string;
+}
+
+export interface AgentSampleDiagnostics {
+  outcome: AgentSampleOutcome;
+  tool_call_count: number;
+  tool_error_count: number;
+  changed_files: string[];
+  wall_time_seconds: number;
+  final_message_present: boolean;
+  verifier_passed: boolean;
+}
+
+export interface AgentExecutionSummary {
+  total_tool_calls: number;
+  average_tool_calls: number;
+  total_tool_errors: number;
+  total_wall_time_seconds: number;
+  average_wall_time_seconds: number;
+  max_wall_time_seconds: number;
+  total_changed_files: number;
+  outcome_counts: Record<AgentSampleOutcome, number>;
+}
+
 export interface AgentSampleResult {
   sample_id: string;
   difficulty: Exclude<AgentDifficulty, "all">;
@@ -191,6 +230,7 @@ export interface AgentSampleResult {
   event_count: number;
   wall_time_seconds: number;
   verifier_message: string;
+  diagnostics?: AgentSampleDiagnostics;
 }
 
 export interface AgentDifficultyResult {
@@ -219,6 +259,8 @@ export interface EvaluationResult {
   requested_difficulty?: AgentDifficulty;
   difficulty_report?: AgentDifficultyResult[];
   agent?: AgentRunMetadata;
+  protocol_preflight?: AgentProtocolPreflight;
+  execution_summary?: AgentExecutionSummary;
   capability_report?: AgentCapabilityReport;
   capability_profile?: ModelCapabilityProfile;
   sample_results?: AgentSampleResult[];

@@ -214,6 +214,55 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
     assert event_queue.events[-1]["result"]["evaluation_type"] == "agent"
 
 
+def test_evaluation_process_resolves_deepseek_key_for_agent_only_in_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek Agent 应在 Worker 内解析凭据，任务载荷和最终结果都不得携带密钥。"""
+    request = replace(
+        request_fixture(),
+        evaluation_type="agent",
+        agent_framework="pi",
+        dataset="coding_mini",
+        adapter="openai-compatible",
+        provider_id="deepseek",
+        model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com",
+        sample_mode="all",
+        agent_difficulty="easy",
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    class FakeProviderRepository:
+        """仅为本测试返回固定 DeepSeek 凭据。"""
+
+        def resolve_api_key(self, provider_id: str) -> str:
+            """校验服务商标识并返回不会持久化的测试密钥。"""
+            assert provider_id == "deepseek"
+            return "sk-worker-only"
+
+    def fake_agent_benchmark(**kwargs: object) -> dict[str, object]:
+        """记录 Worker 传参并返回不含密钥的最小结果。"""
+        observed.update(kwargs)
+        return {"job_id": kwargs["job_id"], "evaluation_type": "agent"}
+
+    monkeypatch.setattr(
+        executor_module,
+        "default_model_provider_repository",
+        lambda: FakeProviderRepository(),
+        raising=False,
+    )
+    monkeypatch.setattr(executor_module, "run_pi_agent_benchmark", fake_agent_benchmark)
+    payload = asdict(request)
+    _evaluation_process("job_deepseek_agent", payload, event_queue)
+
+    assert observed["adapter"] == "openai-compatible"
+    assert observed["provider_id"] == "deepseek"
+    assert observed["api_key"] == "sk-worker-only"
+    assert all("api_key" not in key for key in payload)
+    assert "sk-worker-only" not in str(event_queue.events)
+
+
 def test_executor_forwards_trace_event_to_parent_callback() -> None:
     """父进程读取 trace_event 时应把完整白名单事件交给任务服务。"""
     event_queue: Queue[dict[str, object]] = Queue()

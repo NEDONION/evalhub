@@ -2,7 +2,7 @@ import { Braces } from "lucide-react";
 import type { JSX } from "react";
 
 import { formatPassRate, formatScore } from "../../lib/evaluation";
-import type { AgentDifficulty, EvaluationResult } from "../../types";
+import type { AgentDifficulty, AgentSampleOutcome, EvaluationResult } from "../../types";
 import { Badge } from "../ui/Badge";
 import { AgentCapabilityHexagon } from "./AgentCapabilityHexagon";
 import { CapabilityRadar } from "./CapabilityRadar";
@@ -17,6 +17,20 @@ const difficultyLabels: Record<AgentDifficulty, string> = {
   easy: "简单",
   medium: "中等",
   hard: "困难",
+};
+
+const outcomeLabels: Record<AgentSampleOutcome, string> = {
+  passed: "通过",
+  no_action: "无动作",
+  wrong_solution: "错误实现",
+  runtime_error: "运行失败",
+  protocol_error: "协议错误",
+};
+
+const protocolLabels = {
+  compatible: "协议兼容",
+  degraded: "协议降级",
+  incompatible: "协议不兼容",
 };
 
 /**
@@ -70,6 +84,8 @@ export function EvaluationResultDetail({ result, isHexagon = false }: Evaluation
           ) : null}
         </>
       ) : null}
+
+      {result.execution_summary ? <AgentExecutionMetrics result={result} /> : null}
 
       {result.capability_profile ? <CapabilityRadar profile={result.capability_profile} /> : null}
 
@@ -148,6 +164,94 @@ export function EvaluationResultDetail({ result, isHexagon = false }: Evaluation
         </details>
       ) : null}
 
+    </div>
+  );
+}
+
+/**
+ * 展示 Agent 正式样本的聚合过程事实与逐题诊断。
+ *
+ * @param props 包含 execution_summary 和可选样本诊断的完整结果。
+ * @returns 向后兼容的紧凑指标区；旧结果缺少汇总字段时由调用方跳过。
+ */
+function AgentExecutionMetrics({ result }: { result: EvaluationResult }): JSX.Element {
+  const summary = result.execution_summary;
+  if (!summary) {
+    return <></>;
+  }
+  const samples = (result.sample_results || []).filter((sample) => sample.diagnostics);
+  const protocol = result.protocol_preflight;
+
+  return (
+    <section aria-labelledby="agent-execution-title" className="border-b border-border px-5 py-5 sm:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 id="agent-execution-title" className="text-sm font-semibold text-ink">
+          执行过程指标
+        </h4>
+        {protocol ? (
+          <Badge
+            tone={
+              protocol.status === "compatible"
+                ? "success"
+                : protocol.status === "degraded"
+                  ? "warning"
+                  : "danger"
+            }
+          >
+            {protocolLabels[protocol.status]}
+          </Badge>
+        ) : null}
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <ProcessMetric label="工具调用" value={String(summary.total_tool_calls)} />
+        <ProcessMetric label="平均耗时" value={`${summary.average_wall_time_seconds.toFixed(2)} 秒`} />
+        <ProcessMetric label="改动文件" value={String(summary.total_changed_files)} />
+        <ProcessMetric label="工具错误" value={String(summary.total_tool_errors)} />
+      </div>
+
+      {samples.length > 0 ? (
+        <div className="mt-4 overflow-x-auto rounded-md border border-border">
+          <table className="w-full min-w-[620px] text-left text-xs">
+            <thead className="bg-slate-50 text-muted">
+              <tr>
+                <th className="px-3 py-2 font-medium">样本</th>
+                <th className="px-3 py-2 font-medium">结果</th>
+                <th className="px-3 py-2 text-right font-medium">工具</th>
+                <th className="px-3 py-2 text-right font-medium">耗时</th>
+                <th className="px-3 py-2 font-medium">改动文件</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {samples.map((sample) => {
+                const diagnostics = sample.diagnostics!;
+                return (
+                  <tr key={sample.sample_id}>
+                    <td className="px-3 py-2 font-mono text-ink">{sample.sample_id}</td>
+                    <td className="px-3 py-2 text-ink">{outcomeLabels[diagnostics.outcome]}</td>
+                    <td className="px-3 py-2 text-right font-mono">{diagnostics.tool_call_count}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      {diagnostics.wall_time_seconds.toFixed(2)} 秒
+                    </td>
+                    <td className="max-w-64 truncate px-3 py-2 font-mono text-muted">
+                      {diagnostics.changed_files.join(", ") || "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ProcessMetric({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div className="rounded-md border border-border bg-slate-50/60 px-3 py-3">
+      <span className="text-xs text-muted">{label}</span>
+      <strong className="mt-1 block font-mono text-sm font-semibold text-ink">{value}</strong>
     </div>
   );
 }

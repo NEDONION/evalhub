@@ -1053,14 +1053,19 @@ def _task_request(
     agent_framework: str | None = None
     agent_difficulty: str | None = None
     if evaluation_type == "agent":
-        # Agent MVP 只接受已实现的 Pi 与 Coding Mini 组合，拒绝虚假可用选项。
+        # Agent 只接受已实现的 Pi、Coding Mini 和固定模型来源，拒绝虚假可用选项。
         agent_framework = str(payload.get("agent_framework", ""))
         if agent_framework != "pi":
             raise ValueError("agent_framework must be pi")
         if dataset != "coding_mini":
             raise ValueError("agent dataset must be coding_mini")
-        if adapter != "ollama":
-            raise ValueError("agent adapter must be ollama")
+        if adapter not in {"ollama", "openai-compatible"}:
+            raise ValueError("agent adapter must be one of: ollama, openai-compatible")
+        supported_api_providers = {"deepseek", "siliconflow"}
+        if adapter == "openai-compatible" and provider_id not in supported_api_providers:
+            raise ValueError("agent API provider must be one of: deepseek, siliconflow")
+        if adapter == "openai-compatible" and base_url != BUILTIN_PROVIDERS[str(provider_id)][1]:
+            raise ValueError("agent API provider must use its official base URL")
         agent_difficulty = str(payload.get("agent_difficulty", "all"))
         if agent_difficulty not in {"all", "easy", "medium", "hard"}:
             raise ValueError("agent_difficulty must be one of: all, easy, medium, hard")

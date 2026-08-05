@@ -323,26 +323,50 @@ const agentTaskDetail: EvaluationTaskDetail = {
     total_samples: 2,
     passed_samples: 1,
     average_score: 0.5,
-    failed_sample_ids: ["batch_reservation_atomicity"],
+    failed_sample_ids: ["reservation_idempotency"],
     failed_examples: [
       {
-        sample_id: "batch_reservation_atomicity",
+        sample_id: "reservation_idempotency",
         difficulty: "hard",
-        difficulty_reason: "需要理解两文件调用关系和原子性",
+        difficulty_reason: "跨模块原子性、重复累计与幂等键",
         score: 0,
-        input: "batch_reservation_atomicity",
+        input: "reservation_idempotency",
         prediction: "",
         reference: "hidden verifier passed",
         reason: "hidden verifier failed",
       },
     ],
-    benchmark_version: "coding-mini-v2",
+    benchmark_version: "coding-mini-v3",
     requested_difficulty: "hard",
     difficulty_report: [{ difficulty: "hard", total: 2, passed: 1, pass_rate: 0.5 }],
     agent: {
       framework: "pi",
       cli_version: "pi-cli 0.test",
       scaffold_hash: "a1b2c3d4e5f6",
+    },
+    protocol_preflight: {
+      status: "compatible",
+      marker_written: true,
+      tool_call_count: 1,
+      tool_error_count: 0,
+      wall_time_seconds: 0.8,
+      final_message_present: true,
+    },
+    execution_summary: {
+      total_tool_calls: 12,
+      average_tool_calls: 6,
+      total_tool_errors: 1,
+      total_wall_time_seconds: 17,
+      average_wall_time_seconds: 8.5,
+      max_wall_time_seconds: 10,
+      total_changed_files: 3,
+      outcome_counts: {
+        passed: 1,
+        no_action: 0,
+        wrong_solution: 1,
+        runtime_error: 0,
+        protocol_error: 0,
+      },
     },
     capability_report: {
       overall_score: 0.6616,
@@ -355,7 +379,28 @@ const agentTaskDetail: EvaluationTaskDetail = {
         { key: "robustness", label: "稳健性", score: 1 },
       ],
     },
-    sample_results: [],
+    sample_results: [
+      {
+        sample_id: "reservation_idempotency",
+        difficulty: "hard",
+        difficulty_reason: "跨模块原子性、重复累计与幂等键",
+        status: "failed",
+        score: 0,
+        final_message: "attempted",
+        event_count: 8,
+        wall_time_seconds: 10,
+        verifier_message: "hidden verifier failed",
+        diagnostics: {
+          outcome: "wrong_solution",
+          tool_call_count: 7,
+          tool_error_count: 1,
+          changed_files: ["reservations.py", "test_public.py"],
+          wall_time_seconds: 10,
+          final_message_present: true,
+          verifier_passed: false,
+        },
+      },
+    ],
   },
 };
 
@@ -877,8 +922,12 @@ describe("EvalHub console", () => {
     const drawer = await screen.findByRole("dialog", { name: "任务详情" });
     expect(await within(drawer).findByRole("heading", { name: "Agent 能力报告" })).toBeInTheDocument();
     expect(within(drawer).getByRole("heading", { name: "难度分层" })).toBeInTheDocument();
-    expect(within(drawer).getByText("题集 coding-mini-v2 · 请求 困难")).toBeInTheDocument();
-    expect(within(drawer).getByText("困难 · 需要理解两文件调用关系和原子性")).toBeInTheDocument();
+    expect(within(drawer).getByText("题集 coding-mini-v3 · 请求 困难")).toBeInTheDocument();
+    expect(within(drawer).getByText("困难 · 跨模块原子性、重复累计与幂等键")).toBeInTheDocument();
+    const processMetrics = within(drawer).getByRole("region", { name: "执行过程指标" });
+    expect(within(processMetrics).getByText("12")).toBeInTheDocument();
+    expect(within(processMetrics).getByText("8.50 秒")).toBeInTheDocument();
+    expect(within(processMetrics).getByText("错误实现")).toBeInTheDocument();
     expect(await within(drawer).findByText("Agent 实时过程")).toBeInTheDocument();
     expect(within(drawer).getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
     expect(within(drawer).getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();

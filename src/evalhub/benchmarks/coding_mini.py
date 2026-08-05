@@ -9,6 +9,7 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Literal, Protocol
 
 from evalhub.agent.pi import (
@@ -70,28 +71,39 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
     只在 Agent 退出后由 EvalHub 执行，不写入样本仓库。
     """
     return (
-        # 简单题只要求修复单文件纯函数，保留原有定价样本作为最低难度基线。
+        # 简单题要求使用标准路径语义，同时识别前缀相似但已逃逸根目录的边界。
         CodingAgentSample(
-            id="pricing_total",
+            id="path_normalization",
             difficulty="easy",
-            difficulty_reason="单文件纯函数，缺陷定位直接",
+            difficulty_reason="单文件路径边界与目录逃逸",
             instruction=(
-                "Fix pricing.total_with_tax so every supplied price participates in the "
-                "subtotal. Preserve the public function signature, handle an empty list, "
-                "and verify the change."
+                "Repair normalize_user_path so it returns a normalized POSIX path contained "
+                "by the absolute root, or None when the value escapes that root. Absolute "
+                "values already inside the root are valid, and an empty value denotes the "
+                "root. Preserve the signature and verify representative boundaries."
             ),
             files={
-                "pricing.py": (
-                    "def total_with_tax(prices, tax_rate):\n"
-                    "    subtotal = sum(prices[:-1])\n"
-                    "    return round(subtotal * (1 + tax_rate), 2)\n"
+                "paths.py": (
+                    "import posixpath\n\n"
+                    "def normalize_user_path(root, value):\n"
+                    "    return posixpath.normpath(posixpath.join(root, value))\n"
+                ),
+                "test_public.py": (
+                    "from paths import normalize_user_path\n\n"
+                    "def test_normalizes_child_path():\n"
+                    "    assert normalize_user_path('/srv/data', 'reports/../today.txt') "
+                    "== '/srv/data/today.txt'\n"
                 )
             },
             verifier_code=(
-                "from pricing import total_with_tax\n"
-                "assert total_with_tax([10, 20], 0.1) == 33.0\n"
-                "assert total_with_tax([8], 0.25) == 10.0\n"
-                "assert total_with_tax([], 0.2) == 0.0\n"
+                "from paths import normalize_user_path\n"
+                "assert normalize_user_path('/srv/data', 'reports/../today.txt') "
+                "== '/srv/data/today.txt'\n"
+                "assert normalize_user_path('/srv/data', '') == '/srv/data'\n"
+                "assert normalize_user_path('/srv/data', '/srv/data/a.txt') "
+                "== '/srv/data/a.txt'\n"
+                "assert normalize_user_path('/srv/data', '../secret.txt') is None\n"
+                "assert normalize_user_path('/srv/data', '/srv/data2/a.txt') is None\n"
             ),
             capability_weights={
                 "planning": 0.4,
@@ -99,131 +111,232 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
                 "implementation": 0.2,
             },
         ),
-        # 第二道简单题补足工具、验证和稳健性维度，仍保持局部聚合缺陷。
+        # 第二道简单题把存在性与真值分开，并要求所有输入映射保持不变。
         CodingAgentSample(
-            id="cart_quantity",
+            id="config_precedence",
             difficulty="easy",
-            difficulty_reason="单文件纯函数，只有局部聚合语义",
+            difficulty_reason="固定优先级与输入不可变约束",
             instruction=(
-                "Fix cart.total_quantity so it sums the integer quantity from every supplied "
-                "line item. Preserve the public function signature, handle an empty cart, and "
-                "verify the change."
+                "Repair resolve_setting so a present key is selected in this exact order: "
+                "arguments, environment, file values, then default. Empty strings are present "
+                "values and none of the supplied mappings may be mutated. Preserve the public "
+                "signature and verify the change."
             ),
-            files={"cart.py": "def total_quantity(lines):\n    return len(lines)\n"},
+            files={
+                "config.py": (
+                    "def resolve_setting(name, arguments, environment, file_values, default):\n"
+                    "    for source in (file_values, environment, arguments):\n"
+                    "        if name in source:\n"
+                    "            return source.pop(name)\n"
+                    "    return default\n"
+                ),
+                "test_public.py": (
+                    "from config import resolve_setting\n\n"
+                    "def test_arguments_win():\n"
+                    "    assert resolve_setting('mode', {'mode': 'arg'}, {'mode': 'env'}, "
+                    "{'mode': 'file'}, 'default') == 'arg'\n"
+                ),
+            },
             verifier_code=(
-                "from cart import total_quantity\n"
-                "assert total_quantity([{'quantity': 2}, {'quantity': 3}]) == 5\n"
-                "assert total_quantity([{'quantity': 0}]) == 0\n"
-                "assert total_quantity([]) == 0\n"
+                "from config import resolve_setting\n"
+                "arguments = {'mode': ''}\n"
+                "environment = {'mode': 'env'}\n"
+                "file_values = {'mode': 'file', 'other': 'kept'}\n"
+                "snapshots = (arguments.copy(), environment.copy(), file_values.copy())\n"
+                "assert resolve_setting('mode', arguments, environment, file_values, "
+                "'default') == ''\n"
+                "assert (arguments, environment, file_values) == snapshots\n"
+                "assert resolve_setting('mode', {}, environment, file_values, 'default') "
+                "== 'env'\n"
+                "assert resolve_setting('mode', {}, {}, file_values, 'default') == 'file'\n"
+                "assert resolve_setting('missing', {}, {}, {}, 'default') == 'default'\n"
             ),
             capability_weights={
                 "tool_use": 0.3,
-                "verification": 0.4,
-                "robustness": 0.3,
-            },
-        ),
-        # 中等题要求同时处理多个字符串边界，难点来自规范化契约而非文件数量。
-        CodingAgentSample(
-            id="slug_normalization",
-            difficulty="medium",
-            difficulty_reason="单函数但包含多个输入边界",
-            instruction=(
-                "Improve normalize_slug in slug.py. The result must be lowercase ASCII words "
-                "joined by one hyphen; whitespace and punctuation are separators and empty "
-                "input returns ''. Keep the function signature and verify representative "
-                "edge cases."
-            ),
-            files={
-                "slug.py": (
-                    "def normalize_slug(value):\n"
-                    "    return value.lower().replace(' ', '-')\n"
-                )
-            },
-            verifier_code=(
-                "from slug import normalize_slug\n"
-                "assert normalize_slug('Hello,  World!') == 'hello-world'\n"
-                "assert normalize_slug('  API_v2 / Ready ') == 'api-v2-ready'\n"
-                "assert normalize_slug('') == ''\n"
-            ),
-            capability_weights={
-                "implementation": 0.35,
-                "tool_use": 0.35,
                 "verification": 0.3,
+                "robustness": 0.4,
             },
         ),
-        # 库存题包含可变状态，失败路径必须维持调用前不变量。
+        # 分页题要求阅读客户端边界，在保持顺序的同时避免重复记录与重复游标死循环。
         CodingAgentSample(
-            id="inventory_reservation",
+            id="pagination_merge",
             difficulty="medium",
-            difficulty_reason="涉及可变状态与失败不变量",
+            difficulty_reason="跨模块分页、去重与循环游标检测",
             instruction=(
-                "Repair inventory.reserve without changing its signature. A reservation "
-                "succeeds only for a positive quantity with enough stock; every rejected "
-                "request must leave stock unchanged, including unknown items. Verify both "
-                "success and failure paths."
+                "Repair collect_records so it follows pages from the supplied cursor until "
+                "next_cursor is None, keeps the first record for each id in encounter order, "
+                "and raises ValueError when a cursor repeats. Preserve the signature, do not "
+                "mutate page data, and verify the behavior."
             ),
             files={
-                "inventory.py": (
-                    "def reserve(stock, item, quantity):\n"
-                    "    stock[item] -= quantity\n"
-                    "    return stock[item] >= 0\n"
+                "client.py": (
+                    "def fetch_page(pages, cursor):\n"
+                    "    return pages[cursor]\n"
+                ),
+                "pagination.py": (
+                    "from client import fetch_page\n\n"
+                    "def collect_records(pages, cursor='first'):\n"
+                    "    records = []\n"
+                    "    while cursor is not None:\n"
+                    "        page = fetch_page(pages, cursor)\n"
+                    "        records.extend(page['records'])\n"
+                    "        cursor = page.get('next_cursor')\n"
+                    "    return records\n"
+                ),
+                "test_public.py": (
+                    "from pagination import collect_records\n\n"
+                    "def test_collects_pages():\n"
+                    "    pages = {'first': {'records': [{'id': 1}], "
+                    "'next_cursor': 'last'}, 'last': {'records': [{'id': 2}], "
+                    "'next_cursor': None}}\n"
+                    "    assert collect_records(pages) == [{'id': 1}, {'id': 2}]\n"
                 )
             },
             verifier_code=(
-                "from inventory import reserve\n"
-                "stock = {'pen': 3}\n"
-                "assert reserve(stock, 'pen', 2) is True and stock == {'pen': 1}\n"
-                "assert reserve(stock, 'pen', 2) is False and stock == {'pen': 1}\n"
-                "assert reserve(stock, 'missing', 1) is False and 'missing' not in stock\n"
-                "assert reserve(stock, 'pen', 0) is False and stock == {'pen': 1}\n"
+                "from copy import deepcopy\n"
+                "from pagination import collect_records\n"
+                "pages = {'first': {'records': [{'id': 1, 'v': 'first'}, {'id': 2}], "
+                "'next_cursor': 'second'}, 'second': {'records': [{'id': 1, 'v': 'later'}, "
+                "{'id': 3}], 'next_cursor': None}}\n"
+                "snapshot = deepcopy(pages)\n"
+                "assert collect_records(pages) == "
+                "[{'id': 1, 'v': 'first'}, {'id': 2}, {'id': 3}]\n"
+                "assert pages == snapshot\n"
+                "loop = {'first': {'records': [], 'next_cursor': 'again'}, "
+                "'again': {'records': [], 'next_cursor': 'first'}}\n"
+                "try:\n"
+                "    collect_records(loop)\n"
+                "except ValueError:\n"
+                "    pass\n"
+                "else:\n"
+                "    raise AssertionError('repeated cursor must fail')\n"
             ),
             capability_weights={
                 "planning": 0.1,
                 "code_understanding": 0.2,
-                "tool_use": 0.1,
-                "verification": 0.3,
-                "robustness": 0.3,
+                "implementation": 0.25,
+                "tool_use": 0.2,
+                "verification": 0.15,
+                "robustness": 0.1,
             },
         ),
-        # 困难题需要先理解 inventory 模块，再保证批量操作具备全有或全无语义。
+        # 缓存题以注入时钟冻结时间，使边界可重复且不依赖真实等待。
         CodingAgentSample(
-            id="batch_reservation_atomicity",
-            difficulty="hard",
-            difficulty_reason="需要理解两文件调用关系和原子性",
+            id="cache_expiry",
+            difficulty="medium",
+            difficulty_reason="注入时钟、TTL 边界与选择性清理",
             instruction=(
-                "Repair batch.reserve_batch without changing its signature. Requests are "
-                "(item, quantity) pairs and duplicate items are cumulative. Apply every "
-                "reservation only when all quantities are positive and sufficient; otherwise "
-                "leave the original stock unchanged. Verify success and rollback paths."
+                "Repair Cache so put stores positive-TTL entries against the injected clock, "
+                "get returns None and removes an entry at or after expiry, and purge_expired "
+                "removes only expired entries and returns their count. Non-positive TTL must "
+                "not remain cached. Preserve the public methods and verify boundary behavior."
+            ),
+            files={
+                "cache.py": (
+                    "class Cache:\n"
+                    "    def __init__(self, clock):\n"
+                    "        self.clock = clock\n"
+                    "        self.entries = {}\n\n"
+                    "    def put(self, key, value, ttl):\n"
+                    "        self.entries[key] = (value, self.clock() + ttl)\n\n"
+                    "    def get(self, key):\n"
+                    "        entry = self.entries.get(key)\n"
+                    "        return None if entry is None else entry[0]\n\n"
+                    "    def purge_expired(self):\n"
+                    "        removed = len(self.entries)\n"
+                    "        self.entries.clear()\n"
+                    "        return removed\n"
+                ),
+                "test_public.py": (
+                    "from cache import Cache\n\n"
+                    "def test_hit_before_expiry():\n"
+                    "    now = [10]\n"
+                    "    cache = Cache(lambda: now[0])\n"
+                    "    cache.put('key', 'value', 5)\n"
+                    "    assert cache.get('key') == 'value'\n"
+                )
+            },
+            verifier_code=(
+                "from cache import Cache\n"
+                "now = [100.0]\n"
+                "cache = Cache(lambda: now[0])\n"
+                "cache.put('a', 1, 5)\n"
+                "cache.put('b', 2, 10)\n"
+                "assert cache.get('a') == 1\n"
+                "now[0] = 105.0\n"
+                "assert cache.get('a') is None and 'a' not in cache.entries\n"
+                "assert cache.purge_expired() == 0 and cache.get('b') == 2\n"
+                "now[0] = 110.0\n"
+                "assert cache.purge_expired() == 1 and cache.get('b') is None\n"
+                "cache.put('zero', 3, 0)\n"
+                "cache.put('negative', 4, -1)\n"
+                "assert cache.get('zero') is None and cache.get('negative') is None\n"
+            ),
+            capability_weights={
+                "planning": 0.15,
+                "code_understanding": 0.1,
+                "implementation": 0.2,
+                "tool_use": 0.15,
+                "verification": 0.2,
+                "robustness": 0.2,
+            },
+        ),
+        # 幂等预订题跨库存和审计边界，同时要求重复请求累计后整体检查。
+        CodingAgentSample(
+            id="reservation_idempotency",
+            difficulty="hard",
+            difficulty_reason="跨模块原子性、重复累计与幂等键",
+            instruction=(
+                "Repair reserve so duplicate item quantities are cumulative and a new "
+                "idempotency key succeeds only when every quantity is positive and all stock "
+                "is sufficient. Success deducts atomically, marks the key, and writes one "
+                "audit record. Reusing a successful key is a no-op success; rejection changes "
+                "nothing. Preserve the signature and verify the behavior."
             ),
             files={
                 "inventory.py": (
-                    "def reserve(stock, item, quantity):\n"
-                    "    if quantity <= 0 or stock.get(item, 0) < quantity:\n"
-                    "        return False\n"
-                    "    stock[item] -= quantity\n"
+                    "def deduct(stock, totals):\n"
+                    "    for item, quantity in totals.items():\n"
+                    "        stock[item] -= quantity\n"
+                ),
+                "audit.py": (
+                    "def record(audit_log, key, totals):\n"
+                    "    audit_log.append({'key': key, 'totals': totals})\n"
+                ),
+                "reservations.py": (
+                    "from audit import record\n"
+                    "from inventory import deduct\n\n"
+                    "def reserve(stock, requests, idempotency_key, audit_log, processed):\n"
+                    "    totals = dict(requests)\n"
+                    "    deduct(stock, totals)\n"
+                    "    processed.add(idempotency_key)\n"
+                    "    record(audit_log, idempotency_key, totals)\n"
                     "    return True\n"
                 ),
-                "batch.py": (
-                    "from inventory import reserve\n\n"
-                    "def reserve_batch(stock, requests):\n"
-                    "    return all(\n"
-                    "        reserve(stock, item, quantity) for item, quantity in requests\n"
-                    "    )\n"
+                "test_public.py": (
+                    "from reservations import reserve\n\n"
+                    "def test_successful_reservation():\n"
+                    "    stock = {'pen': 3}\n"
+                    "    log, processed = [], set()\n"
+                    "    assert reserve(stock, [('pen', 2)], 'r1', log, processed) is True\n"
+                    "    assert stock == {'pen': 1}\n"
                 ),
             },
             verifier_code=(
-                "from batch import reserve_batch\n"
+                "from reservations import reserve\n"
                 "stock = {'pen': 4, 'book': 2}\n"
-                "assert reserve_batch(stock, [('pen', 2), ('pen', 1), ('book', 2)]) is True\n"
+                "log, processed = [], set()\n"
+                "assert reserve(stock, [('pen', 2), ('pen', 1), ('book', 2)], "
+                "'r1', log, processed) is True\n"
                 "assert stock == {'pen': 1, 'book': 0}\n"
-                "stock = {'pen': 4, 'book': 2}\n"
-                "assert reserve_batch(stock, [('pen', 2), ('book', 3)]) is False\n"
-                "assert stock == {'pen': 4, 'book': 2}\n"
-                "assert reserve_batch(stock, [('missing', 1)]) is False\n"
-                "assert 'missing' not in stock and stock == {'pen': 4, 'book': 2}\n"
-                "assert reserve_batch(stock, [('pen', 0)]) is False\n"
-                "assert stock == {'pen': 4, 'book': 2}\n"
+                "assert log == [{'key': 'r1', 'totals': {'pen': 3, 'book': 2}}]\n"
+                "assert processed == {'r1'}\n"
+                "assert reserve(stock, [('pen', 1)], 'r1', log, processed) is True\n"
+                "assert stock == {'pen': 1, 'book': 0} and len(log) == 1\n"
+                "snapshot = stock.copy()\n"
+                "assert reserve(stock, [('pen', 2)], 'r2', log, processed) is False\n"
+                "assert reserve(stock, [('pen', 0)], 'r3', log, processed) is False\n"
+                "assert stock == snapshot and processed == {'r1'} and len(log) == 1\n"
             ),
             capability_weights={
                 "planning": 0.2,
@@ -234,41 +347,100 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
                 "robustness": 0.2,
             },
         ),
-        # 状态机题通过独立状态常量制造真实跨文件阅读要求，并验证终态不可回退。
+        # 异步题验证取消与异常路径都执行队列确认和资源关闭，且不吞掉原始控制流。
         CodingAgentSample(
-            id="retry_state_machine",
+            id="async_worker_cleanup",
             difficulty="hard",
-            difficulty_reason="多文件状态定义和多步状态不变量",
+            difficulty_reason="异步取消、异常传播与双重清理",
             instruction=(
-                "Repair retry.record_failure without changing its signature. Running or retrying "
-                "jobs increment attempts and store the error. Return True and set retrying below "
-                "max_attempts; return False and set failed at the limit. Succeeded and failed jobs "
-                "are terminal and must remain unchanged. Verify the state transitions."
+                "Repair run_once so every dequeued item is acknowledged exactly once, an opened "
+                "resource is always awaited closed, and the handler result, exception, or "
+                "cancellation propagates to the caller. Opening the resource can also fail. "
+                "Preserve the public signature and verify success and cleanup paths."
             ),
             files={
-                "states.py": "TERMINAL_STATUSES = {'succeeded', 'failed'}\n",
-                "retry.py": (
-                    "from states import TERMINAL_STATUSES\n\n"
-                    "def record_failure(job, max_attempts, error):\n"
-                    "    job['attempts'] += 1\n"
-                    "    job['last_error'] = error\n"
-                    "    job['status'] = 'retrying'\n"
-                    "    return True\n"
+                "worker.py": (
+                    "async def run_once(queue, open_resource, handle):\n"
+                    "    item = await queue.get()\n"
+                    "    resource = await open_resource()\n"
+                    "    result = await handle(resource, item)\n"
+                    "    queue.task_done()\n"
+                    "    resource.aclose()\n"
+                    "    return result\n"
+                ),
+                "test_public.py": (
+                    "import asyncio\n"
+                    "from worker import run_once\n\n"
+                    "def test_success():\n"
+                    "    async def scenario():\n"
+                    "        queue = asyncio.Queue()\n"
+                    "        await queue.put('item')\n"
+                    "        class Resource:\n"
+                    "            async def aclose(self):\n"
+                    "                pass\n"
+                    "        async def open_resource():\n"
+                    "            return Resource()\n"
+                    "        async def handle(resource, item):\n"
+                    "            return item\n"
+                    "        assert await run_once(queue, open_resource, handle) == 'item'\n"
+                    "    asyncio.run(scenario())\n"
                 ),
             },
             verifier_code=(
-                "from retry import record_failure\n"
-                "job = {'status': 'running', 'attempts': 0, 'last_error': None}\n"
-                "assert record_failure(job, 2, 'timeout') is True\n"
-                "assert job == {'status': 'retrying', 'attempts': 1, 'last_error': 'timeout'}\n"
-                "assert record_failure(job, 2, 'again') is False\n"
-                "assert job == {'status': 'failed', 'attempts': 2, 'last_error': 'again'}\n"
-                "terminal = {'status': 'succeeded', 'attempts': 1, 'last_error': None}\n"
-                "assert record_failure(terminal, 3, 'ignored') is False\n"
-                "assert terminal == {'status': 'succeeded', 'attempts': 1, 'last_error': None}\n"
-                "failed = {'status': 'failed', 'attempts': 3, 'last_error': 'original'}\n"
-                "assert record_failure(failed, 3, 'ignored') is False\n"
-                "assert failed == {'status': 'failed', 'attempts': 3, 'last_error': 'original'}\n"
+                "import asyncio\n"
+                "from worker import run_once\n\n"
+                "class Resource:\n"
+                "    def __init__(self):\n"
+                "        self.closed = False\n"
+                "    async def aclose(self):\n"
+                "        self.closed = True\n\n"
+                "async def main():\n"
+                "    queue = asyncio.Queue()\n"
+                "    await queue.put('failure')\n"
+                "    resource = Resource()\n"
+                "    async def open_resource():\n"
+                "        return resource\n"
+                "    async def fail(resource, item):\n"
+                "        raise ValueError(item)\n"
+                "    try:\n"
+                "        await run_once(queue, open_resource, fail)\n"
+                "    except ValueError as exc:\n"
+                "        assert str(exc) == 'failure'\n"
+                "    else:\n"
+                "        raise AssertionError('handler exception must propagate')\n"
+                "    await asyncio.wait_for(queue.join(), 0.1)\n"
+                "    assert resource.closed\n"
+                "    cancel_queue = asyncio.Queue()\n"
+                "    await cancel_queue.put('cancel')\n"
+                "    cancel_resource = Resource()\n"
+                "    started = asyncio.Event()\n"
+                "    async def open_cancel_resource():\n"
+                "        return cancel_resource\n"
+                "    async def block(resource, item):\n"
+                "        started.set()\n"
+                "        await asyncio.Event().wait()\n"
+                "    task = asyncio.create_task("
+                "run_once(cancel_queue, open_cancel_resource, block))\n"
+                "    await started.wait()\n"
+                "    task.cancel()\n"
+                "    try:\n"
+                "        await task\n"
+                "    except asyncio.CancelledError:\n"
+                "        pass\n"
+                "    else:\n"
+                "        raise AssertionError('cancellation must propagate')\n"
+                "    await asyncio.wait_for(cancel_queue.join(), 0.1)\n"
+                "    assert cancel_resource.closed\n"
+                "    open_queue = asyncio.Queue()\n"
+                "    await open_queue.put('open')\n"
+                "    async def broken_open():\n"
+                "        raise RuntimeError('open failed')\n"
+                "    try:\n"
+                "        await run_once(open_queue, broken_open, block)\n"
+                "    except RuntimeError:\n"
+                "        pass\n"
+                "    await asyncio.wait_for(open_queue.join(), 0.1)\n\n"
+                "asyncio.run(main())\n"
             ),
             capability_weights={
                 "planning": 0.15,
@@ -288,6 +460,9 @@ def run_pi_agent_benchmark(
     model: str,
     base_url: str,
     difficulty: str,
+    adapter: str = "ollama",
+    provider_id: str | None = None,
+    api_key: str | None = None,
     on_progress: ProgressCallback | None = None,
     runner: AgentRunner | None = None,
     runtime_root: Path = Path(".runtime/agent-runs"),
@@ -297,9 +472,12 @@ def run_pi_agent_benchmark(
 
     参数：
         job_id: 任务中心生成的唯一标识，用作运行目录名。
-        model: Pi 本地 Ollama Provider 使用的基模。
-        base_url: Ollama 服务根地址。
+        model: Pi 使用的本地标签或 DeepSeek 模型 ID。
+        base_url: Ollama 或 DeepSeek 服务根地址。
         difficulty: 运行全部样本或指定简单、中等、困难单档。
+        adapter: ``ollama`` 或已支持的 ``openai-compatible``。
+        provider_id: API 模式使用的服务商标识。
+        api_key: Worker 临时解析的 API Key，不进入任务结果。
         on_progress: 接收已完成样本数和总数的可选回调。
         runner: 可替换的 Agent 壳；默认创建真实 ``PiAgentRunner``。
         runtime_root: 所有 Agent 样本工作区的父目录。
@@ -315,13 +493,24 @@ def run_pi_agent_benchmark(
     """
     selected_samples = _select_samples(difficulty)
     job_root = _job_root(runtime_root, job_id)
-    active_runner = runner or PiAgentRunner()
+    active_runner = runner or PiAgentRunner(
+        adapter=adapter,
+        provider_id=provider_id,
+        api_key=api_key,
+    )
     cli_version = active_runner.version()
 
     # 先公布真实分母，页面在第一个 Agent 样本运行期间也能显示确定进度。
     total_samples = len(selected_samples)
     if on_progress is not None:
         on_progress(0, total_samples)
+    protocol_preflight = _run_protocol_preflight(
+        job_root=job_root,
+        model=model,
+        base_url=base_url,
+        runner=active_runner,
+        on_trace=on_trace,
+    )
     sample_results: list[dict[str, object]] = []
 
     # 每个样本拥有独立初始提交；某个 Pi 失败不会阻断后续能力维度采样。
@@ -335,6 +524,7 @@ def run_pi_agent_benchmark(
                 base_url=base_url,
                 runner=active_runner,
                 on_trace=on_trace,
+                protocol_status=str(protocol_preflight["status"]),
             )
         )
         if on_progress is not None:
@@ -358,10 +548,10 @@ def run_pi_agent_benchmark(
         "evaluation_type": "agent",
         "dataset": "coding_mini",
         "benchmark": "EvalHub Coding Mini",
-        "benchmark_version": "coding-mini-v2",
+        "benchmark_version": "coding-mini-v3",
         "requested_difficulty": difficulty,
         "model": model,
-        "adapter": "ollama",
+        "adapter": adapter,
         "metric": "hidden_verifier_pass_rate",
         "total_samples": total_samples,
         "passed_samples": passed_samples,
@@ -374,12 +564,109 @@ def run_pi_agent_benchmark(
             "cli_version": cli_version,
             "scaffold_hash": _scaffold_hash(selected_samples),
         },
+        "protocol_preflight": protocol_preflight,
+        "execution_summary": _aggregate_execution(sample_results),
         "capability_report": {
             "overall_score": overall_score,
             "dimensions": dimensions,
         },
         "sample_results": sample_results,
     }
+
+
+def _run_protocol_preflight(
+    *,
+    job_root: Path,
+    model: str,
+    base_url: str,
+    runner: AgentRunner,
+    on_trace: TraceCallback | None,
+) -> dict[str, object]:
+    """用一次精确 marker 写入检查当前模型的 Pi 工具协议。
+
+    参数：
+        job_root: 当前任务独占的运行目录。
+        model: 本次使用的基模名称。
+        base_url: 已冻结的模型服务地址。
+        runner: 与正式样本相同的固定 Agent 壳。
+        on_trace: 接收预检外部动作的可选回调。
+
+    返回：
+        包含兼容状态、工具事实、耗时和 marker 证据的 JSON 兼容字典。
+    """
+    sample = CodingAgentSample(
+        id="protocol_preflight",
+        difficulty="easy",
+        difficulty_reason="不计分的工具协议预检",
+        instruction=(
+            "Use one structured file tool to replace the complete contents of "
+            "protocol_probe.txt with exactly OK followed by one newline. Then finish."
+        ),
+        files={"protocol_probe.txt": ""},
+        verifier_code="",
+        capability_weights={},
+    )
+    workspace = _create_workspace(job_root, sample)
+    tool_call_count = 0
+    tool_error_count = 0
+
+    def relay_pi_event(event: AgentTraceEvent) -> None:
+        """计数预检工具事件，并用固定预检标识转发审计事实。"""
+        nonlocal tool_call_count, tool_error_count
+        if event["event_type"] == "tool_started":
+            tool_call_count += 1
+        if event["event_type"] == "tool_finished" and event["payload"].get("is_error") is True:
+            tool_error_count += 1
+        payload = {**event["payload"], "sample_id": sample.id}
+        _emit_trace(
+            on_trace,
+            event_type=event["event_type"],
+            actor=event["actor"],
+            message=event["message"],
+            payload=payload,
+        )
+
+    # 预检错误是模型协议证据，不应阻断正式样本和把整个任务误报为基础设施失败。
+    started_at = monotonic()
+    final_message_present = False
+    runner_error: str | None = None
+    try:
+        run_result = runner.run(
+            instruction=sample.instruction,
+            model=model,
+            base_url=base_url,
+            workspace=workspace,
+            timeout_seconds=60,
+            on_event=relay_pi_event,
+        )
+        tool_call_count = max(tool_call_count, run_result.tool_call_count)
+        final_message_present = bool(run_result.final_message)
+    except PiAgentError as exc:
+        if exc.error_type is not None:
+            raise
+        runner_error = str(exc)
+    wall_time_seconds = round(monotonic() - started_at, 3)
+
+    # marker 必须字节精确且来自至少一次结构化工具事件，纯文本伪调用不能获得兼容状态。
+    marker_path = workspace / "protocol_probe.txt"
+    marker_written = marker_path.read_bytes() == b"OK\n"
+    if marker_written and tool_call_count > 0 and final_message_present:
+        status = "compatible"
+    elif marker_written and tool_call_count > 0:
+        status = "degraded"
+    else:
+        status = "incompatible"
+    result: dict[str, object] = {
+        "status": status,
+        "marker_written": marker_written,
+        "tool_call_count": tool_call_count,
+        "tool_error_count": tool_error_count,
+        "wall_time_seconds": wall_time_seconds,
+        "final_message_present": final_message_present,
+    }
+    if runner_error is not None:
+        result["message"] = runner_error
+    return result
 
 
 def _select_samples(difficulty: str) -> tuple[CodingAgentSample, ...]:
@@ -470,6 +757,7 @@ def _run_sample(
     base_url: str,
     runner: AgentRunner,
     on_trace: TraceCallback | None,
+    protocol_status: str = "compatible",
 ) -> dict[str, object]:
     """运行单条 Agent 样本并生成文件证据、隐藏校验和可解释分类。"""
     difficulty_label = {"easy": "简单", "medium": "中等", "hard": "困难"}[sample.difficulty]
@@ -485,9 +773,16 @@ def _run_sample(
             "difficulty_reason": sample.difficulty_reason,
         },
     )
+    observed_tool_calls = 0
+    observed_tool_errors = 0
 
     def relay_pi_event(event: AgentTraceEvent) -> None:
-        """为 Pi 原始外部事件补充稳定样本标识后向上游转发。"""
+        """计数 Pi 工具事件，并补充稳定样本标识后向上游转发。"""
+        nonlocal observed_tool_calls, observed_tool_errors
+        if event["event_type"] == "tool_started":
+            observed_tool_calls += 1
+        if event["event_type"] == "tool_finished" and event["payload"].get("is_error") is True:
+            observed_tool_errors += 1
         payload = {**event["payload"], "sample_id": sample.id}
         _emit_trace(
             on_trace,
@@ -497,6 +792,8 @@ def _run_sample(
             payload=payload,
         )
 
+    # 计时包住整个 Agent 边界，使超时、非零退出和缺少最终消息也能留下真实耗时。
+    started_at = monotonic()
     try:
         run_result = runner.run(
             instruction=sample.instruction,
@@ -507,31 +804,48 @@ def _run_sample(
             on_event=relay_pi_event,
         )
     except PiAgentError as exc:
-        # Runner 错误独立于解题正确性，仍检查文件证据并继续后续样本。
+        if exc.error_type is not None:
+            raise
+        wall_time_seconds = round(monotonic() - started_at, 3)
+        # Runner 错误不代表最终实现错误；评分仍必须由独立隐藏校验决定。
         changed_files = _changed_files(workspace)
+        verifier_passed, verifier_message = _verify_workspace(sample, workspace)
+        outcome = "passed" if verifier_passed else "runtime_error"
         diagnostics = _diagnostics(
-            outcome="runtime_error",
-            tool_call_count=0,
+            outcome=outcome,
+            tool_call_count=observed_tool_calls,
+            tool_error_count=observed_tool_errors,
             changed_files=changed_files,
+            wall_time_seconds=wall_time_seconds,
             final_message_present=False,
-            verifier_passed=False,
+            verifier_passed=verifier_passed,
         )
+
+        # 审计同时保留 Runner 警告、文件证据和 Verifier 结论，避免把自述当评分门槛。
         _emit_runner_error(on_trace, sample.id, exc)
         _emit_workspace_changed(on_trace, sample.id, changed_files)
-        _emit_sample_finished(on_trace, sample.id, diagnostics, score=0.0)
+        _emit_verifier_finished(
+            on_trace,
+            sample_id=sample.id,
+            verifier_passed=verifier_passed,
+            verifier_message=verifier_message,
+        )
+        score = 1.0 if verifier_passed else 0.0
+        _emit_sample_finished(on_trace, sample.id, diagnostics, score=score)
         return {
             "sample_id": sample.id,
             "difficulty": sample.difficulty,
             "difficulty_reason": sample.difficulty_reason,
-            "status": "failed",
-            "score": 0.0,
+            "status": "success" if verifier_passed else "failed",
+            "score": score,
             "final_message": "",
             "event_count": 0,
-            "wall_time_seconds": 0.0,
-            "verifier_message": str(exc),
+            "wall_time_seconds": wall_time_seconds,
+            "verifier_message": verifier_message,
             "diagnostics": diagnostics,
         }
 
+    wall_time_seconds = round(monotonic() - started_at, 3)
     # Git 变化回答 Agent 是否真正采取动作，隐藏校验只回答最终实现是否正确。
     changed_files = _changed_files(workspace)
     _emit_workspace_changed(on_trace, sample.id, changed_files)
@@ -542,11 +856,20 @@ def _run_sample(
         verifier_passed=verifier_passed,
         verifier_message=verifier_message,
     )
-    outcome = "passed" if verifier_passed else "wrong_solution" if changed_files else "no_action"
+    if verifier_passed:
+        outcome = "passed"
+    elif changed_files:
+        outcome = "wrong_solution"
+    elif protocol_status == "incompatible":
+        outcome = "protocol_error"
+    else:
+        outcome = "no_action"
     diagnostics = _diagnostics(
         outcome=outcome,
-        tool_call_count=run_result.tool_call_count,
+        tool_call_count=max(observed_tool_calls, run_result.tool_call_count),
+        tool_error_count=observed_tool_errors,
         changed_files=changed_files,
+        wall_time_seconds=wall_time_seconds,
         final_message_present=bool(run_result.final_message),
         verifier_passed=verifier_passed,
     )
@@ -560,7 +883,7 @@ def _run_sample(
         "score": score,
         "final_message": run_result.final_message[:1000],
         "event_count": run_result.event_count,
-        "wall_time_seconds": round(run_result.wall_time_seconds, 3),
+        "wall_time_seconds": wall_time_seconds,
         "verifier_message": verifier_message,
         "diagnostics": diagnostics,
     }
@@ -617,7 +940,9 @@ def _diagnostics(
     *,
     outcome: str,
     tool_call_count: int,
+    tool_error_count: int,
     changed_files: list[str],
+    wall_time_seconds: float,
     final_message_present: bool,
     verifier_passed: bool,
 ) -> dict[str, object]:
@@ -625,7 +950,9 @@ def _diagnostics(
     return {
         "outcome": outcome,
         "tool_call_count": tool_call_count,
+        "tool_error_count": tool_error_count,
         "changed_files": changed_files,
+        "wall_time_seconds": wall_time_seconds,
         "final_message_present": final_message_present,
         "verifier_passed": verifier_passed,
     }
@@ -720,6 +1047,7 @@ def _emit_sample_finished(
         "runtime_error": "Agent 运行失败",
         "no_action": "未产生代码修改",
         "wrong_solution": "修改未通过隐藏校验",
+        "protocol_error": "工具协议不兼容",
         "passed": "样本通过",
     }
     outcome = str(diagnostics["outcome"])
@@ -810,6 +1138,47 @@ def _aggregate_difficulty(
             }
         )
     return report
+
+
+def _aggregate_execution(sample_results: list[dict[str, object]]) -> dict[str, object]:
+    """把正式样本诊断聚合为任务级过程指标。
+
+    参数：
+        sample_results: 仅包含计分样本的结果，不包含协议预检。
+
+    返回：
+        工具、耗时、文件变化和固定结果分类的汇总字典。
+    """
+    diagnostics = [dict(result["diagnostics"]) for result in sample_results]
+    total_samples = len(diagnostics)
+    total_tool_calls = sum(int(item["tool_call_count"]) for item in diagnostics)
+    total_tool_errors = sum(int(item["tool_error_count"]) for item in diagnostics)
+    wall_times = [float(item["wall_time_seconds"]) for item in diagnostics]
+
+    # 不跨工作区合并同名文件；每条样本的改动文件数直接求和才符合隔离语义。
+    total_changed_files = sum(len(list(item["changed_files"])) for item in diagnostics)
+    outcome_counts = {
+        outcome: sum(item["outcome"] == outcome for item in diagnostics)
+        for outcome in (
+            "passed",
+            "no_action",
+            "wrong_solution",
+            "runtime_error",
+            "protocol_error",
+        )
+    }
+    divisor = total_samples or 1
+    total_wall_time = sum(wall_times)
+    return {
+        "total_tool_calls": total_tool_calls,
+        "average_tool_calls": round(total_tool_calls / divisor, 2),
+        "total_tool_errors": total_tool_errors,
+        "total_wall_time_seconds": round(total_wall_time, 2),
+        "average_wall_time_seconds": round(total_wall_time / divisor, 2),
+        "max_wall_time_seconds": round(max(wall_times, default=0.0), 2),
+        "total_changed_files": total_changed_files,
+        "outcome_counts": outcome_counts,
+    }
 
 
 def _failed_examples(sample_results: list[dict[str, object]]) -> list[dict[str, object]]:

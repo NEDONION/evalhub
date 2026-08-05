@@ -8,6 +8,8 @@ import signal
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from http import client as http_client
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
@@ -20,10 +22,24 @@ from evalhub.ollama_pull import validate_loopback_base_url
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _PI_BINARY = _PROJECT_ROOT / "agent-runtime" / "node_modules" / ".bin" / "pi"
 _SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
+_API_PROVIDERS = {
+    "deepseek": ("https://api.deepseek.com", "api.deepseek.com", ""),
+    "siliconflow": ("https://api.siliconflow.cn/v1", "api.siliconflow.cn", "/v1"),
+}
 
 
 class PiAgentError(RuntimeError):
     """表示 Pi CLI 未能产生可评分的 Agent 执行结果。"""
+
+    def __init__(self, message: str, *, error_type: str | None = None) -> None:
+        """保存安全错误消息和可选的稳定基础设施分类。
+
+        参数：
+            message: 可进入任务审计的脱敏错误说明。
+            error_type: 仅确定性执行器故障使用的稳定分类；模型运行错误留空。
+        """
+        super().__init__(message)
+        self.error_type = error_type
 
 
 @dataclass(frozen=True)
@@ -92,15 +108,24 @@ class PiAgentRunner:
         *,
         run_command: CommandRunner = subprocess.run,
         process_factory: ProcessFactory | None = None,
+        adapter: str = "ollama",
+        provider_id: str | None = None,
+        api_key: str | None = None,
     ) -> None:
-        """注入版本探测和流式进程边界。
+        """注入版本探测、流式进程边界和模型服务凭据。
 
         参数：
             run_command: 用于轻量 CLI 版本探测的同步执行器。
             process_factory: 用于真实 Agent 运行的流式进程构造器；生产默认 ``Popen``。
+            adapter: 本地 ``ollama`` 或当前支持的 ``openai-compatible``。
+            provider_id: API 模式支持的固定服务商 ID；本地模式留空。
+            api_key: 仅在当前进程内交给受控代理的 API 凭据，不写入配置文件。
         """
         self._run_command = run_command
         self._process_factory = process_factory or subprocess.Popen
+        self._adapter = adapter
+        self._provider_id = provider_id
+        self._api_key = api_key
         # 兼容既有只注入 run_command 的调用方；生产默认路径始终使用流式 Popen。
         self._legacy_run_command = process_factory is None and run_command is not subprocess.run
         self._cli_version: str | None = None
@@ -155,8 +180,8 @@ class PiAgentRunner:
 
         参数：
             instruction: 交给 Agent 的单个编码任务说明。
-            model: 通过 Ollama 暴露的基模名称。
-            base_url: 仅允许本机回环地址的 Ollama 服务根地址。
+            model: Ollama 标签或受支持 API 服务商的公开模型 ID。
+            base_url: 本机 Ollama 地址或固定服务商的官方 API 地址。
             workspace: Agent 唯一可写的样本工作区。
             timeout_seconds: 本次样本允许的最长执行秒数。
             on_event: 每产生一条白名单外部事件时立即调用的可选回调。
@@ -168,10 +193,7 @@ class PiAgentRunner:
             PiAgentError: 参数无效、CLI 不可用、超时、退出失败或结果缺失时抛出。
         """
         _validate_run_arguments(instruction, model, base_url, workspace, timeout_seconds)
-        try:
-            normalized_base_url = validate_loopback_base_url(base_url)
-        except ValueError as exc:
-            raise PiAgentError(str(exc)) from exc
+        normalized_base_url, provider = self._provider_settings(base_url)
 
         # Pi 会切换子进程 cwd；提前绝对化可避免沙箱根和配置路径被二次相对解析。
         workspace = workspace.resolve()
@@ -183,48 +205,62 @@ class PiAgentRunner:
         temp_dir = evalhub_dir / "tmp"
         pi_home.mkdir(parents=True, exist_ok=True)
         temp_dir.mkdir(parents=True, exist_ok=True)
-        _write_models_config(pi_home, normalized_base_url, model)
-
-        # 命令参数与 Seatbelt 策略由平台固定，用户只能选择基模和本机 Ollama 地址。
-        command = _build_command(
-            instruction=instruction,
-            model=model,
-            workspace=workspace,
-            base_url=normalized_base_url,
-        )
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "PI_CODING_AGENT_DIR": str(pi_home),
-                "PI_CODING_AGENT_SESSION_DIR": str(pi_home / "sessions"),
-                "PI_OFFLINE": "1",
-                "PI_SKIP_VERSION_CHECK": "1",
-                "PI_TELEMETRY": "0",
-                "TMPDIR": str(temp_dir),
-            }
-        )
-
-        # 生产路径逐行读取 JSONL；旧测试注入方式仍可同步执行并复用同一标准化逻辑。
-        started_at = monotonic()
+        proxy: tuple[ThreadingHTTPServer, Thread] | None = None
         try:
-            return_code, stdout, stderr = self._execute_command(
-                command=command,
+            runtime_base_url = normalized_base_url
+            if provider == "ollama":
+                _write_models_config(pi_home, runtime_base_url, model)
+            else:
+                # 父进程代理独占真实凭据，Pi 及其 bash 工具只得到无权外联的本机地址。
+                server, thread, runtime_base_url = _start_api_proxy(str(self._api_key), provider)
+                proxy = (server, thread)
+                _write_api_proxy_config(pi_home, runtime_base_url, model, provider)
+
+            # 命令和环境由平台固定，沙箱网络只允许连接当前本机模型端点。
+            command = _build_command(
+                instruction=instruction,
+                model=model,
                 workspace=workspace,
-                environment=environment,
-                timeout_seconds=timeout_seconds,
-                on_event=on_event,
+                base_url=runtime_base_url,
+                provider=provider,
             )
-        except FileNotFoundError as exc:
-            raise PiAgentError("Pi CLI or macOS sandbox-exec is unavailable") from exc
-        except subprocess.TimeoutExpired as exc:
-            timeout_label = f"{timeout_seconds:g}"
-            raise PiAgentError(f"pi timed out after {timeout_label} seconds") from exc
-        elapsed_seconds = monotonic() - started_at
+            environment = _pi_environment(pi_home, temp_dir)
+
+            # 生产路径逐行读取 JSONL；旧测试注入方式仍复用同一标准化逻辑。
+            started_at = monotonic()
+            try:
+                return_code, stdout, stderr = self._execute_command(
+                    command=command,
+                    workspace=workspace,
+                    environment=environment,
+                    timeout_seconds=timeout_seconds,
+                    on_event=on_event,
+                )
+            except FileNotFoundError as exc:
+                raise PiAgentError(
+                    "Pi CLI or macOS sandbox-exec is unavailable",
+                    error_type="executor_not_ready",
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                timeout_label = f"{timeout_seconds:g}"
+                raise PiAgentError(f"pi timed out after {timeout_label} seconds") from exc
+            elapsed_seconds = monotonic() - started_at
+        finally:
+            if proxy is not None:
+                _stop_api_proxy(*proxy)
 
         # 只有退出成功且 JSONL 含权威 assistant message_end 才算可审计执行。
         if return_code != 0:
             detail = _error_detail(stderr)
-            raise PiAgentError(f"pi exited with code {return_code}: {detail}")
+            error_type = (
+                "executor_not_ready"
+                if return_code == 71 and "sandbox-exec" in detail
+                else None
+            )
+            raise PiAgentError(
+                f"pi exited with code {return_code}: {detail}",
+                error_type=error_type,
+            )
         final_message = _final_message(stdout)
         if not final_message:
             raise PiAgentError("pi produced no final message")
@@ -240,6 +276,37 @@ class PiAgentRunner:
             cli_version=cli_version,
             tool_call_count=tool_call_count,
         )
+
+    def _provider_settings(self, base_url: str) -> tuple[str, str]:
+        """校验当前模型来源并返回规范地址与 Pi Provider 名。
+
+        参数：
+            base_url: 任务创建时冻结的模型服务根地址。
+
+        返回：
+            规范化服务地址和 Pi 内置 Provider 名。
+
+        异常：
+            PiAgentError: 适配器、服务商、地址或 API Key 不符合固定安全边界。
+        """
+        if self._adapter == "ollama":
+            try:
+                return validate_loopback_base_url(base_url), "ollama"
+            except ValueError as exc:
+                raise PiAgentError(str(exc)) from exc
+
+        # API Agent 只开放经过端点约束的官方服务，避免自定义 Provider 扩大网络面。
+        normalized_base_url = base_url.strip().rstrip("/")
+        if self._adapter != "openai-compatible" or self._provider_id not in _API_PROVIDERS:
+            supported = ", ".join(_API_PROVIDERS)
+            raise PiAgentError(f"Pi API agent provider must be one of: {supported}")
+        provider = str(self._provider_id)
+        expected_base_url = _API_PROVIDERS[provider][0]
+        if normalized_base_url != expected_base_url:
+            raise PiAgentError(f"{provider} agent base_url must be {expected_base_url}")
+        if not self._api_key or not self._api_key.strip():
+            raise PiAgentError(f"{provider} API Key is required")
+        return normalized_base_url, provider
 
     def _execute_command(
         self,
@@ -339,23 +406,211 @@ def _write_models_config(pi_home: Path, base_url: str, model: str) -> None:
     )
 
 
+def _write_api_proxy_config(pi_home: Path, base_url: str, model: str, provider: str) -> None:
+    """把远程 API 模型改道到单次运行的本机凭据代理。
+
+    参数：
+        pi_home: 当前样本专用的 Pi 配置目录。
+        base_url: 随机端口本机代理地址。
+        model: 本次选择的远程模型 ID。
+        provider: 已验证的 DeepSeek 或 SiliconFlow 服务商 ID。
+
+    异常：
+        OSError: 配置目录不可写时保留原始文件系统诊断。
+    """
+    if provider == "deepseek":
+        provider_config: dict[str, object] = {
+            "baseUrl": base_url,
+            "apiKey": "evalhub-proxy",
+            "modelOverrides": {
+                model: {
+                    "compat": {"supportsDeveloperRole": False},
+                }
+            },
+        }
+    else:
+        # SiliconFlow 没有 Pi 内置模型目录，仅声明本次模型需要的 OpenAI 兼容字段。
+        provider_config = {
+            "baseUrl": base_url,
+            "api": "openai-completions",
+            "apiKey": "evalhub-proxy",
+            "compat": {
+                "supportsDeveloperRole": False,
+                "supportsReasoningEffort": False,
+            },
+            "models": [{"id": model}],
+        }
+    config = {"providers": {provider: provider_config}}
+    # 配置只含本机代理的无权占位 Key，真实凭据不会进入 Agent 可读目录。
+    (pi_home / "models.json").write_text(
+        json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _pi_environment(pi_home: Path, temp_dir: Path) -> dict[str, str]:
+    """构造不含远程模型凭据的隔离 Pi 子进程环境。
+
+    参数：
+        pi_home: 当前样本专用的 Pi 配置目录。
+        temp_dir: 当前样本专用的临时文件目录。
+
+    返回：
+        保留系统运行变量但关闭更新、遥测和用户全局状态的环境字典。
+    """
+    allowed_names = {
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "SHELL",
+        "TERM",
+        "USER",
+        "LOGNAME",
+    }
+    environment = {name: value for name, value in os.environ.items() if name in allowed_names}
+    # HOME 指向样本隔离目录，避免 Pi 或 bash 工具按默认路径读取用户级配置和凭据。
+    environment.update(
+        {
+            "HOME": str(pi_home),
+            "PI_CODING_AGENT_DIR": str(pi_home),
+            "PI_CODING_AGENT_SESSION_DIR": str(pi_home / "sessions"),
+            "PI_OFFLINE": "1",
+            "PI_SKIP_VERSION_CHECK": "1",
+            "PI_TELEMETRY": "0",
+            "TMPDIR": str(temp_dir),
+        }
+    )
+    return environment
+
+
+def _start_api_proxy(api_key: str, provider: str) -> tuple[ThreadingHTTPServer, Thread, str]:
+    """启动只转发固定官方对话端点并注入凭据的本机代理。
+
+    参数：
+        api_key: 仅由父 Worker 持有的真实 API Key。
+        provider: 已通过白名单校验的服务商 ID。
+
+    返回：
+        HTTP 服务器、服务线程和可写入 Pi 配置的本机根地址。
+
+    异常：
+        OSError: 本机无法分配监听端口时抛出。
+    """
+    handler = _api_proxy_handler(api_key, provider)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = Thread(target=server.serve_forever, name=f"evalhub-{provider}-proxy", daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+    return server, thread, f"http://localhost:{port}"
+
+
+def _stop_api_proxy(server: ThreadingHTTPServer, thread: Thread) -> None:
+    """停止单次样本的本机 API 代理并回收监听端口。
+
+    参数：
+        server: 当前样本创建的 HTTP 服务器。
+        thread: 执行 ``serve_forever`` 的后台线程。
+    """
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=2.0)
+
+
+def _api_proxy_handler(api_key: str, provider: str) -> type[BaseHTTPRequestHandler]:
+    """创建捕获单个凭据且不记录请求内容的固定上游代理处理器。
+
+    参数：
+        api_key: 转发到官方服务时注入的认证凭据。
+        provider: 已通过白名单校验的服务商 ID。
+
+    返回：
+        可交给 ``ThreadingHTTPServer`` 的请求处理器类型。
+    """
+
+    _, upstream_host, path_prefix = _API_PROVIDERS[provider]
+
+    class ApiProxyHandler(BaseHTTPRequestHandler):
+        """仅转发 Pi 所需的 Chat Completions POST 请求。"""
+
+        protocol_version = "HTTP/1.1"
+
+        def do_POST(self) -> None:
+            """校验固定路径和正文上限，再流式转发到固定官方 HTTPS。"""
+            if self.path not in {"/chat/completions", "/v1/chat/completions"}:
+                self.send_error(404, "unsupported API proxy path")
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                self.send_error(400, "invalid Content-Length")
+                return
+
+            # Coding Mini 请求远小于此上限；显式限制可避免 Agent 滥用本机代理内存。
+            if content_length <= 0 or content_length > 10 * 1024 * 1024:
+                self.send_error(413, "request body is empty or too large")
+                return
+            body = self.rfile.read(content_length)
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": self.headers.get("Content-Type", "application/json"),
+                "Accept": self.headers.get("Accept", "application/json"),
+            }
+
+            # 上游连接只认固定官方主机，Agent 无法借请求路径选择任意目标。
+            connection = http_client.HTTPSConnection(upstream_host, 443, timeout=200)
+            try:
+                upstream_path = self.path
+                if path_prefix and not upstream_path.startswith(f"{path_prefix}/"):
+                    upstream_path = f"{path_prefix}{upstream_path}"
+                connection.request("POST", upstream_path, body=body, headers=headers)
+                response = connection.getresponse()
+                self.send_response(response.status)
+                for name, value in response.getheaders():
+                    if name.lower() not in {"content-length", "transfer-encoding", "connection"}:
+                        self.send_header(name, value)
+                self.send_header("Connection", "close")
+                self.end_headers()
+
+                # ``http.client`` 已解码上游 chunked framing；下游以关闭连接作为正文边界。
+                while chunk := response.read(64 * 1024):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                self.close_connection = True
+            except BrokenPipeError:
+                # Pi 超时后会先关闭本机连接；响应头已发送时不能再尝试回写一份 502。
+                self.close_connection = True
+            except (OSError, http_client.HTTPException):
+                self.send_error(502, "API upstream request failed")
+            finally:
+                connection.close()
+
+        def log_message(self, format: str, *args: object) -> None:
+            """关闭默认访问日志，避免模型请求元数据进入任务外部输出。"""
+            del format, args
+
+    return ApiProxyHandler
+
+
 def _build_command(
-    *, instruction: str, model: str, workspace: Path, base_url: str
+    *, instruction: str, model: str, workspace: Path, base_url: str, provider: str
 ) -> list[str]:
-    """构造固定且可审计的 Pi 本地 Ollama 沙箱命令。
+    """构造固定且可审计的 Pi 沙箱命令。
 
     参数：
         instruction: 交给 Pi 的单个编码任务。
-        model: 在隔离配置中注册的 Ollama 模型标签。
+        model: Ollama 模型标签或受支持 API 服务商的公开模型 ID。
         workspace: 已绝对化的唯一可写样本目录。
-        base_url: 已验证的 HTTP 回环 Ollama 根地址。
+        base_url: 已验证的 Ollama 或本机 API 代理根地址。
+        provider: 已收窄为 ``ollama`` 或受支持 API 服务商的 Pi Provider 名。
 
     返回：
         可直接交给 subprocess 且不经 shell 解释的参数列表。
     """
     parsed = urlparse(base_url)
-    port = parsed.port or 80
-    sandbox_profile = _sandbox_profile(port)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    remote = f"localhost:{port}"
+    sandbox_profile = _sandbox_profile(remote)
     return [
         str(_SANDBOX_EXEC),
         "-p",
@@ -367,7 +622,7 @@ def _build_command(
         "json",
         "--no-session",
         "--provider",
-        "ollama",
+        provider,
         "--model",
         model,
         "--tools",
@@ -380,11 +635,11 @@ def _build_command(
     ]
 
 
-def _sandbox_profile(ollama_port: int) -> str:
-    """生成仅允许工作区写入与本机 Ollama 连接的 Seatbelt 策略。
+def _sandbox_profile(remote: str) -> str:
+    """生成仅允许工作区写入与单个模型端点连接的 Seatbelt 策略。
 
     参数：
-        ollama_port: 已从受信回环 URL 解析出的 TCP 端口。
+        remote: 由内部固定逻辑生成的 ``主机:端口`` 网络目标。
 
     返回：
         由 ``sandbox-exec`` 读取的完整策略文本；工作区通过参数传入，避免路径注入。
@@ -395,7 +650,7 @@ def _sandbox_profile(ollama_port: int) -> str:
         "(deny file-write*)\n"
         '(allow file-write* (subpath (param "WORKSPACE")))\n'
         "(deny network*)\n"
-        f'(allow network-outbound (remote tcp "localhost:{ollama_port}"))\n'
+        f'(allow network-outbound (remote tcp "{remote}"))\n'
     )
 
 

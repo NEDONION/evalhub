@@ -17,6 +17,7 @@
   <a href="#quick-start">快速开始</a> ·
   <a href="#screenshots">界面预览</a> ·
   <a href="#model-benchmark-report">模型报告</a> ·
+  <a href="#agent-benchmark-report">Agent 报告</a> ·
   <a href="#how-it-works">工作原理</a> ·
   <a href="#benchmarks">评测范围</a> ·
   <a href="#documentation">文档</a>
@@ -152,6 +153,56 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
 > TruthfulQA/BBQ 的最大生成预算依次为 256/1024/512/512/1024/256/256 tokens，HumanEval 使用固定
 > Docker 镜像执行隐藏测试。本轮基线提交为 `4e9107c`。
 
+## Agent Benchmark Report
+
+以下结果是 2026-08-05 在同一份 `coding-mini-v3` 上的实测快照：固定 Pi Agent 壳，只替换底层
+模型，4 个 API 模型与 6 个本地 Ollama 模型均完成 6/6 个正式样例，共完成 60 次 Agent 任务。
+正式题合计通过 23 次、调用工具 311 次、发生 60 次工具错误。协议预检独立执行，不计入通过率和
+工具调用汇总。
+
+| 排名 | 模型 | 运行方式 | 协议预检 | 通过样例 | 工具调用 | 工具错误 | 平均耗时/题 |
+| ---: | --- | --- | --- | ---: | ---: | ---: | ---: |
+| 1 | `deepseek-v4-pro` | DeepSeek API | compatible | 6 / 6 | 64 | 10 | 61.78 s |
+| 2 | `moonshotai/Kimi-K2.7-Code` | SiliconFlow API | compatible | 5 / 6 | 59 | 11 | 83.00 s |
+| 2 | `zai-org/GLM-5.2` | SiliconFlow API | compatible | 5 / 6 | 62 | 9 | 122.41 s |
+| 2 | `deepseek-ai/DeepSeek-V4-Flash` | SiliconFlow API | compatible | 5 / 6 | 75 | 19 | 133.97 s |
+| 5 | `qwen3:14b` | Ollama | compatible | 1 / 6 | 7 | 2 | 175.23 s |
+| 5 | `qwen3:4b` | Ollama | compatible | 1 / 6 | 13 | 1 | 169.05 s |
+| 7 | `gemma4:12b` | Ollama | compatible | 0 / 6 | 19 | 0 | 155.52 s |
+| 7 | `granite4.1:3b` | Ollama | compatible | 0 / 6 | 12 | 8 | 11.73 s |
+| 7 | `granite3.3:8b` | Ollama | incompatible | 0 / 6 | 0 | 0 | 17.42 s |
+| 7 | `deepseek-r1:1.5b` | Ollama | incompatible | 0 / 6 | 0 | 0 | 30.11 s |
+
+<a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/agent-model-comparison.svg">
+  <img src="./docs/assets/agent-model-comparison.svg" width="100%" alt="10 个模型的 EvalHub Agent 六维能力小多图对比" />
+</a>
+
+六边形共用 0–100 刻度，轴顺序为规划、代码理解、实现正确性、工具使用、验证能力、稳健性；所有
+能力路径均为闭合多边形。点击图片可直接打开仓库中的 SVG 原图并放大。
+
+| 模型 | 规划 | 代码理解 | 实现正确性 | 工具使用 | 验证能力 | 稳健性 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek-v4-pro` | 100 | 100 | 100 | 100 | 100 | 100 |
+| `moonshotai/Kimi-K2.7-Code` | 85 | 82 | 81 | 88 | 83 | 82 |
+| `zai-org/GLM-5.2` | 85 | 82 | 81 | 88 | 83 | 82 |
+| `deepseek-ai/DeepSeek-V4-Flash` | 60 | 64 | 81 | 100 | 100 | 100 |
+| `qwen3:14b` | 0 | 0 | 0 | 35 | 33 | 36 |
+| `qwen3:4b` | 15 | 9 | 19 | 18 | 22 | 18 |
+| `gemma4:12b` | 0 | 0 | 0 | 0 | 0 | 0 |
+| `granite4.1:3b` | 0 | 0 | 0 | 0 | 0 | 0 |
+| `granite3.3:8b` | 0 | 0 | 0 | 0 | 0 | 0 |
+| `deepseek-r1:1.5b` | 0 | 0 | 0 | 0 | 0 | 0 |
+
+过程证据能解释同为 0 分的不同原因：`gemma4:12b` 和 `granite4.1:3b` 已通过协议预检并实际调用
+工具，但最终工作区未通过隐藏校验；`granite3.3:8b` 与 `deepseek-r1:1.5b` 未完成结构化工具协议，
+因此被标记为 `incompatible`。`qwen3:14b` 与 `qwen3:4b` 均为 `compatible`，其低分不是协议误判。
+
+> [!NOTE]
+> 这是一组 6 题日常诊断集成绩，不是官方 SWE-bench 成绩。全部运行使用 Pi CLI `0.74.1`、脚手架
+> `d8a7cbaf0d432018` 和隐藏工作区校验；API 延迟与本机 Ollama 耗时受不同硬件和网络影响，不应把
+> 耗时直接解释为模型推理速度。独立的 6 题 SWE-bench Verified Mini 只会在官方 Docker Harness
+> 的 gold patch 先达到 6/6 后发布成绩，本轮未用未就绪结果补零或混入排名。
+
 ## How It Works
 
 ```mermaid
@@ -161,7 +212,7 @@ flowchart LR
     Dataset["公开 Benchmark 数据"] --> Engine
     Engine --> DAG["持久化评测 DAG"]
     DAG --> Model["Model Adapter + Ollama"]
-    DAG --> Agent["Pi Agent + Ollama"]
+    DAG --> Agent["Pi Agent + Ollama / DeepSeek"]
     Model --> Evidence["样本结果、检查点与审计事件"]
     Agent --> Evidence
     Evidence --> Report["得分、失败样本与六维画像"]
@@ -177,7 +228,8 @@ Benchmark 或 Suite 下的基模成绩。
 | --- | --- | --- |
 | **单项模型 Benchmark** | MMLU、GSM8K、IFEval、HumanEval、MBPP 等已注册公开评测 | 官方或固定评测指标、样本结果、失败样本 |
 | **Hexagon Mini Suite** | `evalhub-hexagon-v1` `1.2.0`，固定 30 次模型调用，覆盖六个能力维度 | 六维画像、覆盖率和可复现性元数据 |
-| **Coding Mini Agent** | `coding-mini-v2`，固定 Pi CLI 壳、6 道分级编码任务和隐藏 Verifier | 通过率、难度报告、Agent 六维画像和过程审计 |
+| **Coding Mini Agent** | `coding-mini-v3`，固定 Pi CLI 壳、6 道分级编码任务、协议预检和隐藏 Verifier | 通过率、难度报告、Agent 六维画像和过程指标 |
+| **SWE-bench Verified Mini** | 固定 6 个官方实例；仅在官方 Docker Harness 的 gold patch 6/6 后开放 | 独立官方任务报告，不与 Coding Mini 混排 |
 
 > [!IMPORTANT]
 > Hexagon Mini Suite 是本地能力画像，不是七个上游 Benchmark 的完整官方分数，不能直接复述为论文
