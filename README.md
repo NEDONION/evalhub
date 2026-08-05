@@ -26,9 +26,11 @@ EvalHub 是一个面向本地大模型研发的统一评测平台。它既能运
 Agent 壳、任务和隐藏 Verifier 下比较编码 Agent 的基模能力；每次运行都会保留样本结果、节点状态、
 资源指标和审计证据，而不只给出一个最终分数。
 
-<img width="1405" height="830" alt="EvalHub model evaluation setup" src="https://github.com/user-attachments/assets/72975455-f13a-4f96-9cdb-bb005c5fc139" />
+<a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/model-evaluation-setup.png">
+  <img width="100%" alt="EvalHub model evaluation setup" src="./docs/assets/screenshots/model-evaluation-setup.png" />
+</a>
 
-<p align="center"><sub>从同一控制台选择 Benchmark、模型和样本范围，并跟踪完整评测过程。</sub></p>
+<p align="center"><sub>从同一控制台选择 Benchmark、模型和样本范围，并跟踪完整评测过程。点击图片查看原图。</sub></p>
 
 ## Features
 
@@ -68,24 +70,32 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
     <td width="50%" valign="top">
       <strong>模型 Benchmark 工作流</strong><br />
       <sub>查看任务 DAG、节点进度、资源指标和执行审计。</sub><br /><br />
-      <img width="1387" height="842" alt="EvalHub model Benchmark workflow and resource metrics" src="https://github.com/user-attachments/assets/00629820-390d-4688-b23c-53a7edc2ca97" />
+      <a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/model-benchmark-workflow.png">
+        <img width="100%" alt="EvalHub model Benchmark workflow and resource metrics" src="./docs/assets/screenshots/model-benchmark-workflow.png" />
+      </a>
     </td>
     <td width="50%" valign="top">
       <strong>Agent 失败样本审计</strong><br />
       <sub>回放 Agent 消息、工具调用、文件变化和失败分类。</sub><br /><br />
-      <img width="1262" height="838" alt="EvalHub Agent live process and failed sample audit" src="https://github.com/user-attachments/assets/5e1c29b4-4b31-4b09-8a02-dd6d3f8e8542" />
+      <a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/agent-failure-audit.png">
+        <img width="100%" alt="EvalHub Agent live process and failed sample audit" src="./docs/assets/screenshots/agent-failure-audit.png" />
+      </a>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <strong>Agent 六维评测结果</strong><br />
       <sub>按规划、理解、实现、工具、验证和稳健性查看能力画像。</sub><br /><br />
-      <img width="852" height="665" alt="EvalHub Agent six-dimension evaluation result" src="https://github.com/user-attachments/assets/36fd8ac4-2ee5-44e1-9ee6-dbb34b897293" />
+      <a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/agent-six-dimension-result.png">
+        <img width="100%" alt="EvalHub Agent six-dimension evaluation result" src="./docs/assets/screenshots/agent-six-dimension-result.png" />
+      </a>
     </td>
     <td width="50%" valign="top">
       <strong>模型与数据集资产</strong><br />
       <sub>管理 Ollama 模型下载以及真实 Benchmark 数据缓存。</sub><br /><br />
-      <img width="1274" height="821" alt="EvalHub model download and dataset asset management" src="https://github.com/user-attachments/assets/b56c2a2d-503d-4d30-a1ca-2016e5200f83" />
+      <a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/model-dataset-assets.png">
+        <img width="100%" alt="EvalHub model download and dataset asset management" src="./docs/assets/screenshots/model-dataset-assets.png" />
+      </a>
     </td>
   </tr>
 </table>
@@ -110,7 +120,9 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
 | 10 | `qwen2.5:0.5b` | Ollama | 8 / 30 | **26.67%** |
 | 11 | `qwen3:4b` | Ollama | 6 / 30 | **20.00%** |
 
-<img src="docs/assets/hexagon-model-comparison.svg" width="100%" alt="11 个模型的 EvalHub 六维能力小多图对比" />
+<a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/hexagon-model-comparison.svg">
+  <img src="./docs/assets/hexagon-model-comparison.svg" width="100%" alt="11 个模型的 EvalHub 六维能力小多图对比" />
+</a>
 
 六边形均使用相同的 0–100 刻度，轴顺序与 EvalHub 控制台一致：知识、指令遵循、数学、综合推理、
 代码、安全可信。每个能力多边形都是闭合路径，可直接比较轮廓和短板。
