@@ -25,7 +25,8 @@ EvalHub 是一个面向本地大模型研发的统一评测平台。它既能运
 Agent 壳、任务和隐藏 Verifier 下比较编码 Agent 的基模能力；每次运行都会保留样本结果、节点状态、
 资源指标和审计证据，而不只给出一个最终分数。
 
-<img width="1405" height="830" alt="EvalHub model evaluation setup" src="https://github.com/user-attachments/assets/f94085b8-dbe6-423c-8e12-83b38ff0ad2b" />
+<img width="1405" height="830" alt="EvalHub model evaluation setup" src="https://github.com/user-attachments/assets/72975455-f13a-4f96-9cdb-bb005c5fc139" />
+
 
 <p align="center"><sub>从同一控制台选择 Benchmark、模型和样本范围，并跟踪完整评测过程。</sub></p>
 
