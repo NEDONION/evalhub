@@ -16,6 +16,7 @@
   <a href="#features">功能</a> ·
   <a href="#quick-start">快速开始</a> ·
   <a href="#screenshots">界面预览</a> ·
+  <a href="#model-benchmark-report">模型报告</a> ·
   <a href="#how-it-works">工作原理</a> ·
   <a href="#benchmarks">评测范围</a> ·
   <a href="#documentation">文档</a>
@@ -88,6 +89,56 @@ Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装
     </td>
   </tr>
 </table>
+
+## Model Benchmark Report
+
+以下结果是 2026-08-05 在同一份 `evalhub-hexagon-v1` `1.2.0` 固定套件上的实测快照：
+9 个本地 Ollama 模型与 2 个线上 DeepSeek 模型均完成 30/30 个样本，共执行 330 次模型评测。
+综合分为通过样本数除以 30；每个维度包含 5 个样本，因此单题会使该维度变化 20 分。
+
+| 排名 | 模型 | 运行方式 | 通过样本 | 综合分 |
+| ---: | --- | --- | ---: | ---: |
+| 1 | `deepseek-v4-pro` | DeepSeek API | 25 / 30 | **83.33%** |
+| 2 | `gemma4:12b` | Ollama | 21 / 30 | **70.00%** |
+| 3 | `granite4.1:3b` | Ollama | 20 / 30 | **66.67%** |
+| 3 | `qwen3:14b` | Ollama | 20 / 30 | **66.67%** |
+| 3 | `deepseek-v4-flash` | DeepSeek API | 20 / 30 | **66.67%** |
+| 6 | `granite3.3:8b` | Ollama | 16 / 30 | **53.33%** |
+| 7 | `qwen2.5-coder:7b` | Ollama | 15 / 30 | **50.00%** |
+| 8 | `qwen2.5:1.5b` | Ollama | 12 / 30 | **40.00%** |
+| 9 | `deepseek-r1:1.5b` | Ollama | 10 / 30 | **33.33%** |
+| 10 | `qwen2.5:0.5b` | Ollama | 8 / 30 | **26.67%** |
+| 11 | `qwen3:4b` | Ollama | 6 / 30 | **20.00%** |
+
+<img src="docs/assets/hexagon-model-comparison.svg" width="100%" alt="11 个模型的 EvalHub 六维能力小多图对比" />
+
+六边形均使用相同的 0–100 刻度，轴顺序与 EvalHub 控制台一致：知识、指令遵循、数学、综合推理、
+代码、安全可信。每个能力多边形都是闭合路径，可直接比较轮廓和短板。
+
+| 模型 | 知识 | 指令遵循 | 数学 | 综合推理 | 代码 | 安全可信 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek-v4-pro` | 60 | 100 | 80 | 80 | 80 | 100 |
+| `gemma4:12b` | 60 | 100 | 100 | 40 | 20 | 100 |
+| `granite4.1:3b` | 20 | 100 | 60 | 80 | 40 | 100 |
+| `qwen3:14b` | 40 | 100 | 100 | 40 | 20 | 100 |
+| `deepseek-v4-flash` | 80 | 100 | 0 | 40 | 100 | 80 |
+| `granite3.3:8b` | 60 | 100 | 80 | 0 | 0 | 80 |
+| `qwen2.5-coder:7b` | 40 | 80 | 60 | 20 | 40 | 60 |
+| `qwen2.5:1.5b` | 40 | 60 | 60 | 20 | 0 | 60 |
+| `deepseek-r1:1.5b` | 20 | 40 | 60 | 0 | 20 | 60 |
+| `qwen2.5:0.5b` | 20 | 20 | 40 | 20 | 0 | 60 |
+| `qwen3:4b` | 20 | 40 | 20 | 0 | 0 | 40 |
+
+本轮结果中，`deepseek-v4-pro` 的总分和轮廓完整性最高；本地模型里 `gemma4:12b` 总分最高。
+`deepseek-v4-flash` 呈现明显的代码强、数学弱特征。指令遵循在多数中大型模型上已经饱和，而代码与
+综合推理更能拉开差异。
+
+> [!NOTE]
+> 这是一组 Mini Suite 能力画像，不是上游 Benchmark 的完整官方成绩。普通 Ollama、显式
+> `think=false` 的思考模型和 OpenAI-compatible DeepSeek API 属于三个生成协议组；它们使用同一套
+> 样本和评分器，但跨协议组排名仅供观察。生成温度均为 0，MMLU/IFEval/GSM8K/BBH/HumanEval/
+> TruthfulQA/BBQ 的最大生成预算依次为 256/1024/512/512/1024/256/256 tokens，HumanEval 使用固定
+> Docker 镜像执行隐藏测试。本轮基线提交为 `4e9107c`。
 
 ## How It Works
 
