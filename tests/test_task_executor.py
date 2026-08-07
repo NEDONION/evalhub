@@ -195,10 +195,11 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
             "total_samples": 2,
         }
 
-    monkeypatch.setattr(executor_module, "run_pi_agent_benchmark", fake_agent_benchmark)
+    monkeypatch.setattr(executor_module, "run_agent_benchmark", fake_agent_benchmark)
     _evaluation_process("job_agent", asdict(request), event_queue)
 
     assert observed["job_id"] == "job_agent"
+    assert observed["framework"] == "pi"
     assert observed["difficulty"] == "hard"
     assert "limit" not in observed
     assert observed["model"] == "local-test"
@@ -212,6 +213,42 @@ def test_evaluation_process_dispatches_agent_request(monkeypatch: pytest.MonkeyP
         },
     }
     assert event_queue.events[-1]["result"]["evaluation_type"] == "agent"
+
+
+def test_evaluation_process_dispatches_miniclaw_without_model_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MiniClaw 必须进入通用 Agent 路径，Worker 不解析或传递 EvalHub 模型凭据。"""
+    request = replace(
+        request_fixture(),
+        evaluation_type="agent",
+        agent_framework="miniclaw",
+        dataset="coding_mini",
+        adapter="agent-managed",
+        model="miniclaw",
+        base_url="",
+        sample_mode="all",
+        agent_difficulty="easy",
+    )
+    event_queue = RecordingQueue()
+    observed: dict[str, object] = {}
+
+    def fake_agent_benchmark(**kwargs: object) -> dict[str, object]:
+        """记录完整 Agent 分派参数并返回最小成功结果。"""
+        observed.update(kwargs)
+        return {"job_id": kwargs["job_id"], "evaluation_type": "agent"}
+
+    monkeypatch.setattr(
+        executor_module,
+        "run_agent_benchmark",
+        fake_agent_benchmark,
+        raising=False,
+    )
+    _evaluation_process("job_miniclaw", asdict(request), event_queue)
+
+    assert observed["framework"] == "miniclaw"
+    assert "api_key" not in observed
+    assert event_queue.events[-1]["type"] == "result"
 
 
 def test_evaluation_process_resolves_deepseek_key_for_agent_only_in_worker(
@@ -252,7 +289,7 @@ def test_evaluation_process_resolves_deepseek_key_for_agent_only_in_worker(
         lambda: FakeProviderRepository(),
         raising=False,
     )
-    monkeypatch.setattr(executor_module, "run_pi_agent_benchmark", fake_agent_benchmark)
+    monkeypatch.setattr(executor_module, "run_agent_benchmark", fake_agent_benchmark)
     payload = asdict(request)
     _evaluation_process("job_deepseek_agent", payload, event_queue)
 

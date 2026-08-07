@@ -5,6 +5,7 @@ from evalhub.benchmarks.coding_mini import (
     CAPABILITY_DIMENSIONS,
     CodingAgentSample,
     coding_mini_samples,
+    run_agent_benchmark,
     run_pi_agent_benchmark,
 )
 from evalhub.benchmarks.humaneval import (
@@ -53,6 +54,7 @@ __all__ = [
     "get_suite_spec",
     "load_humaneval_problems",
     "normalize_score",
+    "run_agent_benchmark",
     "run_pi_agent_benchmark",
     "run_humaneval_benchmark",
     "suite_registry",

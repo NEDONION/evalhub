@@ -92,10 +92,11 @@ def build_model_performance(
     if selected_scope is None:
         return ModelPerformanceReport(scopes, None, (), None)
 
-    # 同一范围内再按模型分组，避免最佳分和趋势在模型之间相互污染。
+    # 同一范围内按可评对象分组：模型评测用模型，Agent 评测用完整候选身份。
     model_groups: dict[str, list[EvaluationTask]] = {}
     for task in grouped[selected_scope.key]:
-        model_groups.setdefault(task.request.model, []).append(task)
+        candidate = _performance_candidate(task)
+        model_groups.setdefault(candidate, []).append(task)
     models = tuple(
         _build_model(model, items, selected_scope.key) for model, items in model_groups.items()
     )
@@ -105,6 +106,24 @@ def build_model_performance(
     # 最新纪录从已经排序的所有模型历史中派生，不受排行榜名次影响。
     record = _latest_improved_record(models)
     return ModelPerformanceReport(scopes, selected_scope, models, record)
+
+
+def _performance_candidate(task: EvaluationTask) -> str:
+    """返回排行榜需要展示和聚合的完整候选名称。
+
+    Args:
+        task: 已通过可比性检查的模型或 Agent 历史任务。
+
+    Returns:
+        模型评测返回模型 ID；Pi 带模型显示；MiniClaw 按完整 Agent 聚合。
+    """
+    if task.request.evaluation_type != "agent":
+        return task.request.model
+    if task.request.agent_framework == "miniclaw":
+        return "MiniClaw"
+    if task.request.agent_framework == "pi":
+        return f"Pi · {task.request.model}"
+    return task.request.agent_framework or task.request.model
 
 
 def _is_comparable(task: EvaluationTask, evaluation_type: EvaluationType) -> bool:

@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from evalhub.adapters import discover_models
+from evalhub.agent.registry import agent_statuses
 from evalhub.benchmarks import (
     BenchmarkSpec,
     Capability,
@@ -115,6 +116,23 @@ class EvalHubRequestHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/health":
             self._json({"status": "ok", "service": "evalhub"})
+            return
+        if parsed.path == "/api/agents":
+            # Agent 探测只暴露非敏感身份和就绪信息，模型自管配置不会进入响应。
+            agents = [
+                {
+                    "id": status.id,
+                    "name": status.name,
+                    "description": status.description,
+                    "model_mode": status.model_mode,
+                    "available": status.available,
+                    "version": status.version,
+                    "model": status.model,
+                    "message": status.message,
+                }
+                for status in agent_statuses()
+            ]
+            self._json({"agents": agents})
             return
         if parsed.path == "/api/model-providers":
             # 列表只序列化脱敏领域对象，因此允许控制台在未配置密钥时直接展示预设。
@@ -1021,50 +1039,69 @@ def _task_request(
     else:
         default_dataset = ""
 
-    # 数据集与模型共同标识一次执行目标，两者都必须在入队前完成校验。
+    # 完整 Agent 先确定模型归属，MiniClaw 不接受浏览器伪造其内部运行配置。
     dataset = str(payload.get("dataset", default_dataset)).strip()
-    model = str(payload.get("model", "")).strip()
-    if not dataset or not model:
-        raise ValueError("dataset and model are required")
-
-    adapter = str(payload.get("adapter", "ollama")).strip()
-    if adapter not in {"ollama", "oracle", "openai-compatible"}:
-        raise ValueError("adapter must be one of: ollama, oracle, openai-compatible")
-
-    # API 模型只接受服务商引用，地址始终取仓储快照，浏览器无法覆盖为任意目标。
-    raw_provider_id = payload.get("provider_id")
-    provider_id: str | None = None
-    base_url = str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL))
-    if adapter == "openai-compatible":
-        if not isinstance(raw_provider_id, str) or not raw_provider_id.strip():
-            raise ValueError("provider_id is required for openai-compatible adapter")
-        if provider_repository is None:
-            raise ValueError("model provider repository is not configured")
-        provider_id = raw_provider_id.strip()
-        try:
-            provider = provider_repository.get(provider_id)
-        except ModelProviderNotFoundError as exc:
-            raise ValueError(_exception_message(exc)) from exc
-        if not provider.key_configured:
-            raise ValueError(f"model provider {provider_id} has no API Key")
-        base_url = provider.base_url
-    elif raw_provider_id not in (None, ""):
-        raise ValueError("provider_id is only valid for openai-compatible adapter")
     agent_framework: str | None = None
+    if evaluation_type == "agent":
+        agent_framework = str(payload.get("agent_framework", "")).strip()
+        if agent_framework not in {"pi", "miniclaw"}:
+            raise ValueError("agent_framework must be one of: pi, miniclaw")
+    agent_managed = agent_framework == "miniclaw"
+    if not dataset:
+        raise ValueError("dataset is required")
+
+    # MiniClaw 只保存稳定占位值；真实模型、Provider 和凭据继续由自身目录管理。
+    raw_provider_id = payload.get("provider_id")
+    if agent_managed:
+        for field in ("adapter", "model", "base_url", "provider_id"):
+            if payload.get(field) not in (None, ""):
+                raise ValueError(f"{field} is managed by miniclaw")
+        adapter = "agent-managed"
+        model = "miniclaw"
+        base_url = ""
+        provider_id: str | None = None
+    else:
+        model = str(payload.get("model", "")).strip()
+        if not model:
+            raise ValueError("dataset and model are required")
+        adapter = str(payload.get("adapter", "ollama")).strip()
+        if adapter not in {"ollama", "oracle", "openai-compatible"}:
+            raise ValueError("adapter must be one of: ollama, oracle, openai-compatible")
+
+        # API 模型只接受服务商引用，地址始终取仓储快照，浏览器无法覆盖任意目标。
+        provider_id = None
+        base_url = str(payload.get("base_url", DEFAULT_OLLAMA_BASE_URL))
+        if adapter == "openai-compatible":
+            if not isinstance(raw_provider_id, str) or not raw_provider_id.strip():
+                raise ValueError("provider_id is required for openai-compatible adapter")
+            if provider_repository is None:
+                raise ValueError("model provider repository is not configured")
+            provider_id = raw_provider_id.strip()
+            try:
+                provider = provider_repository.get(provider_id)
+            except ModelProviderNotFoundError as exc:
+                raise ValueError(_exception_message(exc)) from exc
+            if not provider.key_configured:
+                raise ValueError(f"model provider {provider_id} has no API Key")
+            base_url = provider.base_url
+        elif raw_provider_id not in (None, ""):
+            raise ValueError("provider_id is only valid for openai-compatible adapter")
+
     agent_difficulty: str | None = None
     if evaluation_type == "agent":
-        # Agent 只接受已实现的 Pi、Coding Mini 和固定模型来源，拒绝虚假可用选项。
-        agent_framework = str(payload.get("agent_framework", ""))
-        if agent_framework != "pi":
-            raise ValueError("agent_framework must be pi")
+        # 两个完整 Agent 共用 Coding Mini；只有 Pi 继续校验 EvalHub 管理的模型来源。
         if dataset != "coding_mini":
             raise ValueError("agent dataset must be coding_mini")
-        if adapter not in {"ollama", "openai-compatible"}:
+        if agent_framework == "pi" and adapter not in {"ollama", "openai-compatible"}:
             raise ValueError("agent adapter must be one of: ollama, openai-compatible")
         supported_api_providers = {"deepseek", "siliconflow"}
-        if adapter == "openai-compatible" and provider_id not in supported_api_providers:
+        if agent_framework == "pi" and adapter == "openai-compatible" and (
+            provider_id not in supported_api_providers
+        ):
             raise ValueError("agent API provider must be one of: deepseek, siliconflow")
-        if adapter == "openai-compatible" and base_url != BUILTIN_PROVIDERS[str(provider_id)][1]:
+        if agent_framework == "pi" and adapter == "openai-compatible" and (
+            base_url != BUILTIN_PROVIDERS[str(provider_id)][1]
+        ):
             raise ValueError("agent API provider must use its official base URL")
         agent_difficulty = str(payload.get("agent_difficulty", "all"))
         if agent_difficulty not in {"all", "easy", "medium", "hard"}:

@@ -10,6 +10,7 @@ from types import MethodType
 from typing import cast
 from unittest.mock import patch
 
+from evalhub.agent.base import AgentStatus
 from evalhub.benchmarks import Capability, ExecutorReadiness
 from evalhub.credentials import CredentialCipher
 from evalhub.model_providers import ModelProviderRepository
@@ -318,6 +319,96 @@ def test_create_agent_evaluation_returns_accepted_task() -> None:
     assert service.submitted_request.dataset == "coding_mini"
 
 
+def test_create_miniclaw_agent_evaluation_uses_agent_managed_runtime() -> None:
+    """MiniClaw 请求不应伪造模型字段，服务端只保存稳定内部身份。"""
+    service = FakeTaskService(task_fixture())
+    status, response = call_handler(
+        method="POST",
+        path="/api/evaluations",
+        service=service,
+        payload={
+            "evaluation_type": "agent",
+            "agent_framework": "miniclaw",
+            "dataset": "coding_mini",
+            "sample_mode": "all",
+            "agent_difficulty": "all",
+        },
+    )
+
+    assert status == 202
+    assert response["ok"] is True
+    assert service.submitted_request is not None
+    assert service.submitted_request.adapter == "agent-managed"
+    assert service.submitted_request.model == "miniclaw"
+    assert service.submitted_request.base_url == ""
+    assert service.submitted_request.agent_framework == "miniclaw"
+
+
+def test_create_miniclaw_agent_evaluation_rejects_evalhub_model_fields() -> None:
+    """浏览器不得用 EvalHub 模型字段覆盖 MiniClaw 自己的运行时配置。"""
+    base_payload = {
+        "evaluation_type": "agent",
+        "agent_framework": "miniclaw",
+        "dataset": "coding_mini",
+        "sample_mode": "all",
+    }
+    invalid_fields = {
+        "adapter": "ollama",
+        "model": "qwen",
+        "base_url": "http://127.0.0.1:11434",
+        "provider_id": "deepseek",
+    }
+
+    # 每个模型字段单独提交，确保错误不会被另一个字段的校验顺序掩盖。
+    for field, value in invalid_fields.items():
+        service = FakeTaskService(task_fixture())
+        status, response = call_handler(
+            method="POST",
+            path="/api/evaluations",
+            service=service,
+            payload={**base_payload, field: value},
+        )
+        assert status == 400
+        assert response["error"] == f"{field} is managed by miniclaw"
+        assert service.submitted_request is None
+
+
+def test_agent_catalog_exposes_complete_agent_readiness() -> None:
+    """Agent 目录应返回模型归属和本机就绪状态，供表单隐藏无效模型字段。"""
+    miniclaw = AgentStatus(
+        id="miniclaw",
+        name="MiniClaw",
+        description="使用自身运行时的完整 Agent",
+        model_mode="agent",
+        available=True,
+        version="0.1.0",
+        model="deepseek-v4-pro",
+        message="ready",
+    )
+    with patch("evalhub.server.agent_statuses", return_value=(miniclaw,)):
+        status, response = call_handler(
+            method="GET",
+            path="/api/agents",
+            service=FakeTaskService(task_fixture()),
+        )
+
+    assert status == 200
+    assert response == {
+        "agents": [
+            {
+                "id": "miniclaw",
+                "name": "MiniClaw",
+                "description": "使用自身运行时的完整 Agent",
+                "model_mode": "agent",
+                "available": True,
+                "version": "0.1.0",
+                "model": "deepseek-v4-pro",
+                "message": "ready",
+            }
+        ]
+    }
+
+
 def test_create_deepseek_agent_evaluation_returns_accepted_task(tmp_path: Path) -> None:
     """已配置凭据的官方 DeepSeek Provider 应可创建 Pi Agent 评测任务。"""
     repository = _provider_repository(tmp_path)
@@ -400,7 +491,10 @@ def test_create_agent_evaluation_rejects_unsupported_combinations() -> None:
         "sample_mode": "all",
     }
     invalid_cases = [
-        ({**base_payload, "agent_framework": "unknown"}, "agent_framework must be pi"),
+        (
+            {**base_payload, "agent_framework": "unknown"},
+            "agent_framework must be one of: pi, miniclaw",
+        ),
         ({**base_payload, "dataset": "gsm8k"}, "agent dataset must be coding_mini"),
         (
             {**base_payload, "adapter": "oracle"},

@@ -11,7 +11,7 @@ from time import monotonic
 from typing import Protocol
 
 from evalhub.adapters import ModelGenerationError
-from evalhub.agent.pi import AgentTraceEvent, PiAgentError, TraceCallback
+from evalhub.agent.base import AgentRunError, AgentTraceEvent, TraceCallback
 from evalhub.benchmarks import (
     DockerHumanEvalSandbox,
     ExecutorKind,
@@ -20,7 +20,7 @@ from evalhub.benchmarks import (
     load_humaneval_problems,
     run_humaneval_benchmark,
 )
-from evalhub.benchmarks.coding_mini import run_pi_agent_benchmark
+from evalhub.benchmarks.coding_mini import run_agent_benchmark
 from evalhub.benchmarks.harness import run_harness_benchmark
 from evalhub.cli import build_model_adapter, run_real_benchmark
 from evalhub.datasets import prepare_dataset
@@ -120,24 +120,30 @@ def _evaluation_process(
     try:
         # Agent 样本由难度目录筛选；不再复用模型评测的条数限制语义。
         if request.evaluation_type == "agent":
+            if request.agent_framework is None:
+                raise ValueError("agent_framework is required for agent evaluation")
             api_key = None
-            if request.adapter == "openai-compatible":
-                # 凭据在 Worker 真正执行前短暂解析，不进入可恢复任务载荷和父进程事件。
+            if request.agent_framework == "pi" and request.adapter == "openai-compatible":
+                # 只有 Pi 由 EvalHub 管理模型；凭据仍只在 Worker 执行期间短暂存在。
                 if request.provider_id is None:
                     raise ValueError("provider_id is required for API agent evaluation")
                 api_key = default_model_provider_repository().resolve_api_key(
                     request.provider_id
                 )
-            result = run_pi_agent_benchmark(
+            credentials = {"api_key": api_key} if request.agent_framework == "pi" else {}
+
+            # MiniClaw 自管模型和凭据，通用入口只收到受控 Agent ID 与公开样本配置。
+            result = run_agent_benchmark(
                 job_id=task_id,
+                framework=request.agent_framework,
                 model=request.model,
                 base_url=request.base_url,
                 difficulty=request.agent_difficulty or "all",
                 adapter=request.adapter,
                 provider_id=request.provider_id,
-                api_key=api_key,
                 on_progress=report_progress,
                 on_trace=report_trace,
+                **credentials,
             )
         else:
             # 模型评测继续沿用已有 all、quick 与自定义条数规则。
@@ -212,8 +218,8 @@ def _evaluation_process(
     except ModelGenerationError as exc:
         # 没有可评分文本属于生成协议阻塞，不得落成错误答案或零分样本。
         event_queue.put({"type": "error", "message": str(exc), "error_type": exc.code})
-    except PiAgentError as exc:
-        # Seatbelt 或 Pi CLI 缺失等确定性执行器故障必须阻塞，普通模型运行错误不伪造分类。
+    except AgentRunError as exc:
+        # Agent 运行时缺失等确定性执行器故障必须阻塞，普通样本错误不伪造分类。
         event = {"type": "error", "message": str(exc)}
         if exc.error_type is not None:
             event["error_type"] = exc.error_type

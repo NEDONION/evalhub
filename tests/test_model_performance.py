@@ -1,5 +1,6 @@
 """验证模型历史成绩按可比范围聚合、排名并识别刷新纪录。"""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -183,7 +184,47 @@ def test_agent_performance_uses_a_separate_full_benchmark_scope() -> None:
 
     assert report.selected_scope is not None
     assert report.selected_scope.key == "benchmark:coding_mini"
-    assert [item.model for item in report.models] == ["qwen", "gemma"]
+    assert [item.model for item in report.models] == ["Pi · qwen", "Pi · gemma"]
+
+
+def test_agent_performance_groups_miniclaw_as_a_complete_agent() -> None:
+    """MiniClaw 历史必须按完整 Agent 聚合，不能显示内部兼容模型占位值。"""
+    pi_task = performance_task(
+        "agent-pi",
+        model="qwen",
+        score=0.5,
+        minute=1,
+        dataset="coding_mini",
+        evaluation_type="agent",
+        completed_samples=6,
+        total_samples=6,
+    )
+    miniclaw_base = performance_task(
+        "agent-miniclaw",
+        model="miniclaw",
+        score=0.75,
+        minute=2,
+        dataset="coding_mini",
+        evaluation_type="agent",
+        completed_samples=6,
+        total_samples=6,
+    )
+    miniclaw_task = replace(
+        miniclaw_base,
+        request=replace(
+            miniclaw_base.request,
+            agent_framework="miniclaw",
+            adapter="agent-managed",
+        ),
+    )
+
+    report = build_model_performance(
+        [pi_task, miniclaw_task],
+        "benchmark:coding_mini",
+        evaluation_type="agent",
+    )
+
+    assert [item.model for item in report.models] == ["MiniClaw", "Pi · qwen"]
 
 
 def test_performance_rejects_unknown_scope_but_allows_empty_history() -> None:

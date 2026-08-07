@@ -12,13 +12,18 @@ from pathlib import Path
 from time import monotonic
 from typing import Literal, Protocol
 
-from evalhub.agent.pi import (
+from evalhub.agent.base import (
+    AgentMetadata,
+    AgentRunner,
+    AgentRunResult,
     AgentTraceEvent,
-    PiAgentError,
-    PiAgentRunner,
-    PiRunResult,
     TraceCallback,
 )
+from evalhub.agent.pi import (
+    PiAgentError,
+    PiRunResult,
+)
+from evalhub.agent.registry import create_agent_runner
 
 CAPABILITY_DIMENSIONS: tuple[tuple[str, str], ...] = (
     ("planning", "规划"),
@@ -45,8 +50,8 @@ class CodingAgentSample:
     capability_weights: Mapping[str, float]
 
 
-class AgentRunner(Protocol):
-    """定义 Coding Mini 对固定 Agent 壳所需的最小接口。"""
+class LegacyPiRunner(Protocol):
+    """定义旧版 Pi 注入测试和调用方继续使用的兼容接口。"""
 
     def version(self) -> str:
         """返回 Agent 壳版本，供最终结果审计。"""
@@ -61,7 +66,61 @@ class AgentRunner(Protocol):
         timeout_seconds: float,
         on_event: TraceCallback | None = None,
     ) -> PiRunResult:
-        """在隔离工作区执行一个编码样本并返回运行元数据。"""
+        """使用显式模型连接参数执行一个旧版 Pi 编码样本。"""
+
+
+class _ConfiguredLegacyPiRunner:
+    """把旧版 Pi Runner 的模型参数绑定成完整 Agent Runner。"""
+
+    def __init__(
+        self,
+        runner: LegacyPiRunner,
+        *,
+        model: str,
+        base_url: str,
+    ) -> None:
+        """保存旧 Runner 及本次任务冻结的模型配置。
+
+        Args:
+            runner: 仍要求显式模型参数的旧版 Pi Runner。
+            model: 当前 Pi 评测选择的模型 ID。
+            base_url: 当前模型服务的冻结根地址。
+        """
+        self._runner = runner
+        self._model = model
+        self._base_url = base_url
+
+    def metadata(self) -> AgentMetadata:
+        """把旧版版本信息补齐为 Pi 完整 Agent 身份。"""
+        return AgentMetadata("pi", "Pi CLI", self._runner.version(), self._model)
+
+    def run(
+        self,
+        *,
+        instruction: str,
+        workspace: Path,
+        timeout_seconds: float,
+        on_event: TraceCallback | None = None,
+    ) -> AgentRunResult:
+        """使用已绑定模型参数调用旧 Runner。
+
+        Args:
+            instruction: Coding Mini 的公开任务说明。
+            workspace: 当前样本唯一可写的 Git 工作区。
+            timeout_seconds: 当前样本的运行时限。
+            on_event: 接收标准化外部事件的可选回调。
+
+        Returns:
+            可由通用 Benchmark 消费的 Agent 运行结果。
+        """
+        return self._runner.run(
+            instruction=instruction,
+            model=self._model,
+            base_url=self._base_url,
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            on_event=on_event,
+        )
 
 
 def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
@@ -454,9 +513,10 @@ def coding_mini_samples() -> tuple[CodingAgentSample, ...]:
     )
 
 
-def run_pi_agent_benchmark(
+def run_agent_benchmark(
     *,
     job_id: str,
+    framework: str,
     model: str,
     base_url: str,
     difficulty: str,
@@ -468,37 +528,41 @@ def run_pi_agent_benchmark(
     runtime_root: Path = Path(".runtime/agent-runs"),
     on_trace: TraceCallback | None = None,
 ) -> dict[str, object]:
-    """运行 Coding Mini 并聚合六维 Agent 能力报告。
+    """让一个受控完整 Agent 运行 Coding Mini，并聚合六维能力报告。
 
     参数：
         job_id: 任务中心生成的唯一标识，用作运行目录名。
-        model: Pi 使用的本地标签或 DeepSeek 模型 ID。
-        base_url: Ollama 或 DeepSeek 服务根地址。
+        framework: Agent Registry 中登记的完整 Agent ID。
+        model: Pi 使用的模型 ID；Agent 自管模型时仅作为兼容占位。
+        base_url: Pi 的模型服务地址；Agent 自管模型时为空。
         difficulty: 运行全部样本或指定简单、中等、困难单档。
-        adapter: ``ollama`` 或已支持的 ``openai-compatible``。
-        provider_id: API 模式使用的服务商标识。
-        api_key: Worker 临时解析的 API Key，不进入任务结果。
+        adapter: Pi 使用的模型适配器，Agent 自管模型时忽略。
+        provider_id: Pi API 模式使用的服务商标识。
+        api_key: Pi Worker 临时解析的 API Key，不进入任务结果。
         on_progress: 接收已完成样本数和总数的可选回调。
-        runner: 可替换的 Agent 壳；默认创建真实 ``PiAgentRunner``。
+        runner: 可替换的完整 Agent Runner；默认从 Registry 构造。
         runtime_root: 所有 Agent 样本工作区的父目录。
-        on_trace: 接收样本阶段和 Pi 外部动作的可选实时回调。
+        on_trace: 接收样本阶段和 Agent 外部动作的可选实时回调。
 
     返回：
         与普通评测公共字段兼容，并包含 Agent 元数据、样本结果和六维报告的字典。
 
     异常：
-        ValueError: 任务标识或难度无效。
+        ValueError: Agent ID、任务标识或难度无效。
         RuntimeError: 无法创建 Git 工作区或执行隐藏 Verifier。
-        PiAgentError: 无法探测 Pi CLI 版本。
+        AgentRunError: 完整 Agent 无法启动或执行。
     """
     selected_samples = _select_samples(difficulty)
     job_root = _job_root(runtime_root, job_id)
-    active_runner = runner or PiAgentRunner(
+    active_runner = runner or create_agent_runner(
+        framework,
         adapter=adapter,
+        model=model,
+        base_url=base_url,
         provider_id=provider_id,
         api_key=api_key,
     )
-    cli_version = active_runner.version()
+    metadata = active_runner.metadata()
 
     # 先公布真实分母，页面在第一个 Agent 样本运行期间也能显示确定进度。
     total_samples = len(selected_samples)
@@ -506,8 +570,6 @@ def run_pi_agent_benchmark(
         on_progress(0, total_samples)
     protocol_preflight = _run_protocol_preflight(
         job_root=job_root,
-        model=model,
-        base_url=base_url,
         runner=active_runner,
         on_trace=on_trace,
     )
@@ -520,8 +582,6 @@ def run_pi_agent_benchmark(
             _run_sample(
                 sample=sample,
                 workspace=workspace,
-                model=model,
-                base_url=base_url,
                 runner=active_runner,
                 on_trace=on_trace,
                 protocol_status=str(protocol_preflight["status"]),
@@ -541,6 +601,17 @@ def run_pi_agent_benchmark(
         for result in sample_results
         if result["status"] != "success"
     ]
+    agent_result: dict[str, object] = {
+        "framework": metadata.framework,
+        "name": metadata.name,
+        "version": metadata.version,
+        "model": metadata.model,
+        "runtime_fingerprint": metadata.runtime_fingerprint,
+        "scaffold_hash": _scaffold_hash(selected_samples),
+    }
+    # Pi 继续写入旧字段，已持久化结果和尚未升级的客户端都能无损读取版本。
+    if metadata.framework == "pi":
+        agent_result["cli_version"] = metadata.version
 
     return {
         "job_id": job_id,
@@ -550,7 +621,7 @@ def run_pi_agent_benchmark(
         "benchmark": "EvalHub Coding Mini",
         "benchmark_version": "coding-mini-v3",
         "requested_difficulty": difficulty,
-        "model": model,
+        "model": metadata.model or model,
         "adapter": adapter,
         "metric": "hidden_verifier_pass_rate",
         "total_samples": total_samples,
@@ -559,11 +630,7 @@ def run_pi_agent_benchmark(
         "failed_sample_ids": failed_ids,
         "failed_examples": _failed_examples(sample_results),
         "difficulty_report": _aggregate_difficulty(selected_samples, sample_results),
-        "agent": {
-            "framework": "pi",
-            "cli_version": cli_version,
-            "scaffold_hash": _scaffold_hash(selected_samples),
-        },
+        "agent": agent_result,
         "protocol_preflight": protocol_preflight,
         "execution_summary": _aggregate_execution(sample_results),
         "capability_report": {
@@ -574,21 +641,74 @@ def run_pi_agent_benchmark(
     }
 
 
+def run_pi_agent_benchmark(
+    *,
+    job_id: str,
+    model: str,
+    base_url: str,
+    difficulty: str,
+    adapter: str = "ollama",
+    provider_id: str | None = None,
+    api_key: str | None = None,
+    on_progress: ProgressCallback | None = None,
+    runner: LegacyPiRunner | None = None,
+    runtime_root: Path = Path(".runtime/agent-runs"),
+    on_trace: TraceCallback | None = None,
+) -> dict[str, object]:
+    """兼容旧版 Pi 专用入口，并转交给完整 Agent Benchmark。
+
+    Args:
+        job_id: 任务中心生成的唯一标识。
+        model: EvalHub 为 Pi 选择的模型 ID。
+        base_url: 对应模型服务的冻结根地址。
+        difficulty: 全部或单个 Coding Mini 难度。
+        adapter: Pi 使用的模型适配器。
+        provider_id: Pi API 模式使用的服务商标识。
+        api_key: Worker 内短暂使用的服务商凭据。
+        on_progress: 接收完成数量的可选回调。
+        runner: 仍使用旧显式模型参数接口的可选 Pi Runner。
+        runtime_root: 所有样本工作区的父目录。
+        on_trace: 接收标准化外部事件的可选回调。
+
+    Returns:
+        通用完整 Agent 结果字典。
+    """
+    complete_runner = None
+    if runner is not None:
+        complete_runner = _ConfiguredLegacyPiRunner(
+            runner,
+            model=model,
+            base_url=base_url,
+        )
+
+    # 旧入口只负责兼容参数，评分和结果结构完全复用统一实现。
+    return run_agent_benchmark(
+        job_id=job_id,
+        framework="pi",
+        model=model,
+        base_url=base_url,
+        difficulty=difficulty,
+        adapter=adapter,
+        provider_id=provider_id,
+        api_key=api_key,
+        on_progress=on_progress,
+        runner=complete_runner,
+        runtime_root=runtime_root,
+        on_trace=on_trace,
+    )
+
+
 def _run_protocol_preflight(
     *,
     job_root: Path,
-    model: str,
-    base_url: str,
     runner: AgentRunner,
     on_trace: TraceCallback | None,
 ) -> dict[str, object]:
-    """用一次精确 marker 写入检查当前模型的 Pi 工具协议。
+    """用一次精确 marker 写入检查当前 Agent 的结构化工具协议。
 
     参数：
         job_root: 当前任务独占的运行目录。
-        model: 本次使用的基模名称。
-        base_url: 已冻结的模型服务地址。
-        runner: 与正式样本相同的固定 Agent 壳。
+        runner: 与正式样本相同的完整 Agent Runner。
         on_trace: 接收预检外部动作的可选回调。
 
     返回：
@@ -633,8 +753,6 @@ def _run_protocol_preflight(
     try:
         run_result = runner.run(
             instruction=sample.instruction,
-            model=model,
-            base_url=base_url,
             workspace=workspace,
             timeout_seconds=60,
             on_event=relay_pi_event,
@@ -753,8 +871,6 @@ def _run_sample(
     *,
     sample: CodingAgentSample,
     workspace: Path,
-    model: str,
-    base_url: str,
     runner: AgentRunner,
     on_trace: TraceCallback | None,
     protocol_status: str = "compatible",
@@ -797,8 +913,6 @@ def _run_sample(
     try:
         run_result = runner.run(
             instruction=sample.instruction,
-            model=model,
-            base_url=base_url,
             workspace=workspace,
             timeout_seconds=180,
             on_event=relay_pi_event,

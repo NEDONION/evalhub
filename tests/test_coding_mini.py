@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import evalhub.benchmarks.coding_mini as coding_mini_module
+from evalhub.agent.base import AgentMetadata, AgentRunner, AgentRunResult
 from evalhub.agent.pi import AgentTraceEvent, PiAgentError, PiRunResult, TraceCallback
 from evalhub.benchmarks.coding_mini import (
     CAPABILITY_DIMENSIONS,
@@ -217,6 +218,38 @@ class EditingFakeRunner:
                 "            queue.task_done()\n",
                 encoding="utf-8",
             )
+
+
+class CompleteAgentFakeRunner(EditingFakeRunner):
+    """把确定性文件修复包装成 MiniClaw 风格的通用 Runner。"""
+
+    def metadata(self) -> AgentMetadata:
+        """返回完整 MiniClaw 身份，验证结果不再写死 Pi。"""
+        return AgentMetadata(
+            framework="miniclaw",
+            name="MiniClaw",
+            version="0.1.0",
+            model="agent-model",
+            runtime_fingerprint="sha256:test",
+        )
+
+    def run(
+        self,
+        *,
+        instruction: str,
+        workspace: Path,
+        timeout_seconds: float,
+        on_event: TraceCallback | None = None,
+    ) -> AgentRunResult:
+        """复用既有确定性修复，同时暴露不含模型参数的通用调用面。"""
+        return super().run(
+            instruction=instruction,
+            model="agent-managed",
+            base_url="",
+            workspace=workspace,
+            timeout_seconds=timeout_seconds,
+            on_event=on_event,
+        )
 
 
 class NoActionFakeRunner(EditingFakeRunner):
@@ -433,6 +466,15 @@ class InfrastructureErrorFakeRunner(EditingFakeRunner):
         raise PiAgentError("sandbox-exec unavailable", error_type="executor_not_ready")
 
 
+def complete_pi_runner(runner: EditingFakeRunner) -> AgentRunner:
+    """把旧版测试替身绑定为内部辅助函数接受的完整 Runner。"""
+    return coding_mini_module._ConfiguredLegacyPiRunner(
+        runner,
+        model="local-test",
+        base_url="http://127.0.0.1:11434",
+    )
+
+
 def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Path) -> None:
     """全部修复通过时应报告完整进度、六个满分维度和隔离工作区。"""
     runner = EditingFakeRunner()
@@ -453,6 +495,8 @@ def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Pa
     assert result["passed_samples"] == 6
     assert result["protocol_preflight"]["status"] == "compatible"
     assert result["benchmark_version"] == "coding-mini-v3"
+    assert result["agent"]["cli_version"] == "pi-cli test"
+    assert result["agent"]["version"] == "pi-cli test"
     assert result["requested_difficulty"] == "all"
     assert result["difficulty_report"] == [
         {"difficulty": "easy", "total": 2, "passed": 2, "pass_rate": 1.0},
@@ -476,6 +520,35 @@ def test_coding_mini_uses_hidden_verifier_and_builds_six_dimensions(tmp_path: Pa
         key for key, _label in CAPABILITY_DIMENSIONS
     ]
     assert all(workspace.is_relative_to(tmp_path / "job_agent") for workspace in runner.workspaces)
+
+
+def test_coding_mini_records_complete_agent_metadata_and_six_dimensions(
+    tmp_path: Path,
+) -> None:
+    """MiniClaw 必须复用隐藏评分并把完整 Agent 身份写入六维结果。"""
+    run_agent_benchmark = getattr(coding_mini_module, "run_agent_benchmark", None)
+    assert callable(run_agent_benchmark), "run_agent_benchmark is not implemented"
+
+    result = run_agent_benchmark(
+        job_id="job_miniclaw",
+        framework="miniclaw",
+        model="miniclaw",
+        base_url="",
+        difficulty="easy",
+        runner=CompleteAgentFakeRunner(),
+        runtime_root=tmp_path,
+    )
+
+    assert result["passed_samples"] == 2
+    assert result["agent"] == {
+        "framework": "miniclaw",
+        "name": "MiniClaw",
+        "version": "0.1.0",
+        "model": "agent-model",
+        "runtime_fingerprint": "sha256:test",
+        "scaffold_hash": result["agent"]["scaffold_hash"],
+    }
+    assert len(result["capability_report"]["dimensions"]) == 6
 
 
 def test_coding_mini_aggregates_sample_execution_metrics(
@@ -526,9 +599,7 @@ def test_coding_mini_preflight_distinguishes_protocol_states(tmp_path: Path) -> 
         job_root.mkdir()
         result = _run_protocol_preflight(
             job_root=job_root,
-            model="local-test",
-            base_url="http://127.0.0.1:11434",
-            runner=runner,
+            runner=complete_pi_runner(runner),
             on_trace=None,
         )
         assert result["status"] == expected
@@ -627,9 +698,7 @@ def test_coding_mini_classifies_passed_no_action_wrong_solution_and_runtime_erro
         sample_result = _run_sample(
             sample=sample,
             workspace=workspace,
-            model="local-test",
-            base_url="http://127.0.0.1:11434",
-            runner=runner,
+            runner=complete_pi_runner(runner),
             on_trace=None,
         )
         diagnostics = dict(sample_result["diagnostics"])
@@ -654,9 +723,7 @@ def test_coding_mini_verifies_final_workspace_after_runner_error(tmp_path: Path)
     result = _run_sample(
         sample=sample,
         workspace=workspace,
-        model="local-test",
-        base_url="http://127.0.0.1:11434",
-        runner=ErrorAfterValidEditFakeRunner(),
+        runner=complete_pi_runner(ErrorAfterValidEditFakeRunner()),
         on_trace=events.append,
     )
 
@@ -695,9 +762,7 @@ def test_coding_mini_preserves_process_metrics_after_runner_error(
     result = _run_sample(
         sample=sample,
         workspace=workspace,
-        model="local-test",
-        base_url="http://127.0.0.1:11434",
-        runner=ErrorAfterToolFakeRunner(),
+        runner=complete_pi_runner(ErrorAfterToolFakeRunner()),
         on_trace=None,
     )
 
