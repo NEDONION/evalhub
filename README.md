@@ -23,8 +23,8 @@
   <a href="#documentation">文档</a>
 </p>
 
-EvalHub 是一个面向本地大模型研发的统一评测平台。它既能运行真实公开 Benchmark，也能在固定
-Agent 壳、任务和隐藏 Verifier 下比较编码 Agent 的基模能力；每次运行都会保留样本结果、节点状态、
+EvalHub 是一个面向本地大模型研发的统一评测平台。它既能运行真实公开 Benchmark，也能让 Pi、
+MiniClaw 等完整编码 Agent 接受同一套任务和隐藏 Verifier；每次运行都会保留样本结果、节点状态、
 资源指标和审计证据，而不只给出一个最终分数。
 
 <a href="https://raw.githubusercontent.com/NEDONION/evalhub/main/docs/assets/screenshots/model-evaluation-setup.png">
@@ -38,7 +38,7 @@ Agent 壳、任务和隐藏 Verifier 下比较编码 Agent 的基模能力；每
 | 能力 | EvalHub 当前提供的行为 |
 | --- | --- |
 | **模型 Benchmark** | 运行真实公开数据集，通过 Ollama 调用本地模型，保留样本级结果和聚合得分 |
-| **Agent 评测** | 固定 Pi CLI Agent 壳、Coding Mini 任务和隐藏 Verifier，只替换底层基模 |
+| **Agent 评测** | 通过受控 Registry 运行 Pi CLI 或 MiniClaw 完整 Agent，共用 Coding Mini 和隐藏 Verifier |
 | **可复现工作流** | 使用持久化 DAG 记录节点状态、检查点、重试、资源指标和审计事件 |
 | **六维能力画像** | 分别展示知识、指令遵循、数学、综合推理、代码和安全可信，不把未评测维度算作 0 分 |
 
@@ -63,6 +63,14 @@ npm --prefix frontend install
 启动后打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。脚本会构建 React 控制台、准备固定版本的
 Benchmark 运行时，并在本机可用时连接或启动 Ollama。完整安装、Agent Runtime、CLI 和故障排查见
 [本地运行指南](docs/getting-started/20260804_本地运行指南.md)。
+
+要评测相邻目录之外的 MiniClaw，可在启动前显式指定项目根目录；EvalHub 不读取或保存 MiniClaw
+的 API Key，模型、Provider、工具、策略和记忆继续由 MiniClaw 自己管理：
+
+```bash
+export EVALHUB_MINICLAW_ROOT=/absolute/path/to/miniclaw
+./scripts/start_local.sh
+```
 
 ## Screenshots
 
@@ -212,15 +220,18 @@ flowchart LR
     Dataset["公开 Benchmark 数据"] --> Engine
     Engine --> DAG["持久化评测 DAG"]
     DAG --> Model["Model Adapter + Ollama"]
-    DAG --> Agent["Pi Agent + Ollama / DeepSeek"]
+    DAG --> Registry["Complete Agent Registry"]
+    Registry --> Pi["Pi + EvalHub-managed model"]
+    Registry --> MiniClaw["MiniClaw + self-managed runtime"]
     Model --> Evidence["样本结果、检查点与审计事件"]
-    Agent --> Evidence
+    Pi --> Evidence
+    MiniClaw --> Evidence
     Evidence --> Report["得分、失败样本与六维画像"]
 ```
 
 Web 与 CLI 复用同一条 Python 评测核心链路。模型任务和 Agent 任务进入同一个持久化任务中心，运行中
-可以查看进度和资源，结束后可以回放节点证据，并按模型评测或固定 Agent 壳的独立口径比较同一
-Benchmark 或 Suite 下的基模成绩。
+可以查看进度和资源，结束后可以回放节点证据。模型评测按模型聚合；Agent 评测按完整候选聚合，
+例如 `Pi · qwen` 与 `MiniClaw`，两种口径不会混排。
 
 ## Benchmarks
 
@@ -228,7 +239,7 @@ Benchmark 或 Suite 下的基模成绩。
 | --- | --- | --- |
 | **单项模型 Benchmark** | MMLU、GSM8K、IFEval、HumanEval、MBPP 等已注册公开评测 | 官方或固定评测指标、样本结果、失败样本 |
 | **Hexagon Mini Suite** | `evalhub-hexagon-v1` `1.2.0`，固定 30 次模型调用，覆盖六个能力维度 | 六维画像、覆盖率和可复现性元数据 |
-| **Coding Mini Agent** | `coding-mini-v3`，固定 Pi CLI 壳、6 道分级编码任务、协议预检和隐藏 Verifier | 通过率、难度报告、Agent 六维画像和过程指标 |
+| **Coding Mini Agent** | `coding-mini-v3`，Pi CLI / MiniClaw、6 道分级编码任务、协议预检和隐藏 Verifier | 通过率、难度报告、Agent 六维画像和过程指标 |
 | **SWE-bench Verified Mini** | 固定 6 个官方实例；仅在官方 Docker Harness 的 gold patch 6/6 后开放 | 独立官方任务报告，不与 Coding Mini 混排 |
 
 > [!IMPORTANT]
