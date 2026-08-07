@@ -1,17 +1,19 @@
 import type {
-  AdapterType,
   AgentDifficulty,
+  AgentFramework,
   DatasetName,
   EvaluationRequest,
   EvaluationType,
+  ModelAdapterType,
   SampleMode,
 } from "../types";
 
 export interface EvaluationFormValues {
   evaluationType: EvaluationType;
+  agentFramework: AgentFramework;
   dataset: DatasetName;
   subject: string;
-  adapter: AdapterType;
+  adapter: ModelAdapterType;
   model: string;
   baseUrl: string;
   sampleMode: SampleMode;
@@ -29,6 +31,17 @@ export interface EvaluationFormValues {
  */
 export function buildEvaluationRequest(values: EvaluationFormValues): EvaluationRequest {
   if (values.evaluationType === "agent") {
+    if (values.agentFramework === "miniclaw") {
+      return {
+        evaluation_type: "agent",
+        agent_framework: "miniclaw",
+        dataset: "coding_mini",
+        sample_mode: "all",
+        agent_difficulty: values.agentDifficulty,
+      };
+    }
+
+    // Pi 继续由 EvalHub 冻结模型和地址，保证旧任务请求与历史结果完全兼容。
     return {
       evaluation_type: "agent",
       agent_framework: "pi",

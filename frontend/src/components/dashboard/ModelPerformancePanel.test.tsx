@@ -169,7 +169,8 @@ describe("ModelPerformancePanel", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: "Agent 基模历史成绩" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "完整 Agent 历史成绩" })).toBeInTheDocument();
+    expect(screen.getByText("同一完整 Benchmark 下比较不同 Agent 候选。")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "模型评测成绩" }));
 
     expect(onEvaluationTypeChange).toHaveBeenCalledWith("model");

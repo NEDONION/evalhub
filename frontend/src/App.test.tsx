@@ -7,6 +7,7 @@ import {
   cancelEvaluationTask,
   cancelModelPull,
   createEvaluation,
+  getAgents,
   getBenchmarks,
   getDatasets,
   getEvaluationNode,
@@ -43,6 +44,7 @@ vi.mock("./lib/api", () => ({
   createEvaluation: vi.fn(),
   createModelProvider: vi.fn(),
   deleteModelProvider: vi.fn(),
+  getAgents: vi.fn(),
   getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
   getEvaluationNode: vi.fn(),
@@ -444,6 +446,30 @@ beforeEach(() => {
     },
   ]);
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [datasetFixture, mmluFixture] });
+  vi.mocked(getAgents).mockResolvedValue({
+    agents: [
+      {
+        id: "pi",
+        name: "Pi CLI",
+        description: "由 EvalHub 选择模型的编码 Agent",
+        model_mode: "evalhub",
+        available: true,
+        version: "0.test",
+        model: null,
+        message: "ready",
+      },
+      {
+        id: "miniclaw",
+        name: "MiniClaw",
+        description: "使用自身模型、工具、策略与记忆的完整 Agent",
+        model_mode: "agent",
+        available: true,
+        version: "0.1.0",
+        model: "deepseek-v4-pro",
+        message: "ready",
+      },
+    ],
+  });
   vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
   vi.mocked(getSuites).mockResolvedValue({ suites: [] });
   vi.mocked(getOllamaStatus).mockImplementation(async (model, baseUrl) => {
@@ -932,6 +958,77 @@ describe("EvalHub console", () => {
     expect(within(drawer).getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
     expect(within(drawer).getByText("本机峰值 40% · 含 Ollama")).toBeInTheDocument();
     expect(within(drawer).getByText(/系统级 · 设备内存/)).toBeInTheDocument();
+  });
+
+  it("submits MiniClaw as a complete Agent without EvalHub model fields", async () => {
+    const user = userEvent.setup();
+    vi.mocked(createEvaluation).mockResolvedValue(pendingTask);
+    render(<App />);
+
+    await user.click(navigationButton("发起评测"));
+    await user.click(await screen.findByRole("radio", { name: "Agent 评测" }));
+    await user.click(screen.getByRole("radio", { name: /MiniClaw/ }));
+
+    expect(screen.queryByRole("button", { name: "Agent 基模" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Ollama 地址")).not.toBeInTheDocument();
+    expect(screen.getByText("Agent 自管模型")).toBeInTheDocument();
+    expect(screen.getByText("deepseek-v4-pro")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "发起 Agent 评测" }));
+
+    expect(createEvaluation).toHaveBeenCalledWith({
+      evaluation_type: "agent",
+      agent_framework: "miniclaw",
+      dataset: "coding_mini",
+      sample_mode: "all",
+      agent_difficulty: "all",
+    });
+  });
+
+  it("shows MiniClaw identity beside its six-dimension capability graph", async () => {
+    const user = userEvent.setup();
+    const miniclawTask: EvaluationTaskDetail = {
+      ...agentTaskDetail,
+      id: "job_miniclaw_success",
+      agent_framework: "miniclaw",
+      model: "miniclaw",
+      adapter: "agent-managed",
+      request: {
+        evaluation_type: "agent",
+        agent_framework: "miniclaw",
+        dataset: "coding_mini",
+        sample_mode: "all",
+        agent_difficulty: "hard",
+      },
+      result: agentTaskDetail.result
+        ? {
+            ...agentTaskDetail.result,
+            job_id: "job_miniclaw_success",
+            model: "deepseek-v4-pro",
+            adapter: "agent-managed",
+            agent: {
+              framework: "miniclaw",
+              name: "MiniClaw",
+              version: "0.1.0",
+              model: "deepseek-v4-pro",
+              runtime_fingerprint: "sha256:test",
+              scaffold_hash: "a1b2c3d4e5f6",
+            },
+          }
+        : null,
+    };
+    vi.mocked(getEvaluationTasks).mockResolvedValue([miniclawTask]);
+    vi.mocked(getEvaluationTask).mockResolvedValue(miniclawTask);
+    render(<App />);
+
+    await user.click(navigationButton("评测结果"));
+    await user.click(
+      await screen.findByRole("button", { name: "查看任务 job_miniclaw_success" }),
+    );
+    const drawer = await screen.findByRole("dialog", { name: "任务详情" });
+
+    expect(within(drawer).getByRole("img", { name: "Agent 六维能力图" })).toBeInTheDocument();
+    expect(within(drawer).getByText("MiniClaw")).toBeInTheDocument();
+    expect(within(drawer).getByText("0.1.0")).toBeInTheDocument();
   });
 
   it("keeps dataset content available when only Ollama status fails", async () => {

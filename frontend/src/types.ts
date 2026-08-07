@@ -1,10 +1,22 @@
 export type DatasetName = string;
 export type BenchmarkExecutor = "native" | "lm_eval" | "sandboxed_code";
-export type AdapterType = "ollama" | "oracle" | "openai-compatible";
+export type ModelAdapterType = "ollama" | "oracle" | "openai-compatible";
+export type AdapterType = ModelAdapterType | "agent-managed";
 export type SampleMode = "all" | "quick" | "custom";
 export type EvaluationType = "model" | "agent";
-export type AgentFramework = "pi";
+export type AgentFramework = "pi" | "miniclaw";
 export type AgentDifficulty = "all" | "easy" | "medium" | "hard";
+
+export interface AgentDefinition {
+  id: AgentFramework;
+  name: string;
+  description: string;
+  model_mode: "evalhub" | "agent";
+  available: boolean;
+  version: string | null;
+  model: string | null;
+  message: string;
+}
 
 export interface Dataset {
   name: DatasetName;
@@ -68,20 +80,42 @@ export interface OllamaStatus {
   message: string;
 }
 
-export interface EvaluationRequest {
-  evaluation_type?: EvaluationType;
-  agent_framework?: AgentFramework;
-  agent_difficulty?: AgentDifficulty;
+interface EvaluationRequestBase {
   dataset: DatasetName;
-  adapter: AdapterType;
-  model: string;
-  base_url: string;
   sample_mode: SampleMode;
   subject?: string;
   limit?: number;
   suite_id?: string;
+}
+
+export interface ModelEvaluationRequest extends EvaluationRequestBase {
+  evaluation_type?: "model";
+  adapter: ModelAdapterType;
+  model: string;
+  base_url: string;
   provider_id?: string;
 }
+
+export interface PiAgentEvaluationRequest extends EvaluationRequestBase {
+  evaluation_type: "agent";
+  agent_framework: "pi";
+  agent_difficulty: AgentDifficulty;
+  adapter: "ollama" | "openai-compatible";
+  model: string;
+  base_url: string;
+  provider_id?: string;
+}
+
+export interface ManagedAgentEvaluationRequest extends EvaluationRequestBase {
+  evaluation_type: "agent";
+  agent_framework: "miniclaw";
+  agent_difficulty: AgentDifficulty;
+}
+
+export type EvaluationRequest =
+  | ModelEvaluationRequest
+  | PiAgentEvaluationRequest
+  | ManagedAgentEvaluationRequest;
 
 export type ModelProviderKind = "builtin" | "custom";
 
@@ -177,7 +211,11 @@ export interface AgentCapabilityReport {
 
 export interface AgentRunMetadata {
   framework: AgentFramework;
-  cli_version: string;
+  name?: string;
+  version?: string;
+  cli_version?: string;
+  model?: string | null;
+  runtime_fingerprint?: string | null;
   scaffold_hash: string;
 }
 
@@ -483,6 +521,10 @@ export interface DatasetsResponse {
 
 export interface BenchmarksResponse {
   benchmarks: BenchmarkDefinition[];
+}
+
+export interface AgentsResponse {
+  agents: AgentDefinition[];
 }
 
 export interface SuitesResponse {

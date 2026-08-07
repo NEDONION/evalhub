@@ -4,6 +4,7 @@ import {
   ApiError,
   createModelProvider,
   deleteModelProvider,
+  getAgents,
   getBenchmarks,
   getEvaluationNode,
   getEvaluationNodeSamples,
@@ -131,6 +132,7 @@ describe("EvalHub API", () => {
   it("uses stable registry and node audit endpoints", async () => {
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce(jsonResponse({ agents: [] }))
       .mockResolvedValueOnce(jsonResponse({ benchmarks: [] }))
       .mockResolvedValueOnce(jsonResponse({ suites: [] }))
       .mockResolvedValueOnce(jsonResponse({ node: { id: "node/1" } }))
@@ -138,6 +140,7 @@ describe("EvalHub API", () => {
       .mockResolvedValueOnce(jsonResponse({ ok: true, node: { id: "node/1" } }, 202));
     vi.stubGlobal("fetch", fetchMock);
 
+    await getAgents();
     await getBenchmarks();
     await getSuites();
     await getEvaluationNode("job 1", "node/1");
@@ -149,13 +152,14 @@ describe("EvalHub API", () => {
     await retryEvaluationNode("job 1", "node/1");
 
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/agents",
       "/api/benchmarks",
       "/api/suites",
       "/api/evaluations/job%201/nodes/node%2F1",
       "/api/evaluations/job%201/nodes/node%2F1/samples?status=failed&limit=20&cursor=4%3Asample+5",
       "/api/evaluations/job%201/nodes/node%2F1/retry",
     ]);
-    expect(fetchMock.mock.calls[4]?.[1]).toEqual(
+    expect(fetchMock.mock.calls[5]?.[1]).toEqual(
       expect.objectContaining({ method: "POST" }),
     );
   });

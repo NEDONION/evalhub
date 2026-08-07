@@ -110,6 +110,7 @@ export default function App() {
 
             <div hidden={currentView !== "evaluation"}>
               <EvaluationForm
+                agents={dashboard.agents}
                 datasets={dashboard.datasets}
                 benchmarks={dashboard.benchmarks}
                 suites={dashboard.suites}

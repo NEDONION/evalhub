@@ -1,16 +1,18 @@
-import { DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
+import { Bot, DatabaseZap, Play, SlidersHorizontal } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { buildEvaluationRequest, type EvaluationFormValues, validateEvaluation } from "../../lib/evaluation";
 import type {
-  AdapterType,
+  AgentDefinition,
   AgentDifficulty,
+  AgentFramework,
   BenchmarkDefinition,
   BenchmarkSuite,
   Dataset,
   DatasetName,
   EvaluationRequest,
   EvaluationType,
+  ModelAdapterType,
   ModelOption,
   ModelProvider,
   SampleMode,
@@ -22,6 +24,7 @@ import { ModelSelector } from "./ModelSelector";
 import { ProviderSettings } from "./ProviderSettings";
 
 interface EvaluationFormProps {
+  agents: AgentDefinition[];
   datasets: Dataset[];
   benchmarks: BenchmarkDefinition[];
   suites: BenchmarkSuite[];
@@ -53,13 +56,25 @@ const agentDifficulties: Array<{ value: AgentDifficulty; label: string; meta: st
   { value: "hard", label: "困难", meta: "2 个任务" },
 ];
 
+const loadingAgent: AgentDefinition = {
+  id: "pi",
+  name: "Pi CLI",
+  description: "正在读取本机 Agent 目录",
+  model_mode: "evalhub",
+  available: false,
+  version: null,
+  model: null,
+  message: "loading",
+};
+
 /**
  * 渲染模型与 Agent 两类评测配置，并在提交前校验样本数量和 Ollama 模型可用性。
  *
- * @param props 数据集、模型、运行状态，以及资产管理、缓存和任务创建回调。
+ * @param props 完整 Agent 目录、数据集、模型、运行状态及资产与任务操作回调。
  * @returns 仅提交后端真实支持组合的评测表单。
  */
 export function EvaluationForm({
+  agents,
   datasets,
   benchmarks,
   suites,
@@ -75,11 +90,12 @@ export function EvaluationForm({
   onSubmit,
 }: EvaluationFormProps) {
   const [evaluationType, setEvaluationType] = useState<EvaluationType>("model");
+  const [agentFramework, setAgentFramework] = useState<AgentFramework>("pi");
   const [targetMode, setTargetMode] = useState<"single" | "suite">("single");
   const [suiteId, setSuiteId] = useState("llm-industry-core-v1");
   const [dataset, setDataset] = useState<DatasetName>("gsm8k");
   const [subject, setSubject] = useState("all");
-  const [adapter, setAdapter] = useState<AdapterType>("ollama");
+  const [adapter, setAdapter] = useState<ModelAdapterType>("ollama");
   const [sampleMode, setSampleMode] = useState<SampleMode>("all");
   const [agentDifficulty, setAgentDifficulty] = useState<AgentDifficulty>("all");
   const [limit, setLimit] = useState("20");
@@ -119,6 +135,9 @@ export function EvaluationForm({
   }, [benchmarks, datasetOptions]);
   const selectedBenchmark = benchmarkOptions.find((item) => item.id === dataset) || null;
   const selectedSuite = suites.find((item) => item.id === suiteId) || suites[0] || null;
+  const agentOptions = agents.length > 0 ? agents : [loadingAgent];
+  const selectedAgent =
+    agentOptions.find((item) => item.id === agentFramework) || agentOptions[0] || loadingAgent;
   const apiSupported = targetMode === "suite"
     ? selectedSuite?.id === "evalhub-hexagon-v1"
     : selectedBenchmark?.executor === "native" || selectedBenchmark?.id === "hexagon-humaneval";
@@ -126,6 +145,12 @@ export function EvaluationForm({
   useEffect(() => {
     if (adapter === "openai-compatible" && !apiSupported) setAdapter("ollama");
   }, [adapter, apiSupported]);
+
+  useEffect(() => {
+    if (agents.length > 0 && !agents.some((item) => item.id === agentFramework)) {
+      setAgentFramework(agents[0]?.id || "pi");
+    }
+  }, [agentFramework, agents]);
 
   const availableModels: ModelOption[] =
     modelOptions.length > 0
@@ -144,12 +169,17 @@ export function EvaluationForm({
         ];
   const applicableModels = availableModels.filter((option) => option.evaluation_types.includes(evaluationType));
   const selectedModelOption = applicableModels.find((option) => option.name === model);
-  const missingOllamaModel = (evaluationType === "agent" || adapter === "ollama") && !selectedModelOption?.installed;
+  const agentUsesEvalHubModel =
+    evaluationType === "agent" && selectedAgent.model_mode === "evalhub";
+  const missingOllamaModel =
+    ((adapter === "ollama" && evaluationType === "model") || agentUsesEvalHubModel) &&
+    !selectedModelOption?.installed;
   const missingApiConfiguration =
     adapter === "openai-compatible" && (!apiProvider?.key_configured || !apiModel.trim());
 
   const values: EvaluationFormValues = {
     evaluationType,
+    agentFramework: selectedAgent.id,
     dataset,
     subject,
     adapter,
@@ -186,7 +216,9 @@ export function EvaluationForm({
     }
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    if (adapter !== "openai-compatible") onBaseUrlCommit(baseUrlDraft);
+    if (evaluationType === "model" || agentUsesEvalHubModel) {
+      if (adapter !== "openai-compatible") onBaseUrlCommit(baseUrlDraft);
+    }
     onSubmit(buildEvaluationRequest(values));
   }
 
@@ -358,7 +390,7 @@ export function EvaluationForm({
                   className={controlClass}
                   value={adapter}
                   onChange={(event) => {
-                    setAdapter(event.target.value as AdapterType);
+                    setAdapter(event.target.value as ModelAdapterType);
                     setErrors({});
                   }}
                 >
@@ -373,7 +405,7 @@ export function EvaluationForm({
               </div>
             </>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-4">
               <div className="rounded-md border border-blue-100 bg-blue-50/55 p-4">
                 <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
                   Benchmark
@@ -381,15 +413,46 @@ export function EvaluationForm({
                 <strong className="mt-1 block text-sm text-blue-950">EvalHub Coding Mini</strong>
                 <span className="mt-1 block text-xs leading-5 text-blue-700">6 个三级难度隐藏校验任务</span>
               </div>
-              <div className="rounded-md border border-blue-100 bg-blue-50/55 p-4">
-                <span className="block text-[10px] font-semibold tracking-[0.1em] text-blue-600 uppercase">
-                  Agent shell
-                </span>
-                <strong className="mt-1 block text-sm text-blue-950">Pi CLI</strong>
-                <span className="mt-1 block text-xs leading-5 text-blue-700">
-                  固定工具与 macOS workspace-write 沙箱
-                </span>
-              </div>
+              <fieldset>
+                <legend className="mb-2 text-xs font-medium text-muted">选择完整 Agent</legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {agentOptions.map((item) => (
+                    <label key={item.id} className={item.available ? "cursor-pointer" : "cursor-not-allowed"}>
+                      <input
+                        type="radio"
+                        name="agent-framework"
+                        value={item.id}
+                        aria-label={item.name}
+                        checked={selectedAgent.id === item.id}
+                        disabled={!item.available}
+                        onChange={() => {
+                          setAgentFramework(item.id);
+                          setErrors({});
+                        }}
+                        className="peer sr-only"
+                      />
+                      <span className="relative block min-h-32 overflow-hidden rounded-md border border-border bg-white p-4 transition-colors before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:bg-transparent peer-checked:border-blue-300 peer-checked:bg-blue-50/65 peer-checked:before:bg-primary peer-disabled:bg-slate-50 peer-disabled:opacity-65">
+                        <span className="flex items-center justify-between gap-2">
+                          <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                            <Bot className="h-4 w-4 text-primary" aria-hidden="true" />
+                            {item.name}
+                          </span>
+                          <span className="font-mono text-[10px] text-slate-400">
+                            {item.version || "NOT READY"}
+                          </span>
+                        </span>
+                        <span className="mt-2 block text-[10px] font-semibold tracking-[0.08em] text-blue-700 uppercase">
+                          {item.model_mode === "agent" ? "自管运行时" : "EvalHub 管模型"}
+                        </span>
+                        <span className="mt-1 block text-xs leading-5 text-muted">{item.description}</span>
+                        {!item.available ? (
+                          <span className="mt-2 block text-[11px] text-amber-700">{item.message}</span>
+                        ) : null}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
             </div>
           )}
 
@@ -401,6 +464,18 @@ export function EvaluationForm({
               onModelChange={setApiModel}
               onSelectionChange={selectApiProvider}
             />
+          ) : evaluationType === "agent" && selectedAgent.model_mode === "agent" ? (
+            <div className="rounded-md border border-emerald-200 bg-emerald-50/65 p-4">
+              <span className="block text-[10px] font-semibold tracking-[0.1em] text-emerald-700 uppercase">
+                Agent 自管模型
+              </span>
+              <strong className="mt-1 block font-mono text-sm text-emerald-950">
+                {selectedAgent.model || "由 Agent 配置决定"}
+              </strong>
+              <span className="mt-2 block text-xs leading-5 text-emerald-800">
+                EvalHub 不覆盖该 Agent 的模型、Provider、工具、策略或记忆。
+              </span>
+            </div>
           ) : (
             <>
               <div>
@@ -520,7 +595,10 @@ export function EvaluationForm({
                 <p className="text-xs font-medium text-muted">本次 Agent 评测流程</p>
                 <ol className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
                   <li className="rounded-md border border-border bg-slate-50 px-3 py-2">1. 创建独立 Git 样本工作区</li>
-                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">2. Pi 使用所选基模完成任务</li>
+                  <li className="rounded-md border border-border bg-slate-50 px-3 py-2">
+                    2. {selectedAgent.name} 使用
+                    {selectedAgent.model_mode === "agent" ? "自身完整运行时" : "所选基模"}完成任务
+                  </li>
                   <li className="rounded-md border border-border bg-slate-50 px-3 py-2">3. 隐藏 Verifier 评分并聚合六维能力</li>
                 </ol>
               </div>
@@ -554,7 +632,13 @@ export function EvaluationForm({
               ) : null}
               <Button
                 type="submit"
-                disabled={running || preparing || missingOllamaModel || missingApiConfiguration}
+                disabled={
+                  running ||
+                  preparing ||
+                  missingOllamaModel ||
+                  missingApiConfiguration ||
+                  (evaluationType === "agent" && !selectedAgent.available)
+                }
               >
                 <Play className="h-4 w-4" aria-hidden="true" />
                 {running ? "正在评测" : evaluationType === "agent" ? "发起 Agent 评测" : "发起评测"}

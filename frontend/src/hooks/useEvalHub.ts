@@ -4,6 +4,7 @@ import {
   cancelEvaluationTask,
   cancelModelPull as cancelModelPullRequest,
   createEvaluation,
+  getAgents,
   getBenchmarks,
   getDatasets,
   getEvaluationTask,
@@ -18,6 +19,7 @@ import {
   startModelPull as startModelPullRequest,
 } from "../lib/api";
 import type {
+  AgentDefinition,
   BenchmarkDefinition,
   BenchmarkSuite,
   Dataset,
@@ -35,6 +37,7 @@ type HealthState = "loading" | "online" | "offline";
 
 interface UseEvalHubResult {
   health: HealthState;
+  agents: AgentDefinition[];
   datasets: Dataset[];
   benchmarks: BenchmarkDefinition[];
   suites: BenchmarkSuite[];
@@ -125,6 +128,7 @@ function modelScoreSignature(
  */
 export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
   const [health, setHealth] = useState<HealthState>("loading");
+  const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [benchmarks, setBenchmarks] = useState<BenchmarkDefinition[]>([]);
   const [suites, setSuites] = useState<BenchmarkSuite[]>([]);
@@ -220,6 +224,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     taskListRequestVersionRef.current = requestVersion;
     const results = await Promise.allSettled([
       getHealth(),
+      getAgents(),
       getDatasets(),
       getBenchmarks(),
       getSuites(),
@@ -228,9 +233,10 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
     ]);
     if (!mountedRef.current) return;
 
-    // 六类基础状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
+    // 七类基础状态相互隔离，单个本地服务失败不会清空其他已经可用的工作区数据。
     const [
       healthResult,
+      agentsResult,
       datasetsResult,
       benchmarksResult,
       suitesResult,
@@ -238,6 +244,9 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
       tasksResult,
     ] = results;
     setHealth(healthResult.status === "fulfilled" ? "online" : "offline");
+    if (agentsResult.status === "fulfilled") {
+      setAgents(agentsResult.value.agents);
+    }
     if (datasetsResult.status === "fulfilled") {
       setDatasets(datasetsResult.value.datasets);
       setDatasetError(null);
@@ -529,6 +538,7 @@ export function useEvalHub(model: string, baseUrl: string): UseEvalHubResult {
 
   return {
     health,
+    agents,
     datasets,
     benchmarks,
     suites,

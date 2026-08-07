@@ -10,6 +10,7 @@ import {
 
 const baseValues: EvaluationFormValues = {
   evaluationType: "model",
+  agentFramework: "pi",
   dataset: "gsm8k",
   subject: "abstract_algebra",
   adapter: "ollama",
@@ -43,6 +44,26 @@ it("builds the fixed Pi Coding Mini request for Agent evaluation", () => {
     sample_mode: "all",
     agent_difficulty: "hard",
   });
+});
+
+it("builds a MiniClaw request without EvalHub model configuration", () => {
+  const request = buildEvaluationRequest({
+    ...baseValues,
+    evaluationType: "agent",
+    agentFramework: "miniclaw",
+    agentDifficulty: "all",
+  });
+
+  expect(request).toEqual({
+    evaluation_type: "agent",
+    agent_framework: "miniclaw",
+    dataset: "coding_mini",
+    sample_mode: "all",
+    agent_difficulty: "all",
+  });
+  expect(request).not.toHaveProperty("model");
+  expect(request).not.toHaveProperty("adapter");
+  expect(request).not.toHaveProperty("base_url");
 });
 
 describe("evaluation form rules", () => {

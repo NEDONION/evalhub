@@ -249,11 +249,11 @@ export function ModelPerformancePanel({
             {agentPerformance ? "Agent performance" : "Model performance"}
           </p>
           <h2 id="model-performance-title" className="text-lg font-semibold tracking-tight text-ink">
-            {agentPerformance ? "Agent 基模历史成绩" : "模型历史成绩"}
+            {agentPerformance ? "完整 Agent 历史成绩" : "模型历史成绩"}
           </h2>
           <p className="mt-1 text-sm leading-6 text-muted">
             {agentPerformance
-              ? "固定同一 Agent 壳和完整 Benchmark，只比较不同基模。"
+              ? "同一完整 Benchmark 下比较不同 Agent 候选。"
               : "只在同一个 Benchmark 或 Suite 内比较，避免不同口径混排。"}
           </p>
           <div role="group" aria-label="成绩类型" className="mt-3 inline-flex rounded-md border border-border bg-slate-50 p-0.5">

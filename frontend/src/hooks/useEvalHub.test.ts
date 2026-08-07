@@ -5,6 +5,7 @@ import {
   cancelEvaluationTask,
   cancelModelPull,
   createEvaluation,
+  getAgents,
   getBenchmarks,
   getDatasets,
   getEvaluationTask,
@@ -31,6 +32,7 @@ vi.mock("../lib/api", () => ({
   cancelEvaluationTask: vi.fn(),
   cancelModelPull: vi.fn(),
   createEvaluation: vi.fn(),
+  getAgents: vi.fn(),
   getBenchmarks: vi.fn(),
   getDatasets: vi.fn(),
   getEvaluationTask: vi.fn(),
@@ -170,6 +172,7 @@ beforeEach(() => {
   vi.mocked(getHealth).mockResolvedValue({ status: "ok", service: "evalhub" });
   vi.mocked(getModelPerformance).mockReset().mockResolvedValue(emptyPerformance);
   vi.mocked(getDatasets).mockResolvedValue({ datasets: [] });
+  vi.mocked(getAgents).mockResolvedValue({ agents: [] });
   vi.mocked(getBenchmarks).mockResolvedValue({ benchmarks: [] });
   vi.mocked(getSuites).mockResolvedValue({ suites: [] });
   vi.mocked(getOllamaStatus).mockResolvedValue(ollamaStatus);
@@ -194,6 +197,26 @@ beforeEach(() => {
 });
 
 describe("useEvalHub local asset orchestration", () => {
+  it("loads the complete Agent catalog with runtime ownership", async () => {
+    const miniclaw = {
+      id: "miniclaw" as const,
+      name: "MiniClaw",
+      description: "使用自身运行时的完整 Agent",
+      model_mode: "agent" as const,
+      available: true,
+      version: "0.1.0",
+      model: "deepseek-v4-pro",
+      message: "ready",
+    };
+    vi.mocked(getAgents).mockResolvedValue({ agents: [miniclaw] });
+
+    const { result } = renderHook(() =>
+      useEvalHub("qwen2.5:1.5b", "http://127.0.0.1:11434"),
+    );
+
+    await waitFor(() => expect(result.current.agents).toEqual([miniclaw]));
+  });
+
   it("loads model performance and switches the comparison scope", async () => {
     const scopedPerformance: ModelPerformanceResponse = {
       ...emptyPerformance,

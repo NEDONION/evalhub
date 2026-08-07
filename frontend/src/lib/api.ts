@@ -1,4 +1,5 @@
 import type {
+  AgentsResponse,
   BenchmarksResponse,
   DatasetName,
   DatasetsResponse,
@@ -138,6 +139,16 @@ export function getHealth(): Promise<HealthResponse> {
  */
 export function getDatasets(): Promise<DatasetsResponse> {
   return fetchJson<DatasetsResponse>("/api/datasets");
+}
+
+/**
+ * 查询受控完整 Agent 目录及当前机器上的非敏感就绪状态。
+ *
+ * @returns Agent 名称、模型归属、版本和可用状态；请求失败时抛出统一 `ApiError`。
+ * @throws {ApiError} 当后端不可达或 Agent 目录响应无效时抛出。
+ */
+export function getAgents(): Promise<AgentsResponse> {
+  return fetchJson<AgentsResponse>("/api/agents");
 }
 
 /** 查询版本化 Benchmark Registry 及本地执行器就绪状态。 */

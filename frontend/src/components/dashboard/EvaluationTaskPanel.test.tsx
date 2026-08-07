@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 
 import type {
+  EvaluationRequest,
   EvaluationTaskDetail,
   EvaluationTaskSummary,
   EvaluationType,
@@ -49,18 +50,30 @@ function taskFixture(id: string, evaluationType: EvaluationType): EvaluationTask
 
 /** 构造无需结果正文也能呈现任务进度与资源的完整详情。 */
 function taskDetailFixture(id: string, evaluationType: EvaluationType): EvaluationTaskDetail {
+  const request: EvaluationRequest =
+    evaluationType === "agent"
+      ? {
+          evaluation_type: "agent",
+          agent_framework: "pi",
+          agent_difficulty: "all",
+          dataset: "coding_mini",
+          adapter: "ollama",
+          model: "qwen-coder",
+          base_url: "http://127.0.0.1:11434",
+          sample_mode: "all",
+        }
+      : {
+          evaluation_type: "model",
+          dataset: "gsm8k",
+          adapter: "ollama",
+          model: "qwen",
+          base_url: "http://127.0.0.1:11434",
+          sample_mode: "all",
+        };
+
   return {
     ...taskFixture(id, evaluationType),
-    request: {
-      evaluation_type: evaluationType,
-      agent_framework: evaluationType === "agent" ? "pi" : undefined,
-      agent_difficulty: evaluationType === "agent" ? "all" : undefined,
-      dataset: evaluationType === "agent" ? "coding_mini" : "gsm8k",
-      adapter: "ollama",
-      model: evaluationType === "agent" ? "qwen-coder" : "qwen",
-      base_url: "http://127.0.0.1:11434",
-      sample_mode: "all",
-    },
+    request,
     result: null,
     nodes: [],
   };

@@ -40,6 +40,8 @@ const protocolLabels = {
  * @returns 只属于当前任务详情的结果区，避免列表页一次展开大量原始数据。
  */
 export function EvaluationResultDetail({ result, isHexagon = false }: EvaluationResultDetailProps): JSX.Element {
+  const agentName = result.agent?.name || result.agent?.framework;
+  const agentVersion = result.agent?.version || result.agent?.cli_version;
   return (
     <div className="border-t border-border">
       <div className="flex items-start justify-between gap-3 px-5 py-5 sm:px-6">
@@ -70,15 +72,21 @@ export function EvaluationResultDetail({ result, isHexagon = false }: Evaluation
         <>
           <AgentCapabilityHexagon report={result.capability_report} />
           {result.agent ? (
-            <div className="grid border-b border-border bg-slate-50/55 px-5 py-3 text-xs text-muted sm:grid-cols-3 sm:px-6">
+            <div className="grid gap-x-4 gap-y-2 border-b border-border bg-slate-50/55 px-5 py-3 text-xs text-muted sm:grid-cols-2 sm:px-6 lg:grid-cols-4">
               <span>
-                Agent 壳 <strong className="ml-1 font-mono text-ink">{result.agent.framework}</strong>
+                Agent <strong className="ml-1 text-ink">{agentName}</strong>
               </span>
               <span>
-                CLI <strong className="ml-1 font-mono text-ink">{result.agent.cli_version}</strong>
+                版本 <strong className="ml-1 font-mono text-ink">{agentVersion || "—"}</strong>
               </span>
               <span>
-                脚手架 <strong className="ml-1 font-mono text-ink">{result.agent.scaffold_hash}</strong>
+                模型 <strong className="ml-1 font-mono text-ink">{result.agent.model || result.model}</strong>
+              </span>
+              <span>
+                {result.agent.runtime_fingerprint ? "运行指纹" : "脚手架"}
+                <strong className="ml-1 break-all font-mono text-ink">
+                  {result.agent.runtime_fingerprint || result.agent.scaffold_hash}
+                </strong>
               </span>
             </div>
           ) : null}
