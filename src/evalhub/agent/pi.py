@@ -6,17 +6,21 @@ import json
 import os
 import signal
 import subprocess
-from collections.abc import Callable
-from dataclasses import dataclass
 from http import client as http_client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Thread
 from time import monotonic
-from typing import IO, Protocol, TypedDict
+from typing import IO, Protocol
 from urllib.parse import urlparse
 
+from evalhub.agent.base import (
+    AgentRunError,
+    AgentRunResult,
+    AgentTraceEvent,
+    TraceCallback,
+)
 from evalhub.ollama_pull import validate_loopback_base_url
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -28,42 +32,8 @@ _API_PROVIDERS = {
 }
 
 
-class PiAgentError(RuntimeError):
-    """表示 Pi CLI 未能产生可评分的 Agent 执行结果。"""
-
-    def __init__(self, message: str, *, error_type: str | None = None) -> None:
-        """保存安全错误消息和可选的稳定基础设施分类。
-
-        参数：
-            message: 可进入任务审计的脱敏错误说明。
-            error_type: 仅确定性执行器故障使用的稳定分类；模型运行错误留空。
-        """
-        super().__init__(message)
-        self.error_type = error_type
-
-
-@dataclass(frozen=True)
-class PiRunResult:
-    """记录一次固定 Agent 壳运行后需要持久化的审计信息。"""
-
-    final_message: str
-    event_count: int
-    return_code: int
-    wall_time_seconds: float
-    cli_version: str
-    tool_call_count: int = 0
-
-
-class AgentTraceEvent(TypedDict):
-    """描述可跨进程持久化的单条 Pi 外部可观察事件。"""
-
-    event_type: str
-    actor: str
-    message: str | None
-    payload: dict[str, object]
-
-
-TraceCallback = Callable[[AgentTraceEvent], None]
+PiAgentError = AgentRunError
+PiRunResult = AgentRunResult
 
 
 class CommandRunner(Protocol):
