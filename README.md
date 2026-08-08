@@ -18,6 +18,7 @@
   <a href="#screenshots">界面预览</a> ·
   <a href="#model-benchmark-report">模型报告</a> ·
   <a href="#agent-benchmark-report">Agent 报告</a> ·
+  <a href="#miniclaw-agent-evaluation-report">MiniClaw 报告</a> ·
   <a href="#how-it-works">工作原理</a> ·
   <a href="#benchmarks">评测范围</a> ·
   <a href="#documentation">文档</a>
@@ -213,6 +214,64 @@ export EVALHUB_MINICLAW_ROOT=/absolute/path/to/miniclaw
 > `d8a7cbaf0d432018` 和隐藏工作区校验；API 延迟与本机 Ollama 耗时受不同硬件和网络影响，不应把
 > 耗时直接解释为模型推理速度。独立的 6 题 SWE-bench Verified Mini 只会在官方 Docker Harness
 > 的 gold patch 先达到 6/6 后发布成绩，本轮未用未就绪结果补零或混入排名。
+
+## MiniClaw Agent Evaluation Report
+
+以下是完整 MiniClaw Agent 在同一份 `coding-mini-v3` 上的可审计结果。每个模型只采用首个完成
+全部 6 题、且没有任务级基础设施故障的正式任务；不按分数重跑或挑选最佳值。模型、Provider、
+工具调用和推理循环由 MiniClaw 管理，EvalHub 只提供相同的样本工作区、写入审批边界和隐藏
+Verifier。
+
+| 模型 | 运行方式 | Job ID | 协议预检 | 通过样例 | 失败样例 | 工具调用 / 错误 | 平均耗时/题 |
+| --- | --- | --- | --- | ---: | --- | ---: | ---: |
+| `deepseek-v4-pro` | DeepSeek API | `job_b760043b552b` | compatible | **6 / 6** | — | 37 / 0 | 45.21 s |
+| `deepseek-ai/DeepSeek-V4-Flash` | SiliconFlow API | `job_08aa057bf2db` | incompatible（60 s 预检超时） | **5 / 6** | `async_worker_cleanup` | 40 / 0 | 46.03 s |
+| `qwen3:4b` | Ollama | `job_3d9c6e69ad3b` | compatible | **0 / 6** | 全部 6 题 | 2 / 0 | 100.55 s |
+
+Flash 的正式任务保留了 `async_worker_cleanup` 中一次上游协议异常造成的原始失败；随后放宽到
+180 秒的定向复测只用于确认工具循环能够完成，不替换 5/6 的正式成绩。`qwen3:4b` 的协议预检
+正常，但 5 题没有修改工作区、1 题运行超时，总计修改 0 个文件，因此 0/6 是本次正式能力结果，
+不是协议兼容误判。
+
+### 六维能力结果
+
+下表将持久化的 0–1 分数换算为 0–100；轴顺序与 EvalHub Agent 报告一致。
+
+| 模型 | 规划 | 代码理解 | 实现正确性 | 工具使用 | 验证能力 | 稳健性 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek-v4-pro` | 100 | 100 | 100 | 100 | 100 | 100 |
+| `deepseek-ai/DeepSeek-V4-Flash` | 85 | 81.82 | 80.95 | 88.24 | 83.33 | 81.82 |
+| `qwen3:4b` | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### 同模型 Pi 与 MiniClaw 对照
+
+Pi 数据来自 2026-08-05 冻结矩阵；MiniClaw 数据来自上面的单次正式任务。两边共用
+`coding-mini-v3`、同一脚手架和隐藏 Verifier，但 Agent 的提示、工具策略与循环实现不同。
+
+| 模型 | Pi 通过 | MiniClaw 通过 | Pi 工具调用 | MiniClaw 工具调用 | Pi 平均耗时/题 | MiniClaw 平均耗时/题 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek-v4-pro` | 6 / 6 | 6 / 6 | 64 | 37 | 61.78 s | 45.21 s |
+| `deepseek-ai/DeepSeek-V4-Flash` | 5 / 6 | 5 / 6 | 75 | 40 | 133.97 s | 46.03 s |
+| `qwen3:4b` | **1 / 6** | **0 / 6** | 13 | 2 | 169.05 s | 100.55 s |
+
+这三组单次 6 题结果没有显示 MiniClaw 能把 Pi 仅 1/6 的 `qwen3:4b` 提升到 5/6；本次反而少
+通过 1 题。Pro 和 Flash 的通过数与 Pi 相同，同时 MiniClaw 的工具调用数与平均耗时更低。这些
+差异适合用于定位 Agent 行为，不足以从小样本单次运行推断外壳本身的普遍因果优势。
+
+### 排除运行
+
+| Job ID | 模型 | 观测结果 | 排除原因 |
+| --- | --- | ---: | --- |
+| `job_4507d33dac62` | `deepseek-ai/DeepSeek-V4-Flash` | 0 / 6 | 修复前 Provider 解析器拒绝 SiliconFlow SSE 中空 `function.name` 的续传片段；预检为 `incompatible`、正式样本均为 Provider 请求失败，不计入能力结果 |
+
+兼容修复后，同模型的首个有效正式任务是 `job_08aa057bf2db`（5/6）。排除运行只保留为协议边界
+证据，不进入正式结果或排名。
+
+> [!NOTE]
+> 全部正式任务使用 MiniClaw `0.1.0`、`coding-mini-v3` 和脚手架
+> `d8a7cbaf0d432018`；命令、网络、记忆和工作区外写入没有获得额外权限。隐藏 Verifier 决定
+> 通过数和六维分数，协议预检只提供诊断证据。该套件是 6 题日常 Agent 诊断集，不是官方
+> SWE-bench 排名；模型响应、密钥和工作区内容不写入本报告。
 
 ## How It Works
 
