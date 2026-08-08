@@ -222,11 +222,11 @@ export EVALHUB_MINICLAW_ROOT=/absolute/path/to/miniclaw
 工具调用和推理循环由 MiniClaw 管理，EvalHub 只提供相同的样本工作区、写入审批边界和隐藏
 Verifier。
 
-| 模型 | 运行方式 | Job ID | 协议预检 | 通过样例 | 失败样例 | 工具调用 / 错误 | 平均耗时/题 |
-| --- | --- | --- | --- | ---: | --- | ---: | ---: |
-| `deepseek-v4-pro` | DeepSeek API | `job_b760043b552b` | compatible | **6 / 6** | — | 37 / 0 | 45.21 s |
-| `deepseek-ai/DeepSeek-V4-Flash` | SiliconFlow API | `job_08aa057bf2db` | incompatible（60 s 预检超时） | **5 / 6** | `async_worker_cleanup` | 40 / 0 | 46.03 s |
-| `qwen3:4b` | Ollama | `job_3d9c6e69ad3b` | compatible | **0 / 6** | 全部 6 题 | 2 / 0 | 100.55 s |
+| 模型 | 运行方式 | 协议预检 | 通过样例 | 失败样例 | 工具调用 / 错误 | 平均耗时/题 |
+| --- | --- | --- | ---: | --- | ---: | ---: |
+| `deepseek-v4-pro` | DeepSeek API | compatible | **6 / 6** | — | 37 / 0 | 45.21 s |
+| `deepseek-ai/DeepSeek-V4-Flash` | SiliconFlow API | incompatible（60 s 预检超时） | **5 / 6** | `async_worker_cleanup` | 40 / 0 | 46.03 s |
+| `qwen3:4b` | Ollama | compatible | **0 / 6** | 全部 6 题 | 2 / 0 | 100.55 s |
 
 Flash 的正式任务保留了 `async_worker_cleanup` 中一次上游协议异常造成的原始失败；随后放宽到
 180 秒的定向复测只用于确认工具循环能够完成，不替换 5/6 的正式成绩。`qwen3:4b` 的协议预检
