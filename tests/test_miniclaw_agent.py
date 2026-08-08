@@ -1,10 +1,13 @@
 """验证 MiniClaw 子进程桥的命令、JSONL、错误和事件脱敏边界。"""
 
+import asyncio
 import io
 import json
 import subprocess
 import sys
+from enum import StrEnum
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from typing import cast
 
 import pytest
@@ -292,3 +295,123 @@ def test_bridge_removes_its_directory_before_importing_external_miniclaw(
     assert prepare_import_path is not None, "prepare_miniclaw_import_path is not implemented"
     prepare_import_path()
     assert bridge_directory not in sys.path
+
+
+def test_bridge_continues_workspace_write_approval_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """桥应仅一次性批准临时评测工作区内的文件编辑并继续到最终回答。"""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    emitted: list[dict[str, object]] = []
+    continuations: list[tuple[int, object]] = []
+
+    class FakeApprovalDecision(StrEnum):
+        """模拟 MiniClaw 对外暴露的一次性审批枚举。"""
+
+        ONCE = "once"
+
+    class FakeService:
+        """先返回待审批结果，再在继续调用后返回完成结果。"""
+
+        async def handle(self, *args: object, **kwargs: object) -> SimpleNamespace:
+            """发出工作区编辑审批事件，并返回对应审批编号。"""
+            del args
+            on_event = kwargs["on_event"]
+            assert callable(on_event)
+            await on_event(
+                SimpleNamespace(
+                    kind="approval_required",
+                    data={
+                        "approval_id": 17,
+                        "tool_name": "edit_file",
+                        "arguments": {
+                            "path": str(workspace / "solution.py"),
+                            "old_text": "before",
+                            "new_text": "after",
+                        },
+                    },
+                )
+            )
+            return SimpleNamespace(content="", approval_id=17)
+
+        async def continue_approval(
+            self,
+            user_id: int,
+            approval_id: int,
+            *,
+            decision: object,
+            on_event: object,
+        ) -> SimpleNamespace:
+            """记录一次性批准，并模拟 Agent 在恢复后正常完成。"""
+            del user_id, on_event
+            continuations.append((approval_id, decision))
+            return SimpleNamespace(content="done", approval_id=None)
+
+    class FakeRuntime:
+        """提供桥运行所需的最小 MiniClaw Runtime 表面。"""
+
+        owner_id = 3
+        service = FakeService()
+
+        async def aclose(self) -> None:
+            """模拟关闭 Provider，不产生额外副作用。"""
+
+    runtime = FakeRuntime()
+    runtime_module = ModuleType("miniclaw.runtime")
+    runtime_module.create_runtime = lambda *args: runtime  # type: ignore[attr-defined]
+    approval_module = ModuleType("miniclaw.policy.approvals")
+    approval_module.ApprovalDecision = FakeApprovalDecision  # type: ignore[attr-defined]
+
+    # 动态模块模拟真实 MiniClaw 边界，使测试不依赖外部项目安装。
+    monkeypatch.setitem(sys.modules, "miniclaw.runtime", runtime_module)
+    monkeypatch.setitem(sys.modules, "miniclaw.policy.approvals", approval_module)
+    monkeypatch.setattr(bridge_module, "_read_instruction", lambda: "repair")
+    monkeypatch.setattr(
+        bridge_module,
+        "_load_context",
+        lambda workspace: (
+            SimpleNamespace(),
+            SimpleNamespace(agent=SimpleNamespace(model="agent-model")),
+            "private-key",
+            "0.1.0",
+            "sha256:test",
+        ),
+    )
+    monkeypatch.setattr(bridge_module, "_emit", emitted.append)
+
+    exit_code = asyncio.run(bridge_module._run(workspace, "conversation-1"))
+
+    assert exit_code == 0
+    assert len(continuations) == 1
+    assert continuations[0][0] == 17
+    assert getattr(continuations[0][1], "value", None) == "once"
+    assert emitted[-1]["type"] == "result"
+    assert emitted[-1]["final_message"] == "done"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "approval_id": 21,
+            "tool_name": "run_command",
+            "arguments": {"program": "/usr/bin/python3", "args": ["test.py"]},
+        },
+        {
+            "approval_id": 22,
+            "tool_name": "edit_file",
+            "arguments": {"path": "/tmp/outside.py"},
+        },
+    ],
+)
+def test_bridge_refuses_non_file_or_outside_workspace_approval(
+    event: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    """无头评测不得自动批准命令执行或临时样本目录之外的写入。"""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    assert bridge_module._workspace_approval_id(event, workspace) is None

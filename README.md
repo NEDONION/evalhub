@@ -72,6 +72,9 @@ export EVALHUB_MINICLAW_ROOT=/absolute/path/to/miniclaw
 ./scripts/start_local.sh
 ```
 
+无头评测只会对已经通过 MiniClaw 策略校验、且由 EvalHub 再次确认位于当前临时样本工作区内的
+`write_file` / `edit_file` 做一次性批准；命令、网络、记忆和工作区外操作仍沿用 MiniClaw 的审批边界。
+
 ## Screenshots
 
 <table>

@@ -14,7 +14,9 @@ from pathlib import Path
 from typing import Any
 
 _PREVIEW_LIMIT = 1_000
+_MAX_WORKSPACE_APPROVALS = 32
 _EVENT_FIELDS = frozenset({"call_id", "tool_name", "status", "result_preview", "error_code"})
+_WORKSPACE_WRITE_TOOLS = frozenset({"write_file", "edit_file"})
 
 
 def prepare_miniclaw_import_path() -> None:
@@ -103,6 +105,36 @@ def _event_message(kind: str, data: dict[str, object]) -> str | None:
     if kind == "approval_required":
         return "MiniClaw 等待人工审批"
     return None
+
+
+def _workspace_approval_id(data: dict[str, object], workspace: Path) -> int | None:
+    """识别可在一次性评测工作区内自动批准的文件写入。
+
+    Args:
+        data: MiniClaw ``approval_required`` 事件数据。
+        workspace: EvalHub 为当前样本创建的独占临时工作区。
+
+    Returns:
+        可自动批准的审批编号；非文件写入、越界路径或畸形事件返回空值。
+    """
+    approval_id = data.get("approval_id")
+    tool_name = data.get("tool_name")
+    arguments = data.get("arguments")
+    if type(approval_id) is not int or approval_id <= 0:
+        return None
+    if tool_name not in _WORKSPACE_WRITE_TOOLS or not isinstance(arguments, dict):
+        return None
+
+    # MiniClaw 已先完成参数与 WorkspaceGuard 校验；桥仍独立验证规范路径没有越界。
+    raw_path = arguments.get("path")
+    if not isinstance(raw_path, str) or not Path(raw_path).is_absolute():
+        return None
+    try:
+        root = workspace.resolve(strict=True)
+        target = Path(raw_path).resolve(strict=False)
+    except (OSError, RuntimeError):
+        return None
+    return approval_id if target.is_relative_to(root) else None
 
 
 def _emit(payload: dict[str, object]) -> None:
@@ -223,19 +255,22 @@ async def _run(workspace: Path, conversation_id: str) -> int:
     try:
         instruction = _read_instruction()
         paths, config, api_key, version, fingerprint = _load_context(workspace)
+        from miniclaw.policy.approvals import ApprovalDecision
         from miniclaw.runtime import create_runtime
 
         runtime = create_runtime(config, paths, api_key)
         tool_call_count = 0
-        approval_required = False
+        workspace_approvals: set[int] = set()
 
         async def relay(event: Any) -> None:
-            """计数工具与审批事件，并立即输出标准化白名单对象。"""
-            nonlocal tool_call_count, approval_required
+            """计数工具事件、登记安全审批并输出标准化白名单对象。"""
+            nonlocal tool_call_count
             if event.kind == "tool_started":
                 tool_call_count += 1
             if event.kind == "approval_required":
-                approval_required = True
+                approval_id = _workspace_approval_id(dict(event.data), workspace)
+                if approval_id is not None:
+                    workspace_approvals.add(approval_id)
             normalized = normalize_event(str(event.kind), dict(event.data))
             if normalized is not None:
                 _emit({"type": "event", "event": normalized})
@@ -246,9 +281,29 @@ async def _run(workspace: Path, conversation_id: str) -> int:
             conversation_id,
             on_event=relay,
         )
-        if approval_required:
-            _emit({"type": "error", "code": "approval_required", "message": "approval required"})
-            return 3
+
+        # 仅恢复已被双重路径校验的文件写入；命令、网络与持久记忆仍要求真人审批。
+        approval_count = 0
+        while result.approval_id is not None:
+            approval_id = result.approval_id
+            if approval_id not in workspace_approvals or approval_count >= _MAX_WORKSPACE_APPROVALS:
+                _emit(
+                    {
+                        "type": "error",
+                        "code": "approval_required",
+                        "message": "approval required",
+                    }
+                )
+                return 3
+            workspace_approvals.remove(approval_id)
+            approval_count += 1
+            result = await runtime.service.continue_approval(
+                runtime.owner_id,
+                approval_id,
+                decision=ApprovalDecision.ONCE,
+                on_event=relay,
+            )
+
         _emit(
             {
                 "type": "result",
